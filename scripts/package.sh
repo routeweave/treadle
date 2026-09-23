@@ -329,14 +329,21 @@ printf '%s\n' "$PKG_CONFFILES" > "$APKMETA_DIR/${PKG_NAME}.conffiles"
 # symlink. Without it the init script is installed but never invoked at boot
 # and Treadle never autostarts.
 #
-# pre-deinstall: stop sing-box and remove the rc.d symlinks so an uninstall
-# leaves nothing running and no dangling /etc/rc.d/S95treadle behind.
+# pre-deinstall: stop sing-box, remove the rc.d symlinks, the cron jobs and
+# the sysupgrade entry, so an uninstall leaves nothing running or pointing at
+# removed files.
+#
+# Both scripts are the Makefile's postinst / prerm blocks, so the SDK build
+# and this one install identical scripts. Make escapes a literal `$` as `$$`
+# inside a define; undo that here.
 
 POST_SCRIPT="$BUILD_DIR/post-install.sh"
-printf '#!/bin/sh\n[ -n "${IPKG_INSTROOT}" ] || {\n\tgrep -qsF "/etc/treadle/nodes/" /etc/sysupgrade.conf || echo "/etc/treadle/nodes/" >> /etc/sysupgrade.conf\n\t/etc/init.d/treadle enable\n\tservice rpcd reload\n}\n' > "$POST_SCRIPT"
+mk_block "define Package/${PKG_NAME}/postinst" | sed 's/\$\$/$/g' > "$POST_SCRIPT"
+[ -s "$POST_SCRIPT" ] || die "could not parse the postinst block from $MAKEFILE"
 
 PRERM_SCRIPT="$BUILD_DIR/pre-deinstall.sh"
-printf '#!/bin/sh\n[ -n "${IPKG_INSTROOT}" ] || {\n\t/etc/init.d/treadle stop\n\t/etc/init.d/treadle disable\n}\n' > "$PRERM_SCRIPT"
+mk_block "define Package/${PKG_NAME}/prerm" | sed 's/\$\$/$/g' > "$PRERM_SCRIPT"
+[ -s "$PRERM_SCRIPT" ] || die "could not parse the prerm block from $MAKEFILE"
 
 # ---------------------------------------------------------------------------
 # Build APK using apk mkpkg (apk-tools 3.x)

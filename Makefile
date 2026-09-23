@@ -37,12 +37,20 @@ define Package/luci-app-treadle/postinst
 }
 endef
 
+# opkg also runs the old package's prerm on an upgrade, as
+# `prerm upgrade <new-version>`; apk runs pre-deinstall only on removal. An
+# upgrade must leave the service running and its cron jobs in place.
 define Package/luci-app-treadle/prerm
 #!/bin/sh
+[ "$$1" = "upgrade" ] && exit 0
 [ -n "$${IPKG_INSTROOT}" ] || {
 	/etc/init.d/treadle stop
 	/etc/init.d/treadle disable
+	sed -i '/\/usr\/libexec\/treadle\//d' /etc/crontabs/root 2>/dev/null
+	/etc/init.d/cron reload 2>/dev/null
+	sed -i '\#^/etc/treadle/nodes/$$#d' /etc/sysupgrade.conf 2>/dev/null
 }
+exit 0
 endef
 
 # $(eval $(call BuildPackage,luci-app-treadle)) is called by luci.mk

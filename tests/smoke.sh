@@ -240,6 +240,39 @@ echo '{}' | "$HANDLER" call get_config > "$OUT/get_config.json"
 	&& ok "get_config returns a preview" \
 	|| bad "get_config: $(head -c 400 "$OUT/get_config.json")"
 
+# --- removal -----------------------------------------------------------------
+
+# The init script installs these cron jobs on start; procd is not running
+# here, so put them in place by hand, as a started service would have.
+step "removal"
+mkdir -p /etc/crontabs
+printf '%s\n' "17 * * * * /usr/libexec/treadle/hourly" \
+	"*/5 * * * * /usr/libexec/treadle/watchdog" >> /etc/crontabs/root
+grep -qxF "/etc/treadle/nodes/" /etc/sysupgrade.conf \
+	&& ok "post-install registered the node directory with sysupgrade" \
+	|| bad "post-install did not add /etc/treadle/nodes/ to sysupgrade.conf"
+
+if [ -x /usr/lib/opkg/info/luci-app-treadle.prerm ]; then
+	# opkg runs the old package's prerm on every upgrade.
+	/usr/lib/opkg/info/luci-app-treadle.prerm upgrade 9.9.9-r1 >/dev/null 2>&1
+	[ "$(grep -c /usr/libexec/treadle/ /etc/crontabs/root)" -eq 2 ] \
+		&& [ -x /etc/init.d/treadle ] \
+		&& ok "prerm on upgrade leaves cron jobs and service alone" \
+		|| bad "prerm on upgrade removed cron jobs or the service"
+	opkg remove luci-app-treadle > "$OUT/remove.log" 2>&1
+else
+	apk del luci-app-treadle > "$OUT/remove.log" 2>&1
+fi
+rc=$?
+[ "$rc" -eq 0 ] && ok "package removed cleanly" \
+	|| { bad "removal exited $rc"; sed 's/^/    /' "$OUT/remove.log"; }
+grep -q /usr/libexec/treadle/ /etc/crontabs/root \
+	&& bad "cron jobs left behind after removal" \
+	|| ok "removal cleared the cron jobs"
+grep -qF "/etc/treadle/nodes/" /etc/sysupgrade.conf \
+	&& bad "sysupgrade entry left behind after removal" \
+	|| ok "removal cleared the sysupgrade entry"
+
 # --- summary -----------------------------------------------------------------
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
