@@ -110,18 +110,31 @@ lan_device() {
 	echo "$dev"
 }
 
+# Add the policy rule only when it is missing. Deleting and re-adding it on
+# every reload would leave marked packets without their route to lo for a
+# moment, and they would be forwarded out directly. `route replace` is a
+# single atomic netlink operation, so it needs no such care.
+ensure_iprule() {
+	# $1: "" for IPv4, "-6" for IPv6
+	# shellcheck disable=SC2086  # the empty family flag must vanish
+	ip $1 rule show 2>/dev/null | grep -qE "fwmark $MARK lookup $TABLE( |\$)" \
+		|| ip $1 rule add fwmark "$MARK" table "$TABLE"
+}
+
 apply_iprules() {
 	local inet6
 	inet6="$1"
 
-	ip rule del fwmark "$MARK" table "$TABLE" 2>/dev/null
-	ip rule add fwmark "$MARK" table "$TABLE"
+	ensure_iprule ""
 	ip route replace local 0.0.0.0/0 dev lo table "$TABLE"
 
 	if [ "$inet6" = "1" ]; then
-		ip -6 rule del fwmark "$MARK" table "$TABLE" 2>/dev/null
-		ip -6 rule add fwmark "$MARK" table "$TABLE"
+		ensure_iprule -6
 		ip -6 route replace local ::/0 dev lo table "$TABLE"
+	else
+		# IPv6 was switched off since the last start.
+		while ip -6 rule del fwmark "$MARK" table "$TABLE" 2>/dev/null; do :; done
+		ip -6 route flush table "$TABLE" 2>/dev/null
 	fi
 }
 
@@ -139,6 +152,13 @@ build_nft() {
 
 	mkdir -p /var/etc/treadle
 	{
+		# One `nft -f` is one transaction, so declaring the table (a no-op
+		# when it exists), deleting it and defining it afresh swaps the old
+		# ruleset for the new one atomically. Deleting it in a separate step
+		# first would let LAN traffic through unproxied until the new rules
+		# landed.
+		echo "table inet treadle"
+		echo "delete table inet treadle"
 		echo "table inet treadle {"
 		echo "	chain prerouting {"
 		echo "		type filter hook prerouting priority mangle; policy accept;"
@@ -248,16 +268,15 @@ build_nft() {
 start() {
 	local mode port iface inet6 self fakeip fakeip_v4 fakeip_v6
 
-	# Clear any existing ruleset first so start is idempotent: a mode switch
-	# (tproxy -> tun) or a stale ruleset from a crashed run can't leave
-	# orphaned nft tables or ip rules behind.
-	stop
-
+	# start is idempotent without tearing down first: the ruleset is swapped
+	# in atomically (see build_nft) and the policy rule is only added when
+	# missing. A mode without TPROXY removes both instead.
 	mode=$(uci_get inbounds mode)
 	[ -n "$mode" ] || mode=tproxy
 	case "$mode" in
 		tproxy|tproxy_mixed) ;;
 		*)
+			stop
 			treadle_log info "firewall: $mode mode, no TPROXY ruleset needed"
 			return 0
 			;;
@@ -289,6 +308,9 @@ start() {
 	apply_iprules "$inet6"
 	build_nft "$port" "$iface" "$inet6" "$self" "$fakeip" "$fakeip_v4" "$fakeip_v6"
 
+	# A failed load changes nothing (the transaction is all-or-nothing), so
+	# the previous ruleset would still be live and out of step with the
+	# config. Tear down, as the init script expects on failure.
 	if ! nft -f "$NFT_FILE"; then
 		treadle_log err "firewall: failed to load nftables ruleset, tearing down"
 		stop
