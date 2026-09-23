@@ -190,10 +190,23 @@ start_service() {
 	# /etc/init.d/treadle start explicitly, plus the procd reload trigger
 	# fires on every commit — so two start_service runs can race on the
 	# same ${config_path}.next file (build, validate, atomic rename).
-	# `lock -n` skips silently when held; the already-running invocation
-	# will produce the same final config anyway.
+	#
+	# Wait for the running one rather than skipping: it may have read UCI
+	# before the commit that triggered this start, and a skipped start
+	# would leave that change unapplied until some later reload. The wait
+	# is bounded so a lock leaked by a killed start cannot hang every
+	# future one.
+	local tries
+	tries=0
 	mkdir -p /var/lock
-	lock -n /var/lock/treadle-start.lock 2>/dev/null || return 0
+	while ! lock -n /var/lock/treadle-start.lock 2>/dev/null; do
+		tries=$((tries + 1))
+		if [ "$tries" -ge 30 ]; then
+			treadle_log warn "service: start lock held for 30 s, skipping this start"
+			return 0
+		fi
+		sleep 1
+	done
 	trap 'lock -u /var/lock/treadle-start.lock 2>/dev/null' EXIT
 
 	# Ensure the directories that hold sensitive files (proxy credentials in
