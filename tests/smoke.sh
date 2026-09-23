@@ -76,6 +76,17 @@ jsonfilter -i "$OUT/list.json" -e '@.get_status' >/dev/null \
 echo '{}' | "$HANDLER" call get_status > "$OUT/status.json"
 jsonfilter -i "$OUT/status.json" -e '@.version' >/dev/null \
 	&& ok "get_status reports the sing-box version" || bad "get_status: $(cat "$OUT/status.json")"
+echo '{"logs":10}' | "$HANDLER" call get_dashboard > "$OUT/dash.json"
+jsonfilter -i "$OUT/dash.json" -e '@.status.version' >/dev/null \
+	&& jsonfilter -i "$OUT/dash.json" -e '@.groups' >/dev/null \
+	&& jsonfilter -i "$OUT/dash.json" -e '@.stats' >/dev/null \
+	&& jsonfilter -i "$OUT/dash.json" -e '@.logs' >/dev/null \
+	&& ok "get_dashboard returns status, groups, stats and logs" \
+	|| bad "get_dashboard: $(head -c 300 "$OUT/dash.json")"
+echo '{}' | "$HANDLER" call get_dashboard > "$OUT/dash-nolog.json"
+jsonfilter -i "$OUT/dash-nolog.json" -e '@.logs' >/dev/null 2>&1 \
+	&& bad "get_dashboard read the logs without being asked" \
+	|| ok "get_dashboard skips the logs unless asked"
 
 # --- subscriptions -----------------------------------------------------------
 

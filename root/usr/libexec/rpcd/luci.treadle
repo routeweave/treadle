@@ -1913,10 +1913,13 @@ local methods = {
 			end
 
 			local treadle, singbox = ring(), ring()
-			-- Prefilter in the pipeline so the per-line Lua loop below only
-			-- sees candidate lines — this runs on every 2s Status-page poll
-			-- and the full syslog ring buffer can be hundreds of KB. The
-			-- grep patterns are deliberately broader than the Lua matches
+			-- Dumping the whole syslog ring buffer is what makes this call
+			-- expensive (~56 ms for 4.5k lines on a 6-core aarch64 router).
+			-- It is not windowed with `logread -l`: Treadle logs rarely and
+			-- other daemons fill most of the buffer, so a window of the last
+			-- 1000 lines kept only 4 of 43 Treadle lines. The cost is paid on
+			-- the Status page's slower log cadence instead (get_dashboard).
+			-- The grep patterns are deliberately broader than the Lua matches
 			-- (no anchoring spaces), so the Lua classification still decides.
 			local f = io.popen(
 				"logread 2>/dev/null | grep -e 'treadle:' -e 'sing-box'"
@@ -2395,6 +2398,33 @@ local methods = {
 			return { started = true }
 		end
 	}
+}
+
+-- Everything the Status page refreshes, in one handler process. The page
+-- polls every 2 s, and rpcd starts a fresh Lua process (and loads this
+-- whole handler) for every call, so four separate calls cost four times
+-- over. Log tails are the expensive part; the page asks for them only on
+-- some ticks by passing `logs` (the tail length), and omits it otherwise.
+-- Added after the table so the call can reach the other methods.
+methods.get_dashboard = {
+	args = { logs = 0 },
+	call = function(args)
+		-- One failing part must not blank the others.
+		local function part(name, a, fallback)
+			local ok, r = pcall(methods[name].call, a or {})
+			return (ok and type(r) == "table") and r or fallback
+		end
+		local out = {
+			status = part("get_status", nil, {}),
+			groups = part("get_active_groups", nil, { groups = {} }),
+			stats  = part("get_clash_stats", nil, {})
+		}
+		local n = tonumber(args.logs) or 0
+		if n > 0 then
+			out.logs = part("get_logs", { lines = n }, {})
+		end
+		return out
+	end
 }
 
 local cmd = arg[1]

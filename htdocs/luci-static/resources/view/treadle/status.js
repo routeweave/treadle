@@ -46,9 +46,22 @@
 'require view.treadle.lib.subs as subs';
 'require view.treadle.lib.badges as badges';
 
-var callGetStatus = rpc.declare({
+// Everything a poll tick needs, from one handler process:
+//   status — enabled / running / paused / version / mode
+//   groups — each urltest group's active member (clash `now`) from the
+//            snapshot the active-watch daemon writes every 10 s, the same
+//            view that backs the syslog change-log; { error: "clash API
+//            disabled", groups: [] } when the feature is off
+//   stats  — live throughput, session totals, connection count and (when
+//            sing-box exposes it) clash-runtime memory, from the same
+//            daemon's /connections snapshot; { error: … } when off
+//   logs   — { treadle: [...], singbox: [...] }, only when `logs` (the
+//            tail length) is passed, because reading syslog is the
+//            expensive part
+var callGetDashboard = rpc.declare({
 	object: 'luci.treadle',
-	method: 'get_status',
+	method: 'get_dashboard',
+	params: ['logs'],
 	expect: { '': {} }
 });
 
@@ -84,13 +97,6 @@ var callGetLog = rpc.declare({
 	expect: { '': {} }
 });
 
-var callGetLogs = rpc.declare({
-	object: 'luci.treadle',
-	method: 'get_logs',
-	params: ['lines'],
-	expect: { '': {} }
-});
-
 var callGetConfig = rpc.declare({
 	object: 'luci.treadle',
 	method: 'get_config',
@@ -103,31 +109,9 @@ var callListOutbounds = rpc.declare({
 	expect: { '': {} }
 });
 
-// Pulls each urltest group's currently-active member (clash `now`) from
-// the snapshot the active-watch daemon writes every 10s — the same view
-// that backs the syslog change-log. Returns { groups: [...] } or
-// { error: "clash API disabled", groups: [] } when the feature is off.
-var callGetActiveGroups = rpc.declare({
-	object: 'luci.treadle',
-	method: 'get_active_groups',
-	expect: { '': {} }
-});
-
-// Live throughput, cumulative session totals, open-connection count, and
-// (when sing-box exposes it) clash-runtime memory. Same daemon-snapshot
-// pattern as get_active_groups — the daemon GETs /connections every 10s,
-// diffs the cumulative byte counters to derive bytes/sec, and writes a
-// small summary file we read here. Returns { error: "clash API disabled" }
-// when the feature flag is off, otherwise an object with zeroed fields
-// before the daemon has primed.
-var callGetClashStats = rpc.declare({
-	object: 'luci.treadle',
-	method: 'get_clash_stats',
-	expect: { '': {} }
-});
-
-var TAIL_LINES   = 10;
-var POLL_MS      = 2000;
+var TAIL_LINES     = 10;
+var POLL_MS        = 2000;
+var LOG_EVERY      = 5;     // log tails on every 5th tick (10 s)
 var FULL_LOG_LINES = 500;
 
 // Strip the syslog wrapper, sing-box's redundant inner UTC timestamp, and the
@@ -283,20 +267,19 @@ function downloadConfig(json) {
 
 return baseclass.extend({
 	_statusTimer: null,
+	_tick: 0,
 
 	load: function() {
 		// All RPCs degrade gracefully — a missing one leaves the relevant
-		// row blank rather than blanking the tab. get_logs returns
-		// { treadle: [...], singbox: [...] }; ask for the larger of the two
-		// caps so both boxes can fill independently.
+		// row blank rather than blanking the tab.
 		return Promise.all([
-			callGetStatus().catch(function() { return {}; }),
-			callGetLogs(TAIL_LINES).catch(function() { return {}; }),
+			callGetDashboard(TAIL_LINES).catch(function() { return {}; }),
 			callListOutbounds().catch(function() { return {}; }),
-			callGetActiveGroups().catch(function() { return { groups: [] }; }),
-			callGetClashStats().catch(function() { return {}; }),
 			uci.load('treadle').catch(function() { return null; })
-		]);
+		]).then(function(r) {
+			var d = r[0] || {};
+			return [ d.status, d.logs, r[1], d.groups, d.stats ];
+		});
 	},
 
 	render: function(results) {
@@ -1119,23 +1102,23 @@ return baseclass.extend({
 		});
 	},
 
-	// One poll tick: status badge/actions, groups, traffic, and the two log
-	// tails. All four reads fan out in parallel and LuCI batches rpc calls
-	// issued in the same tick into one HTTP request, so the whole dashboard
-	// costs one round trip per POLL_MS. Also called directly by the action
-	// handlers so the page reflects a start/stop/toggle immediately.
-	_refreshStatusNow: function() {
+	// One poll tick: status badge/actions, groups and traffic, plus the two
+	// log tails when they are due. One RPC, so one handler process on the
+	// router per tick. Also called directly by the action handlers (with no
+	// argument, so logs are included) so the page reflects a
+	// start/stop/toggle immediately.
+	_refreshStatusNow: function(logsDue) {
 		var self = this;
-		return Promise.all([
-			callGetStatus().catch(function() { return {}; }),
-			callGetActiveGroups().catch(function() { return { groups: [] }; }),
-			callGetClashStats().catch(function() { return {}; }),
-			callGetLogs(TAIL_LINES).catch(function() { return {}; })
-		]).then(function(r) {
-			self._updateStatus(r[0] || {});
-			self._updateGroups(r[1] || { groups: [] });
-			self._updateClashStats(r[2] || {});
-			self._updateLogTail(r[3] || {});
+		var withLogs = (logsDue !== false);
+		// Omit `logs` rather than sending null: rpcd checks arguments against
+		// the method's declared types, and `logs` is declared as a number.
+		return callGetDashboard(withLogs ? TAIL_LINES : undefined).then(function(d) {
+			d = d || {};
+			self._updateStatus(d.status || {});
+			self._updateGroups(d.groups || { groups: [] });
+			self._updateClashStats(d.stats || {});
+			if (withLogs)
+				self._updateLogTail(d.logs || {});
 			self._scheduleStatusRefresh();
 		});
 	},
@@ -1154,7 +1137,9 @@ return baseclass.extend({
 			// stopped, clash disabled) come through as well-typed empty
 			// results. _refreshStatusNow reschedules on success; reschedule
 			// here on failure so the next tick retries.
-			this._refreshStatusNow().catch(L.bind(this._scheduleStatusRefresh, this));
+			this._tick++;
+			this._refreshStatusNow(this._tick % LOG_EVERY === 0)
+				.catch(L.bind(this._scheduleStatusRefresh, this));
 		}, this), POLL_MS);
 	},
 
