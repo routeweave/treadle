@@ -1,0 +1,83 @@
+name: Feed
+
+# Publishes the Treadle package feed to GitHub Pages — an OpenWrt-style
+# repository routers can add and then install/upgrade from. Rebuilt from
+# scratch on every v* release so the feed always indexes the full set of
+# released versions. Manual re-run is available via workflow_dispatch.
+#
+# One-time setup (see README "Install from the Treadle feed"):
+#   - run scripts/feed-keygen.sh, commit feed/keys/*.pub
+#   - add repo secrets OPKG_SIGN_KEY and APK_SIGN_KEY
+#   - enable Pages with Source = GitHub Actions
+
+# Runs after the Release workflow finishes, not on the `release` event:
+# release.yml creates the release with GITHUB_TOKEN, and GitHub suppresses
+# the `release: published` event for token-created releases, so it would
+# never fire. workflow_run also guarantees the release assets are uploaded
+# before the feed is built (release.yml builds and uploads, then we run).
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  workflow_dispatch:
+
+# One feed deploy at a time; let a newer run supersede an in-flight one.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Skip if the Release run failed; always run on a manual dispatch.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install apk-tools
+        uses: ./.github/actions/install-apk-tools
+
+      - name: Install usign
+        uses: ./.github/actions/install-usign
+
+      - name: Materialise signing keys
+        env:
+          APK_SIGN_KEY: ${{ secrets.APK_SIGN_KEY }}
+          OPKG_SIGN_KEY: ${{ secrets.OPKG_SIGN_KEY }}
+        run: |
+          [ -n "$APK_SIGN_KEY" ]     || { echo "APK_SIGN_KEY secret is empty"; exit 1; }
+          [ -n "$OPKG_SIGN_KEY" ] || { echo "OPKG_SIGN_KEY secret is empty"; exit 1; }
+          install -d -m 700 "$RUNNER_TEMP/keys"
+          printf '%s\n' "$APK_SIGN_KEY"     > "$RUNNER_TEMP/keys/apk.rsa"
+          printf '%s\n' "$OPKG_SIGN_KEY" > "$RUNNER_TEMP/keys/usign.sec"
+          chmod 600 "$RUNNER_TEMP/keys/apk.rsa" "$RUNNER_TEMP/keys/usign.sec"
+
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - name: Build feed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FEED_OUT: ${{ github.workspace }}/public
+          APK_SIGN_KEY_FILE: ${{ runner.temp }}/keys/apk.rsa
+          OPKG_SIGN_KEY_FILE: ${{ runner.temp }}/keys/usign.sec
+          PAGES_URL: ${{ steps.pages.outputs.base_url }}
+        run: scripts/feed.sh
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: public
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

@@ -1,0 +1,58 @@
+name: Install usign
+description: >
+  Builds OpenWrt's `usign` (the signify-compatible ed25519 signer opkg
+  uses to verify package feeds) from source into /usr/local/bin. usign is
+  dependency-free C — it bundles its own ed25519/sha512 — so this is just
+  cmake + cc. The built binary is cached on the pinned commit.
+
+inputs:
+  ref:
+    description: openwrt/usign git ref to build (pin a commit for reproducibility)
+    required: false
+    # git.openwrt.org/project/usign.git, mirrored at github.com/openwrt/usign.
+    # Pinned: this binary runs in the job that holds the feed's private
+    # signing key, so it must be exactly the code that was reviewed. A
+    # branch name would also freeze the cache on whatever `master` was at
+    # the first build, since the cache key is the ref string.
+    default: c4c72b1b07945ee192361dc751291a7c98d6adcd
+
+runs:
+  using: composite
+  steps:
+    - name: Cache usign binary
+      id: cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: /usr/local/bin/usign
+        key: usign-${{ inputs.ref }}-${{ runner.os }}
+
+    - name: Install build dependencies
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y build-essential cmake
+
+    - name: Checkout usign
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: openwrt/usign
+        path: usign
+        fetch-depth: 1
+        ref: ${{ inputs.ref }}
+
+    - name: Compile usign
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      working-directory: usign
+      run: |
+        cmake -DCMAKE_BUILD_TYPE=Release .
+        make
+        sudo install -m 0755 usign /usr/local/bin/usign
+
+    - name: Verify
+      shell: bash
+      run: usign 2>&1 | head -n1 || true

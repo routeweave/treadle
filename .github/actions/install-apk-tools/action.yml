@@ -1,0 +1,77 @@
+name: Install apk-tools
+description: >
+  Installs apk-tools 3.x (`apk` binary, providing `apk mkpkg`) into
+  /usr/local/bin. The pinned upstream commit is cached, so subsequent
+  runs skip the ~2-minute meson/ninja build.
+
+inputs:
+  ref:
+    description: alpinelinux/apk-tools commit ref to build (pin for reproducibility)
+    required: false
+    default: b5a31c0d865342ad80be10d68f1bb3d3ad9b0866
+
+runs:
+  using: composite
+  steps:
+    - name: Cache apk binary
+      id: cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: /usr/local/bin/apk
+        key: apk-tools-${{ inputs.ref }}-${{ runner.os }}
+
+    - name: Install build dependencies
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo rm -rf /var/lib/man-db/auto-update
+        sudo apt-get update -qq
+        sudo apt-get install -y build-essential fakeroot libssl-dev meson ninja-build
+
+    - name: Checkout apk-tools
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: alpinelinux/apk-tools
+        path: apk-tools
+        fetch-depth: 1
+        ref: ${{ inputs.ref }}
+
+    - name: Compile apk-tools
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      working-directory: apk-tools
+      run: |
+        meson setup build \
+          -Db_lto=true \
+          -Dcompressed-help=false \
+          -Ddocs=disabled \
+          -Dhelp=disabled \
+          -Dlua_version=none \
+          -Ddefault_library=static \
+          -Durl_backend=wget \
+          -Dzstd=false \
+          -Dpython=disabled \
+          -Dtests=disabled \
+          -Dcrypto_backend=openssl
+        ninja -C build
+        sudo meson install -C build --strip
+
+    - name: Ensure runtime deps (cache-hit path)
+      if: steps.cache.outputs.cache-hit == 'true'
+      shell: bash
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        # The compiled apk binary is statically linked for libapk but still
+        # needs fakeroot at package-build time.
+        if ! command -v fakeroot >/dev/null; then
+          sudo apt-get update -qq
+          sudo apt-get install -y fakeroot
+        fi
+
+    - name: Verify
+      shell: bash
+      run: apk --version

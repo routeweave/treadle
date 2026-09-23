@@ -1,0 +1,144 @@
+name: Release
+
+# Releases are triggered by a v* tag, not by merges to main. The tag can be
+# pushed from git (`git push origin v0.1.0`) or created together with the
+# release in the GitHub UI — this workflow handles both: it creates the
+# release when only the tag exists, or uploads the built packages to a
+# release already created in the UI. Assets stay immutable: a re-run that
+# would overwrite an existing asset fails instead of clobbering it.
+#
+# The .apk is signed here with the feed key, so the release asset and the
+# package the feed serves are the same bytes with the same checksum.
+#
+# Tag format (see docs/versioning.md):
+#   v0.1.0       — normal release; PKG_RELEASE defaults to 1
+#   v0.1.0-r2    — packaging-only re-release of the same source (rare)
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write   # create the GitHub release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # No fetch-depth: 0 — TREADLE_VERSION is parsed from the tag and
+        # package.sh skips its git block when TREADLE_VERSION is set.
+
+      - name: Install apk-tools
+        uses: ./.github/actions/install-apk-tools
+
+      - name: Parse tag
+        id: ver
+        run: |
+          TAG="${GITHUB_REF_NAME}"           # v0.1.0 or v0.1.0-r2
+          STRIPPED="${TAG#v}"
+          case "$STRIPPED" in
+            *-r*) VERSION="${STRIPPED%-r*}"; RELEASE="${STRIPPED##*-r}" ;;
+            *)    VERSION="$STRIPPED";       RELEASE="1" ;;
+          esac
+          echo "tag=${TAG}"         >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "release=${RELEASE}" >> "$GITHUB_OUTPUT"
+          echo "Building release ${TAG} (version=${VERSION} release=${RELEASE})"
+
+      # The Makefile is authoritative for the version on every build path;
+      # the tag is the release *decision*, not a second place to declare a
+      # version. A mismatch is a mistake in one of the two, and guessing
+      # which would be worse than stopping.
+      - name: Verify tag matches Makefile
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          RELEASE: ${{ steps.ver.outputs.release }}
+        run: |
+          mk_var() {
+            awk -F':=' -v key="$1" \
+              '$1 == key { sub(/^[ \t]+/, "", $2); sub(/[ \t]+$/, "", $2); print $2; exit }' \
+              Makefile
+          }
+          MK_VERSION=$(mk_var PKG_VERSION)
+          MK_RELEASE=$(mk_var PKG_RELEASE)
+          echo "tag:      version=${VERSION} release=${RELEASE}"
+          echo "Makefile: version=${MK_VERSION} release=${MK_RELEASE}"
+          fail=0
+          [ "$MK_VERSION" = "$VERSION" ] || { echo "::error::Makefile PKG_VERSION is '${MK_VERSION}' but tag says '${VERSION}'"; fail=1; }
+          [ "$MK_RELEASE" = "$RELEASE" ] || { echo "::error::Makefile PKG_RELEASE is '${MK_RELEASE}' but tag says '${RELEASE}'"; fail=1; }
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::Update the Makefile to match the tag (or retag), then re-run."
+            exit 1
+          fi
+          echo "Makefile and tag agree."
+
+      - name: Build packages
+        env:
+          TREADLE_VERSION: ${{ steps.ver.outputs.version }}
+          TREADLE_RELEASE: ${{ steps.ver.outputs.release }}
+        run: scripts/package.sh
+
+      - name: Check version and staged tree
+        env:
+          FULL_VERSION: ${{ steps.ver.outputs.version }}-r${{ steps.ver.outputs.release }}
+        run: |
+          scripts/version-check.sh "$FULL_VERSION"
+          sudo apt-get install -y -qq lua5.1
+          sh scripts/check-stage.sh
+
+      # --allow-untrusted: the runner has no /etc/apk/keys, so apk cannot
+      # verify the signature it is itself applying. Routers verify it.
+      - name: Sign the apk with the feed key
+        env:
+          APK_SIGN_KEY: ${{ secrets.APK_SIGN_KEY }}
+        run: |
+          [ -n "$APK_SIGN_KEY" ] || { echo "::error::APK_SIGN_KEY secret is empty"; exit 1; }
+          install -d -m 700 "$RUNNER_TEMP/keys"
+          printf '%s\n' "$APK_SIGN_KEY" > "$RUNNER_TEMP/keys/apk.ec"
+          chmod 600 "$RUNNER_TEMP/keys/apk.ec"
+          ( cd dist && apk --allow-untrusted adbsign --sign-key "$RUNNER_TEMP/keys/apk.ec" ./*.apk )
+          rm -rf "$RUNNER_TEMP/keys"
+          for f in dist/*.apk; do sha256sum "$f" | awk '{print $1}' > "$f.sha256"; done
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          RELEASE: ${{ steps.ver.outputs.release }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Created from the GitHub UI together with the tag: attach the
+            # packages. Without --clobber a genuine re-run errors, so
+            # published bytes stay immutable. UI-authored notes are kept.
+            echo "Release $TAG exists — uploading assets to it"
+            gh release upload "$TAG" \
+              dist/*.apk dist/*.apk.sha256 \
+              dist/*.ipk dist/*.ipk.sha256
+            gh release edit "$TAG" --latest
+          else
+            echo "Release $TAG does not exist — creating it"
+            NOTES_FILE=$(mktemp)
+            DL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+            # GitHub's own "What's Changed" list first, then the install
+            # commands. A first release has nothing to diff against, so
+            # fall back to a bare header rather than lose the commands.
+            CHANGELOG=$(gh api -X POST \
+              "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+              -f tag_name="$TAG" --jq .body 2>/dev/null) || CHANGELOG=""
+            [ -n "$CHANGELOG" ] || CHANGELOG="Release $TAG"
+            printf '%s\n' "$CHANGELOG" | sh scripts/release-notes.sh \
+              "${DL}/luci-app-treadle-${VERSION}-r${RELEASE}.apk" \
+              "${DL}/luci-app-treadle_${VERSION}-r${RELEASE}_all.ipk" \
+              > "$NOTES_FILE"
+            gh release create "$TAG" \
+              dist/*.apk dist/*.apk.sha256 \
+              dist/*.ipk dist/*.ipk.sha256 \
+              --title "$TAG" \
+              --notes-file "$NOTES_FILE" \
+              --latest
+          fi

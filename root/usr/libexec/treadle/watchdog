@@ -1,0 +1,56 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 RouteWeave
+#
+# treadle watchdog — cron-driven recovery for sing-box.
+#
+# procd respawns a crashed sing-box, but after a burst of fast crashes it
+# hits its respawn retry limit and gives up: the instance stays down while
+# the TPROXY firewall rules and the dnsmasq drop-in remain in place, which
+# blackholes the whole LAN — with no recovery and only procd's own syslog
+# line to show for it. Run every few minutes by cron, this script detects
+# the "enabled but not running" state, logs it, and re-arms the service
+# with a fresh start, which hands procd a new instance and resets its
+# respawn counter. A genuinely broken sing-box is thus retried at cron
+# cadence rather than giving up forever.
+
+. /lib/functions.sh
+. /usr/share/libubox/jshn.sh
+
+config_load treadle
+config_get_bool enabled global enabled 0
+
+# Nothing to watch when the service is intentionally stopped.
+# shellcheck disable=SC2154  # set by config_get_bool
+[ "$enabled" = "1" ] || exit 0
+
+# A transient pause (Status page Stop button) writes /var/run/treadle.paused
+# and stops the service without flipping the persistent `enabled` flag. Skip
+# re-arming while paused — otherwise this watchdog would undo the user's
+# action within 5 minutes. The marker is on tmpfs, so a reboot clears it
+# and an enabled-but-paused service resumes naturally.
+[ -e /var/run/treadle.paused ] && exit 0
+
+# procd's own view, scoped to the named `singbox` instance. The treadle
+# service also carries `active_watch` when clash API is enabled, so we
+# must walk the JSON to the specific instance — ubus's `instance`
+# parameter is accepted-but-ignored on some procd versions (the reply
+# still includes every instance), so a substring grep for
+# `"running": true` would happily match the watcher's status and let
+# the watchdog believe sing-box is alive when only the watcher is.
+# That's the LAN-blackhole this watchdog exists to recover from.
+ubus_out=$(ubus call service list '{"name":"treadle"}' 2>/dev/null)
+running=
+if [ -n "$ubus_out" ]; then
+	json_load "$ubus_out"
+	if json_select treadle >/dev/null 2>&1 && \
+	   json_select instances >/dev/null 2>&1 && \
+	   json_select singbox >/dev/null 2>&1; then
+		json_get_var running running
+	fi
+fi
+[ "$running" = "1" ] && exit 0
+
+logger -p daemon.err -t treadle \
+	"watchdog: sing-box is enabled but not running — re-arming the service"
+/etc/init.d/treadle start >/dev/null 2>&1

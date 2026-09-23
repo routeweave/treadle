@@ -1,0 +1,447 @@
+#!/usr/bin/env lua
+-- SPDX-License-Identifier: GPL-3.0-only
+-- Copyright (C) 2026 RouteWeave
+--
+-- Background runner for the Nodes panel's latency tests (per-row Test,
+-- "Test all", and the per-subscription batch).
+--
+-- luci.treadle's test_all_start RPC forks this script (no stdin/stdout/stderr
+-- attached) so it survives the parent rpcd worker's exit. The script then:
+--
+--   1. Builds an ephemeral probe config (`build-config --probe`) containing
+--      every concrete node Treadle knows about — manual + all subscriptions —
+--      with a loopback clash API on 127.0.0.1:9091 and nothing else, and
+--      starts a second, short-lived sing-box instance from it. The running
+--      (production) config stays lean: it no longer carries unreferenced
+--      nodes just to make them testable.
+--   2. Probes each requested tag via /proxies/<tag>/delay on the probe
+--      instance, in parallel batches of CONCURRENCY uclient-fetch processes
+--      (shell-forked & + wait).
+--   3. Writes results into /var/etc/treadle/latency.json after each batch,
+--      and updates /var/etc/treadle/.test-all-status with progress, so the
+--      UI's poll sees results land batch by batch.
+--   4. Tears the probe instance down, then sets status.running=false plus
+--      tested/errors counts.
+--
+-- The probe instance is NOT procd-managed — it is owned by this runner,
+-- which starts it, records its pid, and kills it on every exit path. The
+-- "always go through procd" rule applies to the production sing-box
+-- service only. A runner killed with SIGKILL can leave the instance
+-- behind; the next run reclaims it via the pidfile (with a /proc/cmdline
+-- identity check so a recycled pid is never killed by mistake).
+--
+-- The earlier implementation probed the LIVE instance's clash API, which
+-- required the `include_all_nodes` flag to bloat the running config with
+-- every subscription node. Before that, it called /group/<tag>/delay as a
+-- single big HTTP call — sing-box's internal probe concurrency for that
+-- endpoint is capped, and on a real config with ~100 unreachable nodes the
+-- batch took 4+ minutes. Per-tag probes with our own concurrency knob
+-- bring the wall clock down to ~one minute for the same set, with the
+-- bonus that cells fill in progressively rather than all at once.
+
+local jsonc = require "luci.jsonc"
+local lib   = dofile("/usr/libexec/treadle/treadlelib.lua")
+local read_file  = lib.read_file
+local url_encode = lib.url_encode
+
+local STATUS  = "/var/etc/treadle/.test-all-status"
+local LATENCY = "/var/etc/treadle/latency.json"
+local TMPDIR  = "/tmp/treadle-latency-pending"
+
+-- Probe instance plumbing. Host/port and config path are shared with
+-- build-config through treadlelib so the two sides cannot drift.
+local SINGBOX       = "/usr/bin/sing-box"
+local BUILD_CONFIG  = "/usr/libexec/treadle/build-config"
+local PROBE_HOST    = lib.PROBE_CLASH_HOST
+local PROBE_CONFIG  = lib.PROBE_CONFIG_PATH
+local PROBE_PIDFILE = "/var/etc/treadle/.sing-box-probe.pid"
+local PROBE_LOG     = "/var/etc/treadle/sing-box-probe.log"
+local PROBE_START_TIMEOUT_S = 15   -- readiness wait for the probe instance
+
+local CONCURRENCY      = 16            -- parallel uclient-fetch processes
+-- Per-probe budget (clash query param) and the uclient-fetch wall clock
+-- around it. The two move together: the fetch must outlive the probe, or
+-- it gives up first and a perfectly good node is recorded as a timeout
+-- with no status to explain it. 3000/5 was too tight — nodes measuring
+-- ~1.7 s idle (distant anytls hops) cleared it alone but not against the
+-- CONCURRENCY-way TLS handshake contention of a real batch, so they
+-- flapped between a latency and "timeout" run to run.
+--
+-- The budget must also clear sing-box's own TCP dial timeout (~5 s), or
+-- the two race and the *label* becomes nondeterministic. A node whose
+-- connect is blackholed fails the dial at 5.00 s; the clash API reports
+-- that as 503 ("connect failed"). At a 5000 ms budget the probe deadline
+-- expires at the same instant, and whichever fires first decides the
+-- status — measured on a blocked endpoint, 9 sequential probes returned
+-- 503 every time, while the same 9 run CONCURRENCY-way returned 504
+-- ("timeout") for 6 of them. Same failure, two labels, depending only on
+-- scheduling. 8000/12 puts the budget clear of the dial timeout so the
+-- dial error always wins and a blackholed endpoint reads "connect
+-- failed", which is the actionable one: it says the endpoint is
+-- unreachable from here, not that the node is slow. Dead nodes cost no
+-- extra wall clock either way — they still fail at the 5 s dial, not at
+-- the budget.
+local PROBE_TIMEOUT_MS = 8000          -- per-probe (clash query param)
+local REQ_TIMEOUT_S    = 12            -- uclient-fetch wall clock per probe
+-- Must be https://. sing-box's clash API discards a plaintext test URL
+-- outright — `if strings.HasPrefix(url, "http://") { url = "" }` in
+-- getProxyDelay — and falls back to its own built-in default, so an
+-- http:// value here was silently ignored on every supported version.
+local TEST_URL         = "https://www.gstatic.com/generate_204"
+
+local function shell_quote(s)
+	return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
+end
+
+local function log_syslog(prio, msg)
+	os.execute("logger -t treadle -p daemon." .. prio .. " "
+		.. shell_quote("test-all: " .. msg) .. " 2>/dev/null")
+end
+
+-- Atomic 0600 write into a 0700 directory — the status/latency files sit
+-- next to the probe config, which carries every node's credentials.
+local write_atomic = lib.write_secure
+
+local function update_status(state)
+	state.updated_at = os.time()
+	write_atomic(STATUS, jsonc.stringify(state))
+end
+
+-- ─── probe instance lifecycle ────────────────────────────────────────────
+
+local probe_pid = nil
+
+-- True when `pid` is alive AND is our probe instance — the cmdline must
+-- mention the probe config path, so a pid recycled by an unrelated process
+-- (or by the production sing-box) is never signalled.
+local function is_probe_process(pid)
+	return os.execute("[ -r /proc/" .. pid .. "/cmdline ] && tr '\\0' ' ' "
+		.. "</proc/" .. pid .. "/cmdline | grep -q "
+		.. shell_quote(PROBE_CONFIG)) == 0
+end
+
+-- Stop the probe instance (current run's, or a stale one left by a
+-- SIGKILL'd previous runner) and remove its on-disk traces. The probe
+-- config holds every node's credentials, so it never outlives the run.
+local function stop_probe()
+	local pid = probe_pid
+	if not pid then
+		local raw = read_file(PROBE_PIDFILE)
+		pid = raw and tonumber(raw:match("%d+")) or nil
+	end
+	if pid and is_probe_process(pid) then
+		os.execute("kill " .. pid .. " 2>/dev/null")
+		for _ = 1, 3 do
+			if os.execute("kill -0 " .. pid .. " 2>/dev/null") ~= 0 then break end
+			os.execute("sleep 1")
+		end
+		if is_probe_process(pid) then
+			os.execute("kill -9 " .. pid .. " 2>/dev/null")
+		end
+	end
+	probe_pid = nil
+	os.remove(PROBE_PIDFILE)
+	os.remove(PROBE_CONFIG)
+end
+
+-- Cooperative lock so concurrent runners cannot race on STATUS / LATENCY /
+-- TMPDIR / the probe instance. OpenWrt's `lock` holds the lock via a
+-- backgrounded helper process that OUTLIVES this runner — it is NOT freed
+-- by the runner exiting, only by `lock -u` (or a reboot, since /var/lock is
+-- tmpfs). So every exit path after we acquire it must call release_lock();
+-- a leaked lock wedges every future run (each one fails `lock -n` and exits).
+-- bail() is the easy path to miss: a transient probe-startup failure that
+-- left the lock held would freeze the hourly auto-test indefinitely.
+local LOCK = "/var/lock/treadle-test-all.lock"
+local function release_lock() os.execute("lock -u " .. LOCK .. " 2>/dev/null") end
+
+local function bail(msg)
+	stop_probe()
+	release_lock()
+	log_syslog("err", msg)
+	update_status({
+		running     = false,
+		error       = msg,
+		finished_at = os.time(),
+	})
+	os.exit(1)
+end
+
+os.execute("mkdir -p /var/lock 2>/dev/null")
+if os.execute("lock -n " .. LOCK .. " 2>/dev/null") ~= 0 then
+	-- Could not acquire: another runner owns it. We never held it, so do
+	-- NOT release — just step aside.
+	os.exit(0)
+end
+
+-- ─── start ───────────────────────────────────────────────────────────────
+local started_at = os.time()
+update_status({ running = true, started_at = started_at })
+
+-- ─── decide which tags to probe ──────────────────────────────────────────
+-- If luci.treadle's test_all_start was called with a tag list (the per-row
+-- Test button and the subscription-scoped Test all), the RPC wrote those
+-- tags to TAG_FILE one per line. We use that list verbatim. Otherwise we
+-- probe every concrete node in the probe config (the global Test all
+-- path) — enumerated from the config itself after it is built below.
+local TAG_FILE = "/var/etc/treadle/.test-all-tags"
+local tags = {}
+local raw_tag_file = read_file(TAG_FILE)
+if raw_tag_file and raw_tag_file ~= "" then
+	for line in raw_tag_file:gmatch("[^\n]+") do
+		if line ~= "" then tags[#tags + 1] = line end
+	end
+	os.remove(TAG_FILE)
+end
+
+-- ─── build the probe config and start the probe instance ────────────────
+-- Reclaim any stale instance first: its pidfile (if any) points at a
+-- process whose cmdline we verify before killing.
+stop_probe()
+
+local BUILD_ERR = "/var/etc/treadle/.probe-build.stderr"
+local build_rc = os.execute(BUILD_CONFIG .. " --probe " .. shell_quote(PROBE_CONFIG)
+	.. " 2>" .. shell_quote(BUILD_ERR))
+-- Forward build warnings (reserved-tag skips, corrupt sub files, …) to
+-- syslog, same place the production build's stderr ends up.
+os.execute("[ -s " .. shell_quote(BUILD_ERR) .. " ] && logger -t treadle -p daemon.warn <"
+	.. shell_quote(BUILD_ERR) .. " 2>/dev/null")
+os.remove(BUILD_ERR)
+if build_rc ~= 0 then
+	bail("failed to build probe config")
+end
+
+local probe_handle = io.popen(SINGBOX .. " run -c " .. shell_quote(PROBE_CONFIG)
+	.. " >" .. shell_quote(PROBE_LOG) .. " 2>&1 </dev/null & echo $!")
+if probe_handle then
+	probe_pid = tonumber((probe_handle:read("*a") or ""):match("%d+")) or nil
+	probe_handle:close()
+end
+if not probe_pid then
+	bail("cannot start probe sing-box instance")
+end
+write_atomic(PROBE_PIDFILE, tostring(probe_pid))
+
+-- Readiness: the clash API answers /version as soon as sing-box is up.
+-- Give up early if the process already died (config rejected, port taken)
+-- rather than sitting out the full window.
+local ready = false
+for _ = 1, PROBE_START_TIMEOUT_S do
+	local vf = io.popen("uclient-fetch -qO- --timeout=2 'http://" .. PROBE_HOST
+		.. "/version' 2>/dev/null")
+	local vbody = vf and (vf:read("*a") or "") or ""
+	if vf then vf:close() end
+	if vbody ~= "" then ready = true break end
+	if os.execute("kill -0 " .. probe_pid .. " 2>/dev/null") ~= 0 then break end
+	os.execute("sleep 1")
+end
+if not ready then
+	os.execute("tail -n 5 " .. shell_quote(PROBE_LOG)
+		.. " 2>/dev/null | logger -t treadle -p daemon.err")
+	bail("probe sing-box instance failed to start (see logread)")
+end
+
+-- ─── enumerate tags when no explicit list was given ──────────────────────
+-- The probe config is the authoritative node universe: every entry in
+-- `outbounds` except the builtin direct, plus every endpoint (WireGuard).
+if #tags == 0 then
+	local craw = read_file(PROBE_CONFIG)
+	local cok, cfg = pcall(jsonc.parse, craw or "")
+	if not cok or type(cfg) ~= "table" then
+		bail("cannot parse probe config")
+	end
+	if type(cfg.outbounds) == "table" then
+		for _, ob in ipairs(cfg.outbounds) do
+			if type(ob) == "table" and ob.tag and ob.tag ~= "direct" then
+				tags[#tags + 1] = ob.tag
+			end
+		end
+	end
+	if type(cfg.endpoints) == "table" then
+		for _, ep in ipairs(cfg.endpoints) do
+			if type(ep) == "table" and ep.tag then
+				tags[#tags + 1] = ep.tag
+			end
+		end
+	end
+end
+local total = #tags
+if total == 0 then
+	stop_probe()
+	release_lock()
+	update_status({
+		running     = false,
+		started_at  = started_at,
+		finished_at = os.time(),
+		tested      = 0,
+		errors      = 0,
+	})
+	os.exit(0)
+end
+
+-- ─── prepare workspace ───────────────────────────────────────────────────
+os.execute("rm -rf '" .. TMPDIR .. "' 2>/dev/null")
+os.execute("mkdir -p '" .. TMPDIR .. "' 2>/dev/null")
+
+-- URL list for the shell batch script. Format: "<idx>\t<url>\n". We do the
+-- URL encoding in Lua because shell-side encoding of arbitrary Unicode
+-- (emoji-laden tags like 🇭🇰 HK1) is fragile across awk variants.
+local urls_path = TMPDIR .. "/urls.txt"
+local uf = io.open(urls_path, "w")
+if not uf then bail("cannot write urls file") end
+for i, tag in ipairs(tags) do
+	local enc = url_encode(tag)
+	local url = "http://" .. PROBE_HOST .. "/proxies/" .. enc
+		.. "/delay?timeout=" .. tostring(PROBE_TIMEOUT_MS)
+		.. "&url=" .. url_encode(TEST_URL)
+	uf:write(string.format("%d\t%s\n", i, url))
+end
+uf:close()
+
+update_status({
+	running    = true,
+	started_at = started_at,
+	total      = total,
+	done       = 0,
+})
+
+-- ─── read the existing cache so per-row results survive a batch run ─────
+local cache = { results = {} }
+local raw_cache = read_file(LATENCY)
+if raw_cache and raw_cache ~= "" then
+	local cok, cparsed = pcall(jsonc.parse, raw_cache)
+	if cok and type(cparsed) == "table" then
+		cache = cparsed
+		if type(cache.results) ~= "table" then cache.results = {} end
+	end
+end
+
+-- ─── classify a probe that produced no body ─────────────────────────────
+-- uclient-fetch drops the response body on any non-2xx status, so the
+-- clash API's own JSON message never reaches us — the status line it
+-- prints on stderr (captured per probe, together with its exit code, by
+-- the batch script below) is the only evidence of what went wrong.
+-- Reporting all of it as "timeout" hid two very different failures: a
+-- node that is merely slow, and a tag the probe instance has never heard
+-- of.
+--   rc 8 → HTTP error status. 404 means the tag is absent from the probe
+--          config — a node removed or renamed after the UI rendered.
+--          504 is the clash API's own probe timeout, the honest one.
+--          503 is `err != nil || delay == 0` in getProxyDelay: the probe
+--          errored *before* the budget elapsed — a refused dial, a
+--          rejected TLS/REALITY handshake, a server that answered the
+--          proxy protocol with something else. Raising the timeout can
+--          never turn it into a latency, so it must not read like one.
+--          The clash API's body is a fixed generic string, so the status
+--          code is genuinely all we know; "connect failed" names what
+--          the user can act on, and at 14 characters it is the longest
+--          label badges.js's formatLatency shows without truncating.
+--   rc 4 → no answer at all: either REQ_TIMEOUT_S elapsed before
+--          sing-box replied (still a timeout, just ours) or the loopback
+--          clash API was unreachable.
+local function fetch_error(idx)
+	local err = read_file(TMPDIR .. "/e_" .. tostring(idx)) or ""
+	local rc     = tonumber(err:match("rc=(%d+)"))
+	local status = tonumber(err:match("HTTP error (%d+)"))
+	if status == 404 then return "unknown node" end
+	if status == 504 then return "timeout" end
+	if status == 503 then return "connect failed" end
+	if status       then return "HTTP " .. status end
+	if rc == 4 and err:find("timed out") then return "timeout" end
+	return "probe failed"
+end
+
+-- ─── parse one probe response, return a cache entry ─────────────────────
+local function parse_result(idx)
+	local entry = { tested_at = os.time() }
+	local content = read_file(TMPDIR .. "/r_" .. tostring(idx))
+	if not content or content == "" then
+		entry.error = fetch_error(idx)
+		return entry, "error"
+	end
+	local pok, p = pcall(jsonc.parse, content)
+	if not pok or type(p) ~= "table" then
+		entry.error = "invalid response"
+		return entry, "error"
+	end
+	if type(p.delay) == "number" then
+		entry.delay_ms = p.delay
+		return entry, "ok"
+	end
+	if type(p.message) == "string" and p.message ~= "" then
+		entry.error = p.message
+		return entry, "error"
+	end
+	entry.error = "unknown response"
+	return entry, "error"
+end
+
+-- ─── run probes in parallel batches ─────────────────────────────────────
+-- One shell invocation per batch: spawn CONCURRENCY backgrounded
+-- uclient-fetch processes from inside one shell, then `wait $PIDS` joins
+-- them. The shell loop reads only this batch's slice of urls.txt via
+-- awk's NR range — Lua passes the slice bounds as start/end variables.
+local batch_script = TMPDIR .. "/run-batch.sh"
+local tested, errors = 0, 0
+local i = 1
+while i <= total do
+	local batch_end = math.min(i + CONCURRENCY - 1, total)
+	local bs = io.open(batch_script, "w")
+	if not bs then bail("cannot write batch script") end
+	bs:write(string.format([[#!/bin/sh
+# Slice this batch out of urls.txt into a side file so the while-read
+# loop can run in the *current* shell (input redirection, not a pipe).
+# A `awk | while` pipeline puts the while in a subshell — PIDS would
+# vanish when the subshell exits and `wait $PIDS` would join nothing,
+# leaving probes running after the script returned.
+TMPDIR=%s
+REQ_TIMEOUT=%d
+sed -n '%d,%dp' "$TMPDIR/urls.txt" > "$TMPDIR/batch.txt"
+PIDS=""
+while IFS=$(printf '\t') read -r idx url; do
+	# stderr and exit code land in one per-probe file: the status line
+	# ("HTTP error 404") plus rc= are all fetch_error has to work with,
+	# since the body is gone on any non-2xx.
+	( uclient-fetch --timeout=$REQ_TIMEOUT -O "$TMPDIR/r_$idx" "$url" 2>"$TMPDIR/e_$idx"
+	  echo "rc=$?" >> "$TMPDIR/e_$idx" ) &
+	PIDS="$PIDS $!"
+done < "$TMPDIR/batch.txt"
+[ -n "$PIDS" ] && wait $PIDS
+]], shell_quote(TMPDIR), REQ_TIMEOUT_S, i, batch_end))
+	bs:close()
+	os.execute("sh '" .. batch_script .. "'")
+
+	-- Merge this batch's results into the cache and persist; the UI
+	-- poll picks them up immediately so cells fill in progressively.
+	for idx = i, batch_end do
+		local tag = tags[idx]
+		local entry, kind = parse_result(idx)
+		cache.results[tag] = entry
+		if kind == "ok" then tested = tested + 1
+		else errors = errors + 1 end
+	end
+	write_atomic(LATENCY, jsonc.stringify(cache))
+	update_status({
+		running    = true,
+		started_at = started_at,
+		total      = total,
+		done       = batch_end,
+	})
+
+	i = batch_end + 1
+end
+
+-- ─── done ────────────────────────────────────────────────────────────────
+stop_probe()
+update_status({
+	running     = false,
+	started_at  = started_at,
+	finished_at = os.time(),
+	tested      = tested,
+	errors      = errors,
+	total       = total,
+})
+
+-- Cleanup
+os.execute("rm -rf '" .. TMPDIR .. "' 2>/dev/null")
+release_lock()

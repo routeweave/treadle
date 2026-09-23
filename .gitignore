@@ -1,0 +1,10 @@
+dist/
+.build/
+.feed-keys/
+public/
+
+# AI-agent working notes -- CLAUDE.md and the decision log -- are kept
+# privately elsewhere and symlinked in locally. Intentionally not named
+# or referenced anywhere else in this repo.
+/CLAUDE.md
+/docs/decisions

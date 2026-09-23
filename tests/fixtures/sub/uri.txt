@@ -1,0 +1,9 @@
+vless://00000000-0000-0000-0000-000000000000@example.com:443?security=tls&sni=example.com&type=ws&path=%2Fws&host=example.com#HK-01
+vless://00000000-0000-0000-0000-000000000000@example.net:443?security=reality&sni=example.org&fp=chrome&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=01&flow=xtls-rprx-vision#HK-02
+vmess://eyJ2IjoiMiIsInBzIjoiSEstMDMiLCJhZGQiOiJleGFtcGxlLmNvbSIsInBvcnQiOiI0NDMiLCJpZCI6IjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMCIsImFpZCI6IjAiLCJzY3kiOiJhdXRvIiwibmV0Ijoid3MiLCJ0eXBlIjoibm9uZSIsImhvc3QiOiJleGFtcGxlLmNvbSIsInBhdGgiOiIvd3MiLCJ0bHMiOiJ0bHMiLCJzbmkiOiJleGFtcGxlLmNvbSJ9
+trojan://%3Cpassword%3E@example.org:443?sni=example.org&type=grpc&serviceName=grpc#HK-04
+ss://YWVzLTEyOC1nY206PHBhc3N3b3JkPg@203.0.113.10:8388#HK-05
+hysteria2://%3Cpassword%3E@203.0.113.11:443?sni=example.com&obfs=salamander&obfs-password=%3Cpassword%3E#HK-06
+tuic://00000000-0000-0000-0000-000000000000:%3Cpassword%3E@203.0.113.12:443?sni=example.com&congestion_control=bbr&alpn=h3#HK-07
+anytls://%3Cpassword%3E@example.net:443?sni=example.net#HK-08
+socks5://user:%3Cpassword%3E@203.0.113.13:1080#HK-09

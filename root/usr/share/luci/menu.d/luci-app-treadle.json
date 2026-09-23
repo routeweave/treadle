@@ -1,0 +1,13 @@
+{
+	"admin/services/treadle": {
+		"title": "Treadle",
+		"order": 60,
+		"action": {
+			"type": "view",
+			"path": "treadle/main"
+		},
+		"depends": {
+			"acl": [ "luci-app-treadle" ]
+		}
+	}
+}

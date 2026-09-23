@@ -1,0 +1,2232 @@
+#!/usr/bin/env lua
+-- SPDX-License-Identifier: GPL-3.0-only
+-- Copyright (C) 2026 RouteWeave
+
+-- build-config: assembles the sing-box JSON config from Treadle's UCI state
+-- and per-subscription node files in /etc/treadle/nodes/, then writes it to
+-- the path passed as $1 (falling back to treadle.global.config_path, then
+-- /var/etc/treadle/sing-box.json).
+--
+-- This is the single piece that translates Treadle's source-of-truth (UCI +
+-- /etc/treadle/nodes/*.json) into something sing-box can consume. Procd's
+-- start_service calls this script before exec'ing sing-box, the rpcd
+-- get_config method calls it to build a preview, and the test-all-runner
+-- calls it with --probe to build the ephemeral latency-test instance's
+-- config (see build_probe_config below).
+--
+-- A user-merge slot at /etc/treadle/extra.json (top-level JSON object) is
+-- shallow-merged into the generated config so power users can override or
+-- inject keys without having to re-implement the whole pipeline.
+
+local jsonc_ok, jsonc = pcall(require, "luci.jsonc")
+if not jsonc_ok then
+	io.stderr:write("treadle build-config: luci.jsonc not available\n")
+	os.exit(1)
+end
+
+local uci_ok, uci_mod = pcall(require, "uci")
+if not uci_ok then
+	io.stderr:write("treadle build-config: uci binding not available\n")
+	os.exit(1)
+end
+
+local lib_ok, lib = pcall(dofile, "/usr/libexec/treadle/treadlelib.lua")
+if not lib_ok then
+	io.stderr:write("treadle build-config: treadlelib.lua not available\n")
+	os.exit(1)
+end
+
+local EXTRA_PATH     = "/etc/treadle/extra.json"
+local DNSMASQ_DROPIN = "/var/etc/treadle/dnsmasq-managed.conf"
+-- Loopback DNS listener port for managed DNS: build_inbounds opens the
+-- dns-in inbound here and build_dnsmasq_dropin points dnsmasq at it.
+local DNS_IN_PORT    = 5335
+-- Ephemeral latency-test instance (--probe mode): clash API host:port and
+-- default output path — shared with test-all-runner via treadlelib.
+local PROBE_CLASH_HOST  = lib.PROBE_CLASH_HOST
+local PROBE_CONFIG_PATH = lib.PROBE_CONFIG_PATH
+
+local read_file = lib.read_file
+
+local uci_list_or_string = lib.uci_list
+
+-- Atomic 0600 write; sing-box.json contains every node's credentials.
+local write_atomic = lib.write_secure
+
+-- ─── mode ────────────────────────────────────────────────────────────────
+--
+-- treadle.global.mode = "basic" | "advanced". "basic" hides Nodes / Routing /
+-- Settings in the UI and synthesises a small running config from
+-- treadle.basic + subscriptions only — manual nodes, treadle.rule entries and
+-- /etc/treadle/extra.json are kept on disk but not compiled in. An unset or
+-- unknown value reads as "basic", the shipped default.
+
+local BASIC_AUTO_TAG = "basic-auto"
+
+-- --preview / -n on the command line: pure-read mode for the get_config
+-- RPC. Suppresses the side effects (orphan node-file deletion in
+-- load_subscription_nodes, dnsmasq drop-in rewrite at end of main) so a
+-- read-only LuCI user invoking get_config cannot trigger file deletion or
+-- overwrite the dnsmasq drop-in on demand. Set in main() below.
+local PREVIEW_MODE = false
+-- --probe: build the ephemeral latency-test instance's config instead of
+-- the production one (build_probe_config below). Implies the same
+-- side-effect suppression as --preview. Set in main() below.
+local PROBE_MODE = false
+
+local function read_mode(c)
+	local m = c:get("treadle", "global", "mode")
+	if m == "basic" or m == "advanced" then return m end
+	return "basic"
+end
+
+-- The tag of the outbound traffic falls back to when no earlier rule matched.
+-- Used by build_dns to decide whether the `remote` DNS server is detoured
+-- through a proxy (so the lookup exits the same way the connection will) and
+-- whether the DNS `final` resolves via remote or local. Advanced reads it from
+-- treadle.routing.final_outbound; Basic derives it from treadle.basic.server via
+-- resolve_basic_members so a stale selection (subscription removed, node
+-- renamed) is filtered out before it can leak into route.final as a dangling
+-- tag — defined below load_subscription_nodes so it can do the resolution.
+local resolve_basic_members  -- forward declaration, defined after load_subscription_nodes
+
+local function compute_default_outbound(c)
+	if read_mode(c) == "basic" then
+		local members = resolve_basic_members(c)
+		if #members == 0 then return "direct" end
+		if #members == 1 then return members[1] end
+		return BASIC_AUTO_TAG
+	end
+	local fin = c:get("treadle", "routing", "final_outbound") or ""
+	if fin == "" then return "direct" end
+	return fin
+end
+
+-- ─── rule-sets ───────────────────────────────────────────────────────────
+--
+-- Routing rules reference sing-box `remote` rule-sets: sing-box downloads and
+-- refreshes each .srs itself, so build-config only constructs the download
+-- URL. A `ruleset` token is either "provider/name" (provider ∈ sagernet,
+-- loyalsoldier, metacubex) or a bare custom label resolved against the
+-- `customrs` registry. For a country, the user adds two ruleset conditions
+-- explicitly (e.g. sagernet/geoip-cn OR sagernet/geosite-cn).
+
+-- Construct the .srs download URL for a provider rule-set name. delivery
+-- picks GitHub raw or the jsDelivr CDN (for GitHub-blocked regions).
+local function provider_url(provider, delivery, name)
+	local jsd = (delivery == "jsdelivr")
+	if provider == "loyalsoldier" then
+		return jsd
+			and "https://cdn.jsdelivr.net/gh/Loyalsoldier/geoip@release/srs/" .. name .. ".srs"
+			or  "https://raw.githubusercontent.com/Loyalsoldier/geoip/release/srs/" .. name .. ".srs"
+	end
+	if provider == "metacubex" then
+		local cc = name:match("^geoip%-(.+)$")
+		if cc then
+			return jsd
+				and "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geoip/" .. cc .. ".srs"
+				or  "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geoip/" .. cc .. ".srs"
+		end
+		local gs = name:match("^geosite%-(.+)$") or name
+		return jsd
+			and "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/" .. gs .. ".srs"
+			or  "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/" .. gs .. ".srs"
+	end
+	-- sagernet — geoip and geosite live in separate repos
+	if name:match("^geoip%-") then
+		return jsd
+			and "https://cdn.jsdelivr.net/gh/SagerNet/sing-geoip@rule-set/" .. name .. ".srs"
+			or  "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/" .. name .. ".srs"
+	end
+	return jsd
+		and "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/" .. name .. ".srs"
+		or  "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/" .. name .. ".srs"
+end
+
+-- Resolve one routing `condition` UCI section. A ruleset condition's tokens
+-- become rule-set tags paired with a download URL; every other kind just
+-- carries its value list. Returns:
+--   kind, op       — condition type, and the operator linking it to the
+--                    previous condition ("and" | "or"; ignored on the first)
+--   values         — the condition's value list
+--   tags           — rule-set tags (ruleset only)
+--   geosite_tags   — subset of tags that carry domains (for DNS derivation)
+--   rs_meta        — { tag → { url, format } } for emitting remote rule_sets
+local function resolve_condition(cond, ctx)
+	local r = {
+		kind         = cond.kind or "",
+		op           = (cond.op == "and") and "and" or "or",
+		invert       = (cond.invert == "1"),
+		values       = uci_list_or_string(cond, "value"),
+		tags         = {},
+		geosite_tags = {},
+		rs_meta      = {}
+	}
+
+	if r.kind ~= "ruleset" then
+		return r
+	end
+
+	local seen = {}
+	local function add_tag(tag, url, fmt, is_geosite)
+		-- The tag is the rule-set's sing-box identifier; reject one that
+		-- could collide or escape into another path.
+		if not lib.safe_ruleset_tag(tag) then
+			io.stderr:write("treadle build-config: rule-set tag '" .. tostring(tag) ..
+				"' is unsafe; skipping\n")
+			return
+		end
+		if not seen[tag] then
+			seen[tag] = true
+			r.tags[#r.tags + 1] = tag
+			r.rs_meta[tag] = { url = url, format = fmt or "binary" }
+			if is_geosite then r.geosite_tags[#r.geosite_tags + 1] = tag end
+		end
+	end
+
+	for _, tok in ipairs(r.values) do
+		if tok ~= "" then
+			local provider, name = lib.split_provider_token(tok)
+			if provider then
+				add_tag(provider .. "-" .. name,
+					provider_url(provider, ctx.delivery, name),
+					"binary", name:find("geosite") ~= nil)
+			else
+				local cr = ctx.custom[tok]
+				if cr then
+					add_tag("custom-" .. tok, cr.url, cr.format, false)
+				else
+					io.stderr:write("treadle build-config: custom rule-set '" ..
+						tok .. "' has no registry URL; skipping\n")
+				end
+			end
+		end
+	end
+
+	return r
+end
+
+-- Custom rule-sets keyed by label, read once from the `customrs` registry:
+-- { label → { url, format } }. Provider rule-sets are always binary.
+local function load_custom_rulesets(c)
+	local m = {}
+	c:foreach("treadle", "customrs", function(s)
+		if s.label and s.label ~= "" and s.url and s.url ~= "" then
+			m[s.label] = {
+				url    = s.url,
+				format = (s.format == "source") and "source" or "binary"
+			}
+		end
+	end)
+	return m
+end
+
+-- Collect the enabled routing rules once, sorted by `order`, each paired with
+-- its ordered, resolved list of `condition` sections. build_route and
+-- build_dns both consume this list, so the rule/condition foreach passes, the
+-- sorts and the per-condition resolution run a single time per build.
+local function prepare_rules(c)
+	-- Basic mode synthesises its routing inside build_route from treadle.basic
+	-- and never reads treadle.rule, so the prepared list is empty. build_dns'
+	-- build_routing_dns_rules loop iterates this list and so produces no
+	-- per-rule DNS rules — exactly what Basic wants (the default outbound's
+	-- detour handles every proxied lookup via `remote`).
+	if read_mode(c) == "basic" then return {} end
+
+	local ctx = {
+		delivery = c:get("treadle", "global", "ruleset_delivery") or "github",
+		custom   = load_custom_rulesets(c)
+	}
+
+	local rows = {}
+	c:foreach("treadle", "rule", function(s)
+		if s.enabled ~= "0" then rows[#rows + 1] = s end
+	end)
+	table.sort(rows, function(a, b)
+		return (tonumber(a.order) or 0) < (tonumber(b.order) or 0)
+	end)
+
+	-- Conditions are child sections that reference their parent rule by name.
+	local conds_by_rule = {}
+	c:foreach("treadle", "condition", function(s)
+		local rname = s.rule
+		if rname and rname ~= "" then
+			local list = conds_by_rule[rname]
+			if not list then
+				list = {}
+				conds_by_rule[rname] = list
+			end
+			list[#list + 1] = s
+		end
+	end)
+
+	local prepared = {}
+	for _, s in ipairs(rows) do
+		local raw = conds_by_rule[s[".name"]] or {}
+		table.sort(raw, function(a, b)
+			return (tonumber(a.order) or 0) < (tonumber(b.order) or 0)
+		end)
+		local conditions = {}
+		for _, cs in ipairs(raw) do
+			conditions[#conditions + 1] = resolve_condition(cs, ctx)
+		end
+		prepared[#prepared + 1] = { section = s, conditions = conditions }
+	end
+	return prepared
+end
+
+-- ─── inbounds ────────────────────────────────────────────────────────────
+
+local function build_inbounds(c)
+	local inbounds = {}
+	local mode  = c:get("treadle", "inbounds", "mode") or "tproxy"
+	local inet6 = (c:get("treadle", "inbounds", "inet6") == "1")
+
+	if mode == "tproxy" or mode == "tproxy_mixed" then
+		inbounds[#inbounds + 1] = {
+			type        = "tproxy",
+			tag         = "tproxy-in",
+			listen      = inet6 and "::" or "0.0.0.0",
+			listen_port = tonumber((c:get("treadle", "inbounds", "tproxy_port"))) or 7895
+		}
+	end
+
+	if mode == "tun" then
+		-- sing-box 1.11 merged inet4_address/inet6_address into one `address`
+		-- list (the legacy fields are removed in 1.13); `address` works from
+		-- 1.10 on, so this is both backward- and forward-compatible.
+		local address = { c:get("treadle", "inbounds", "tun_address") or "172.19.0.1/30" }
+		if inet6 then address[#address + 1] = "fdfe:dcba:9876::1/126" end
+		local auto_route = c:get("treadle", "inbounds", "tun_auto_route") ~= "0"
+		inbounds[#inbounds + 1] = {
+			type          = "tun",
+			tag           = "tun-in",
+			address       = address,
+			mtu           = tonumber((c:get("treadle", "inbounds", "tun_mtu"))) or 9000,
+			auto_route    = auto_route,
+			-- auto_redirect drives forwarding and self-exclusion through fw4
+			-- nftables instead of the ip-rule capture auto_route alone uses.
+			-- Without it on an OpenWrt router, auto_route's
+			-- `from 0.0.0.0 iif lo` rule swallows sing-box's own outbound dial
+			-- to the proxy server back into the tun — a self-loop that times
+			-- out every connection. Requires auto_route, so it is gated on it.
+			auto_redirect = auto_route,
+			strict_route  = false,
+			stack         = c:get("treadle", "inbounds", "tun_stack") or "system"
+		}
+	end
+
+	if mode == "tproxy_mixed" then
+		inbounds[#inbounds + 1] = {
+			type        = "mixed",
+			tag         = "mixed-in",
+			listen      = c:get("treadle", "inbounds", "mixed_listen") or "127.0.0.1",
+			listen_port = tonumber((c:get("treadle", "inbounds", "mixed_port"))) or 2080
+		}
+	end
+
+	-- dns-in: loopback DNS listener for managed DNS. The dnsmasq drop-in
+	-- (build_dnsmasq_dropin) points dnsmasq at 127.0.0.1:DNS_IN_PORT; the
+	-- inbound-scoped hijack-dns route rule hands queries arriving here to
+	-- sing-box's resolver. Managed DNS is on unless explicitly disabled, so
+	-- configs predating the option keep it.
+	if c:get("treadle", "dns", "managed_dns") ~= "0" then
+		inbounds[#inbounds + 1] = {
+			type        = "direct",
+			tag         = "dns-in",
+			listen      = "127.0.0.1",
+			listen_port = DNS_IN_PORT
+		}
+	end
+
+	return inbounds
+end
+
+-- ─── helpers ─────────────────────────────────────────────────────────────
+
+-- Read the OpenWrt-configured local domain from /etc/config/dhcp's
+-- dnsmasq section. Returns nil when unset.
+local function detect_local_domain(c)
+	local domain
+	c:foreach("dhcp", "dnsmasq", function(s)
+		if not domain and type(s.domain) == "string" and s.domain ~= "" then
+			domain = s.domain
+		end
+	end)
+	return domain
+end
+
+-- Parse a DNS server URL into the typed form sing-box 1.12 expects.
+-- Accepted: bare IP/hostname (→ udp), udp://, tcp://, tls://, https://,
+-- quic://, h3:// — with optional :port, IPv6 brackets, and /path for HTTPS/H3.
+local function parse_dns_url(url)
+	if not url or url == "" then return nil end
+	url = url:match("^%s*(.-)%s*$")
+	if url == "" then return nil end
+
+	local scheme, rest = url:match("^([a-z0-9]+)://(.+)$")
+	if not scheme then
+		return { type = "udp", server = url }
+	end
+
+	local hostpart, path = rest:match("^([^/]+)(/.*)$")
+	if not hostpart then hostpart = rest end
+
+	local host, port
+	host, port = hostpart:match("^%[([^%]]+)%]:(%d+)$")
+	if not host then host = hostpart:match("^%[([^%]]+)%]$") end
+	if not host then host, port = hostpart:match("^(.-):(%d+)$") end
+	if not host then host = hostpart end
+
+	local s = { type = scheme, server = host }
+	if port then s.server_port = tonumber(port) end
+	if path and (scheme == "https" or scheme == "h3") then s.path = path end
+	return s
+end
+
+-- ─── outbounds (UCI manual nodes + /etc/treadle/nodes/*.json subs) ─────────
+
+-- Protocols sing-box carries over QUIC. Their TLS handshake is driven by
+-- sing-quic, which needs a real *crypto/tls.Config and gets it by calling
+-- Config.STDConfig(). The uTLS client config refuses that call outright —
+-- `func (c *UTLSClientConfig) STDConfig() { return nil, E.New("unsupported
+-- usage for uTLS") }` in sing-box common/tls/utls_client.go — so a QUIC
+-- outbound carrying a `tls.utls` block fails *every* dial with
+-- "unsupported usage for uTLS" and is dead weight in a urltest group.
+-- Verified on 25.12 / sing-box 1.13.18: the same hysteria2 node that errors
+-- with the block dials in under a second without it.
+--
+-- Only uTLS is filtered here. REALITY refuses STDConfig() the same way, but
+-- a QUIC+REALITY node cannot be made to work by dropping the block either
+-- (the server expects the REALITY handshake), so its distinct
+-- "unsupported usage for reality" error is left intact as a diagnostic.
+-- ECH is unaffected: ECHClientConfig embeds the underlying config, so
+-- STDConfig() is promoted and still returns a usable std config.
+--
+-- Add any future QUIC-transported protocol here as well as to
+-- treadlelib's ALLOWED_PROTOCOLS.
+local QUIC_PROTOCOLS = {
+	hysteria2 = true,
+	tuic      = true,
+}
+
+-- Build the sing-box tls block from individual UCI tls_* fields.
+-- always_on=true for protocols that are unconditionally TLS (trojan, hysteria2, tuic, anytls).
+local function build_tls_from_uci(s, always_on)
+	local enabled = always_on or (s.tls_enabled == "1")
+	if not enabled then return nil end
+	local tls = { enabled = true }
+	if s.tls_sni and s.tls_sni ~= "" then tls.server_name = s.tls_sni end
+	if s.tls_insecure == "1" then tls.insecure = true end
+	-- nodes.js hides the fingerprint picker for QUIC protocols; the guard
+	-- here also covers a value left behind by an earlier type change or set
+	-- over SSH.
+	if s.tls_fingerprint and s.tls_fingerprint ~= ""
+	   and not QUIC_PROTOCOLS[s.type or ""] then
+		tls.utls = { enabled = true, fingerprint = s.tls_fingerprint }
+	end
+	return tls
+end
+
+-- Build the sing-box transport block from individual UCI transport_* fields.
+local function build_transport_from_uci(s)
+	local t = s.transport_type or ""
+	if t == "" then return nil end
+	if t == "ws" then
+		local tr = { type = "ws" }
+		if s.transport_ws_path and s.transport_ws_path ~= "" then tr.path = s.transport_ws_path end
+		if s.transport_ws_host and s.transport_ws_host ~= "" then
+			tr.headers = { Host = s.transport_ws_host }
+		end
+		return tr
+	end
+	if t == "grpc" then
+		local tr = { type = "grpc" }
+		if s.transport_grpc_service and s.transport_grpc_service ~= "" then
+			tr.service_name = s.transport_grpc_service
+		end
+		return tr
+	end
+	if t == "http" then
+		local tr = { type = "http" }
+		if s.transport_http_path and s.transport_http_path ~= "" then tr.path = s.transport_http_path end
+		if s.transport_http_host and s.transport_http_host ~= "" then
+			tr.host = { s.transport_http_host }
+		end
+		return tr
+	end
+	return nil
+end
+
+-- Reconstruct a complete sing-box outbound object from an individual-field UCI node section.
+local function build_node_from_uci(s)
+	local typ = s.type or ""
+	local tag = s.tag or ""
+	if tag == "" or typ == "" then return nil end
+
+	local ob = { type = typ, tag = tag }
+
+	-- WireGuard puts server/port inside its peers; the direct outbound has no
+	-- server field at all — neither takes a top-level server/server_port.
+	if typ ~= "wireguard" and typ ~= "direct" and s.server and s.server ~= "" then
+		ob.server      = s.server
+		ob.server_port = tonumber(s.server_port) or 0
+		-- Warn loudly when the port is missing or non-numeric: sing-box
+		-- accepts port 0 in the config but every connect attempt then
+		-- hangs at dial time with no diagnostic trail. Surfacing the
+		-- cause here points the user at the offending node directly.
+		if ob.server_port == 0 then
+			io.stderr:write("treadle build-config: node '" .. tag
+				.. "' has no valid server_port; dial attempts will fail\n")
+		end
+	end
+
+	if typ == "vless" then
+		ob.uuid = s.uuid or ""
+		if s.flow and s.flow ~= "" then ob.flow = s.flow end
+		local tls = build_tls_from_uci(s, false)
+		if tls then ob.tls = tls end
+		local tr = build_transport_from_uci(s)
+		if tr then ob.transport = tr end
+
+	elseif typ == "vmess" then
+		ob.uuid     = s.uuid or ""
+		ob.security = s.security or "auto"
+		ob.alter_id = tonumber(s.alter_id) or 0
+		local tls = build_tls_from_uci(s, false)
+		if tls then ob.tls = tls end
+		local tr = build_transport_from_uci(s)
+		if tr then ob.transport = tr end
+
+	elseif typ == "trojan" then
+		ob.password = s.password or ""
+		local tls = build_tls_from_uci(s, true)
+		if tls then ob.tls = tls end
+		local tr = build_transport_from_uci(s)
+		if tr then ob.transport = tr end
+
+	elseif typ == "shadowsocks" then
+		ob.method   = s.method or "aes-256-gcm"
+		ob.password = s.password or ""
+
+	elseif typ == "hysteria2" then
+		ob.password = s.password or ""
+		local tls = build_tls_from_uci(s, true)
+		if tls then ob.tls = tls end
+		if s.obfs_type and s.obfs_type ~= "" then
+			ob.obfs = { type = s.obfs_type }
+			if s.obfs_password and s.obfs_password ~= "" then
+				ob.obfs.password = s.obfs_password
+			end
+		end
+
+	elseif typ == "tuic" then
+		ob.uuid     = s.uuid or ""
+		ob.password = s.password or ""
+		if s.congestion_control and s.congestion_control ~= "" then
+			ob.congestion_control = s.congestion_control
+		end
+		if s.udp_relay_mode and s.udp_relay_mode ~= "" then
+			ob.udp_relay_mode = s.udp_relay_mode
+		end
+		local tls = build_tls_from_uci(s, true)
+		if tls then ob.tls = tls end
+
+	elseif typ == "anytls" then
+		ob.password = s.password or ""
+		local tls = build_tls_from_uci(s, true)
+		if tls then ob.tls = tls end
+		local tr = build_transport_from_uci(s)
+		if tr then ob.transport = tr end
+
+	elseif typ == "socks" then
+		ob.version = "5"
+		if s.username and s.username ~= "" then ob.username = s.username end
+		if s.password and s.password ~= "" then ob.password = s.password end
+
+	elseif typ == "direct" then
+		if s.override_address and s.override_address ~= "" then
+			ob.override_address = s.override_address
+		end
+		if s.override_port and s.override_port ~= "" then
+			ob.override_port = tonumber(s.override_port)
+		end
+
+	elseif typ == "wireguard" then
+		-- Emitted as a sing-box `endpoint`, not an outbound — the legacy
+		-- wireguard outbound is removed in 1.13. The _is_endpoint marker
+		-- tells build_outbounds to place this node in the top-level
+		-- `endpoints` array; it is stripped before the config is written.
+		ob._is_endpoint = true
+		if s.wg_local_address and s.wg_local_address ~= "" then
+			ob.address = { s.wg_local_address }
+		end
+		if s.wg_private_key and s.wg_private_key ~= "" then
+			ob.private_key = s.wg_private_key
+		end
+		if s.wg_mtu and s.wg_mtu ~= "" then
+			ob.mtu = tonumber(s.wg_mtu)
+		end
+		local peer = {}
+		if s.server and s.server ~= "" then
+			peer.address = s.server
+			peer.port    = tonumber(s.server_port) or 0
+			if peer.port == 0 then
+				io.stderr:write("treadle build-config: WireGuard node '" .. tag
+					.. "' has no valid server_port; dial attempts will fail\n")
+			end
+		end
+		if s.wg_peer_public_key and s.wg_peer_public_key ~= "" then
+			peer.public_key = s.wg_peer_public_key
+		end
+		if s.wg_preshared_key and s.wg_preshared_key ~= "" then
+			peer.pre_shared_key = s.wg_preshared_key
+		end
+		-- Treadle uses WireGuard as a full-tunnel proxy, so the single peer
+		-- carries all traffic.
+		peer.allowed_ips = { "0.0.0.0/0", "::/0" }
+		ob.peers = { peer }
+
+	elseif typ == "urltest" then
+		local mode = s.urltest_mode or "manual"
+		if mode == "regex" then
+			-- Store the pattern for regex expansion in build_outbounds step 3
+			ob._outbound_regex = s.urltest_regex or ""
+			local srcs = s.urltest_regex_sources
+			if type(srcs) == "string" and srcs ~= "" then
+				srcs = { srcs }
+			end
+			if type(srcs) == "table" and #srcs > 0 then
+				ob._outbound_regex_sources = srcs
+			end
+			ob.outbounds = {}
+		else
+			local raw = s.urltest_outbounds
+			if type(raw) == "table" then
+				ob.outbounds = raw
+			elseif type(raw) == "string" and raw ~= "" then
+				ob.outbounds = { raw }
+			else
+				ob.outbounds = {}
+			end
+		end
+		if s.urltest_url and s.urltest_url ~= "" then ob.url = s.urltest_url end
+		if s.urltest_interval and s.urltest_interval ~= "" then ob.interval = s.urltest_interval end
+		if s.urltest_tolerance and s.urltest_tolerance ~= "" then
+			ob.tolerance = tonumber(s.urltest_tolerance)
+		end
+		if s.urltest_interrupt_exist_connections == "1" then
+			ob.interrupt_exist_connections = true
+		end
+
+	end
+
+	return ob
+end
+
+-- Subscription uid → display name, for audit messages. Memoized for the
+-- lifetime of the build (build_outbounds and build_config both need it);
+-- fallback to the uid keeps the log informative for subscriptions whose
+-- `name` field is unset.
+local _sub_names
+local function sub_display_names(c)
+	if not _sub_names then
+		_sub_names = {}
+		c:foreach("treadle", "subscription", function(s)
+			if s.name and s.name ~= "" then _sub_names[s[".name"]] = s.name end
+		end)
+	end
+	return _sub_names
+end
+
+-- direct / block are builtin outbounds added at emission. basic-auto is
+-- the synthesised Basic-mode group; a node — manual or from a (possibly
+-- hostile) subscription — carrying one of those tags would collide and
+-- make sing-box reject the whole config, so drop it before it reaches
+-- all_map. Shared with luci.treadle's parse-time filter via treadlelib.
+local OUTBOUND_RESERVED_TAGS = lib.RESERVED_TAGS
+
+-- ─── subscription payload sanitiser ─────────────────────────────────────
+--
+-- Subscription bodies are remote, untrusted JSON. The legacy path spliced
+-- the parsed payload table verbatim into all_map[tag] = p, so a hostile
+-- provider could ship arbitrary sing-box outbound keys — detour to bypass
+-- the user's routing intent, ssh.private_key_path to read router host keys,
+-- transport.tls to override the configured TLS block, etc. Mitigate with a
+-- per-type field whitelist that mirrors what build_node_from_uci accepts
+-- from manual nodes. Anything not on the list is dropped at load time.
+--
+-- Adding a new sing-box protocol means adding it here AND in build_node_from_uci.
+
+-- Shared with luci.treadle's parse-time whitelist via treadlelib so the two
+-- security filters cannot drift.
+local SUB_ALLOWED_TYPES = lib.ALLOWED_PROTOCOLS
+
+local function copy_subset(src, allowed)
+	if type(src) ~= "table" then return nil end
+	local out = {}
+	for _, k in ipairs(allowed) do
+		local v = src[k]
+		if v ~= nil then out[k] = v end
+	end
+	return out
+end
+
+-- `insecure` is whitelisted so per-node `skip-cert-verify: true` from Clash subs
+-- (and `tls.insecure: true` from sing-box subs) reaches sing-box. Providers that
+-- use decoy / fronted SNIs depend on it — strict verification fails the dial.
+-- Matches the behaviour of Clash / Clash Meta / sing-box's own remote-config
+-- loader. The remaining strip list (`detour`, `ssh.private_key_path`, transport
+-- overrides, unlisted top-level keys, …) still defends against the more
+-- dangerous hostile-publisher cases.
+local SUB_TLS_KEYS = {
+	"enabled", "server_name", "alpn", "min_version", "max_version",
+	"cipher_suites", "utls", "ech", "reality", "insecure",
+}
+local SUB_TRANSPORT_KEYS = {
+	"type", "path", "host", "headers", "method", "service_name",
+	"idle_timeout", "ping_timeout", "max_early_data", "early_data_header_name",
+	"permit_without_stream",
+	-- Marker set by treadlelib's map_xhttp_transport on a node that was an
+	-- XHTTP/stream-one node upstream. It must survive this copy so the
+	-- padding header can be regenerated below; apply_xhttp_padding clears
+	-- it, so it never reaches the emitted config.
+	"_xhttp",
+}
+local SUB_OBFS_KEYS  = { "type", "password" }
+local SUB_PEER_KEYS  = { "address", "port", "public_key", "pre_shared_key", "allowed_ips", "reserved" }
+
+local SUB_TYPE_KEYS = {
+	vless       = { "tag", "type", "server", "server_port", "uuid", "flow", "packet_encoding", "network" },
+	vmess       = { "tag", "type", "server", "server_port", "uuid", "security", "alter_id",
+	                "global_padding", "authenticated_length", "packet_encoding", "network" },
+	trojan      = { "tag", "type", "server", "server_port", "password", "network" },
+	shadowsocks = { "tag", "type", "server", "server_port", "method", "password", "network", "udp_over_tcp" },
+	hysteria2   = { "tag", "type", "server", "server_port", "password", "network",
+	                "up_mbps", "down_mbps", "brutal" },
+	tuic        = { "tag", "type", "server", "server_port", "uuid", "password",
+	                "congestion_control", "udp_relay_mode", "zero_rtt_handshake", "network" },
+	anytls      = { "tag", "type", "server", "server_port", "password", "network",
+	                "idle_session_check_interval", "idle_session_timeout", "min_idle_session" },
+	socks       = { "tag", "type", "server", "server_port", "version", "username", "password",
+	                "network", "udp_over_tcp" },
+	wireguard   = { "tag", "type", "address", "private_key", "mtu", "system_interface", "workers" },
+}
+
+local function sanitize_subscription_node(p)
+	if type(p) ~= "table" then return nil end
+	local t = p.type
+	if type(t) ~= "string" or not SUB_ALLOWED_TYPES[t] then return nil end
+	if type(p.tag) ~= "string" or p.tag == "" then return nil end
+	-- Reject control characters in tag — these would corrupt the
+	-- .test-all-tags newline-delimited file and stderr log lines.
+	if p.tag:find("[%c]") then return nil end
+
+	local out = copy_subset(p, SUB_TYPE_KEYS[t])
+	if not out then return nil end
+
+	-- Sub-objects whose attacker-controlled fields must be filtered (tls.disable_sni,
+	-- transport.tls — anything that weakens cryptographic guarantees the user
+	-- thinks they have). `tls.insecure` is intentionally allowed through; see
+	-- the SUB_TLS_KEYS note above.
+	if type(p.tls) == "table" then
+		out.tls = copy_subset(p.tls, SUB_TLS_KEYS)
+		-- Providers do ship `utls` on hysteria2 / tuic nodes (seen in the
+		-- wild on Clash and sing-box subscriptions alike). Over QUIC that
+		-- block turns the node into an outbound that errors on every dial
+		-- — see QUIC_PROTOCOLS. Drop it so the node actually works instead
+		-- of silently poisoning whatever urltest group matches its tag.
+		if QUIC_PROTOCOLS[t] then out.tls.utls = nil end
+	end
+	if type(p.transport) == "table" then
+		-- A transport sing-box has no dialer for (Xray's `xhttp`, chiefly)
+		-- makes the whole node undialable — every handshake fails. The
+		-- parsers reject these at sync time; this second check covers node
+		-- files that did not come through them (edited or copied in by
+		-- hand), so they never reach the running config or the probe
+		-- instance as dead outbounds.
+		if not lib.SUPPORTED_TRANSPORTS[p.transport.type or ""] then
+			io.stderr:write("treadle build-config: subscription node '"
+				.. tostring(p.tag) .. "' uses transport '"
+				.. tostring(p.transport.type) .. "', which sing-box cannot "
+				.. "dial; skipping (re-sync the subscription to clear it)\n")
+			return nil
+		end
+		out.transport = copy_subset(p.transport, SUB_TRANSPORT_KEYS)
+		-- Mapped XHTTP nodes get a freshly-rolled x_padding on every build
+		-- rather than one frozen into the node file at sync time. Clears
+		-- the marker, and is a no-op for every other transport.
+		lib.apply_xhttp_padding(out.transport)
+	end
+	if type(p.obfs) == "table" then
+		out.obfs = copy_subset(p.obfs, SUB_OBFS_KEYS)
+	end
+	-- WireGuard: peers carry the dialled endpoint, must be sanitised in turn.
+	if t == "wireguard" and type(p.peers) == "table" then
+		local peers = {}
+		for _, peer in ipairs(p.peers) do
+			local sp = copy_subset(peer, SUB_PEER_KEYS)
+			if sp and sp.address and sp.port then peers[#peers + 1] = sp end
+		end
+		if #peers > 0 then out.peers = peers end
+		out._is_endpoint = true
+	end
+
+	return out
+end
+
+-- Scan /etc/treadle/nodes/*.json, prune any orphan file whose subscription
+-- section was deleted, and import the remaining nodes into all_ordered /
+-- all_map / seen (mutated in place). First-seen-wins, so manual nodes loaded
+-- before this call take precedence in Advanced mode; Basic skips manual and
+-- calls this with empty tables. Each imported node is tagged with `_source`
+-- = the subscription's uid (matches the basename of its on-disk JSON file,
+-- and the value urltest_regex_sources stores to scope a regex group to
+-- specific subscriptions).
+local function load_subscription_nodes(c, all_ordered, all_map, seen)
+	-- Files are keyed by each subscription's uid, which IS its UCI
+	-- section name (a 16-hex id assigned at create time and persisted by
+	-- libuci on every commit).
+	local valid_subs = {}
+	c:foreach("treadle", "subscription", function(s)
+		valid_subs[s[".name"]] = true
+	end)
+
+	-- One directory listing serves both the orphan prune and the load pass.
+	-- In preview mode orphans are neither deleted nor skipped: a read-only
+	-- get_config must not mutate, so the preview shows them as loaded.
+	local files = lib.node_files()
+	if not PREVIEW_MODE then
+		local kept = {}
+		for _, nf in ipairs(files) do
+			if valid_subs[nf.uid] then
+				kept[#kept + 1] = nf
+			else
+				os.remove(nf.path)
+			end
+		end
+		files = kept
+	end
+
+	for _, nf in ipairs(files) do
+		local uid = nf.uid
+		local content = read_file(nf.path)
+		if content and content ~= "" then
+			local ok, nodes = pcall(jsonc.parse, content)
+			if not ok or type(nodes) ~= "table" then
+				-- Surface a corrupt subscription file (truncated write,
+				-- manual edit gone wrong) so the user sees *why* a
+				-- subscription's nodes vanished from the running config.
+				-- Without this every node from this sub silently disappears.
+				io.stderr:write("treadle build-config: subscription nodes file "
+					.. nf.path .. " failed to parse, dropping its nodes\n")
+			end
+			if ok and type(nodes) == "table" then
+				for _, n in ipairs(nodes) do
+					if type(n) == "table" and n.payload then
+						local ok2, raw = pcall(jsonc.parse, n.payload)
+						local p = ok2 and sanitize_subscription_node(raw) or nil
+						if p then
+							if OUTBOUND_RESERVED_TAGS[p.tag] then
+								io.stderr:write("treadle build-config: subscription node "
+									.. "tag '" .. p.tag .. "' is reserved; skipping\n")
+							elseif not seen[p.tag] then
+								-- seen{} was populated by build_outbounds with
+								-- every manual UCI node tag before we ran, so
+								-- this check transparently denies a subscription
+								-- from overwriting a tag the user has already
+								-- defined locally — the only realistic
+								-- tag-hijack vector. Tags merely referenced
+								-- elsewhere (urltest_outbounds, rule.outbound,
+								-- basic.server, …) are EXPECTED to be filled
+								-- by subscription nodes; gating those would
+								-- break the primary urltest workflow.
+								p._source      = uid
+								seen[p.tag]    = true
+								all_map[p.tag] = p
+								all_ordered[#all_ordered + 1] = p
+							end
+						elseif ok2 and type(raw) == "table" and raw.type then
+							io.stderr:write("treadle build-config: subscription node "
+								.. "tag '" .. tostring(raw.tag) .. "' rejected: "
+								.. "unsupported type '" .. tostring(raw.type)
+								.. "' or unsafe fields\n")
+						end
+					end
+				end
+			end
+		end
+	end
+end
+
+-- The always-present builtin outbound that seeds every emitted list. The
+-- explicit `domain_resolver: "local"` matters twice over: sing-box 1.12
+-- rejects `detour: "direct"` on any DNS server pointing at an *empty*
+-- direct outbound ("detour to an empty direct outbound makes no sense" —
+-- the check is reflect.DeepEqual against the zero DialerOptions in
+-- protocol/direct/outbound.go, so any populated field satisfies it). And
+-- the value must be `local`, not `local-net`: sing-box dials remote
+-- rule-set URLs through `direct` (download_detour), and resolving that
+-- host via `local-net` (dnsmasq) loops — under managed DNS dnsmasq
+-- forwards back into sing-box's dns-in, which is not listening yet while
+-- sing-box is still initializing rule-sets at startup, so the lookup
+-- deadlocks and the service FATALs. `local` is the WAN resolver at a
+-- literal IP (detour: direct), so it resolves with no loop and matches
+-- route.default_domain_resolver. Fresh table per call — the config
+-- assembly mutates outbound tables in place.
+local function direct_outbound()
+	return { type = "direct", tag = "direct", domain_resolver = "local" }
+end
+
+-- Go duration literal: one or more <number><unit> pairs ("5s", "1m30s").
+-- ASCII units only. sing-box also accepts "µs", but %a cannot match a
+-- multi-byte rune and nothing reaching this path has a use for it.
+local DURATION_UNITS = { ns = true, us = true, ms = true, s = true, m = true, h = true }
+local function valid_duration(v)
+	if type(v) ~= "string" or v == "" then return false end
+	local pos = 1
+	while pos <= #v do
+		local num, unit, nextpos = v:match("^(%d+%.?%d*)(%a+)()", pos)
+		if not num or not DURATION_UNITS[unit] then return false end
+		pos = nextpos
+	end
+	return true
+end
+
+-- "0", "0s", "0m0s" — the explicit opt-out. Spelled as a value the user can
+-- actually type, because an *empty* one is unreachable from the settings
+-- form: form.js removes the option when the field is cleared, and again when
+-- it is set to the declared default (`fval == null || fval == '' || (fval ==
+-- this.default && (this.optional || this.rmempty))` → `remove()`). So absent
+-- and empty cannot be made to mean different things here, and do not.
+local function is_zero_duration(v)
+	if v == "0" then return true end
+	if not valid_duration(v) then return false end
+	return tonumber((v:gsub("%a+", ""))) == 0
+end
+
+-- Dial timeout stamped on every proxy outbound. A node that *refuses* the
+-- connection fails its dial at once, and sing-box drops it from the urltest
+-- group's history (DeleteURLTestHistory in protocol/group/urltest.go), so
+-- Select() skips it and the next connection lands on a different member. A
+-- node that blackholes the SYN instead gets no such backstop: with no
+-- connect_timeout the dial waits out the kernel's SYN retry schedule with the
+-- client hung behind it, and because the member still holds valid history
+-- from its last good check, further connections keep being steered onto it.
+-- Bounding the dial turns that case into the refused one.
+--
+-- An absent UCI option means the shipped default, not "off", so a config
+-- written by hand without the key still gets the bound. `0` opts out; see
+-- is_zero_duration for why the opt-out is not spelled as an empty value.
+local CONNECT_TIMEOUT_DEFAULT = "5s"
+local _connect_timeout
+local function connect_timeout(c)
+	if _connect_timeout == nil then
+		local v = c:get("treadle", "global", "connect_timeout")
+		if v == nil or v == "" then
+			v = CONNECT_TIMEOUT_DEFAULT
+		elseif is_zero_duration(v) then
+			v = ""
+		elseif not valid_duration(v) then
+			-- Fall back to the default rather than emitting nothing: a typo
+			-- should not silently drop the protection, and it must not reach
+			-- sing-box either, which would reject the whole config over it and
+			-- strand the user on the last working generation (the init script
+			-- keeps that one running) with no visible reason.
+			io.stderr:write("treadle build-config: connect_timeout '" .. tostring(v)
+				.. "' is not a duration (e.g. 5s); using "
+				.. CONNECT_TIMEOUT_DEFAULT .. "\n")
+			v = CONNECT_TIMEOUT_DEFAULT
+		end
+		_connect_timeout = v
+	end
+	if _connect_timeout == "" then return nil end
+	return _connect_timeout
+end
+
+-- Route one resolved node into the outbounds or endpoints list: strip the
+-- Treadle-internal `_source` marker, divert `_is_endpoint` nodes (Treadle-built
+-- WireGuard) into the top-level endpoints array, and warn on subscription
+-- WireGuard outbounds, which still use the legacy schema (they work on
+-- 1.12 but will not load on sing-box 1.13). Shared by build_basic_outbounds,
+-- build_outbounds and build_probe_config.
+local function place_node(ob, outbounds, endpoints, timeout)
+	ob._source = nil
+	if ob._is_endpoint then
+		ob._is_endpoint = nil
+		-- Endpoints are Treadle-built WireGuard, whose handshake is UDP and has
+		-- no TCP connect to bound. Left alone deliberately.
+		endpoints[#endpoints + 1] = ob
+	else
+		if ob.type == "wireguard" then
+			io.stderr:write("treadle build-config: subscription WireGuard node '"
+				.. tostring(ob.tag) .. "' uses the legacy outbound schema; "
+				.. "it will not work on sing-box 1.13\n")
+		end
+		-- A group dials through a member rather than itself, so the timeout
+		-- belongs on the members (which pass through here on their own turn)
+		-- and not on the group. `direct` never reaches this function —
+		-- direct_outbound() is appended by the callers directly.
+		if timeout and ob.type ~= "urltest" and ob.type ~= "selector" then
+			ob.connect_timeout = timeout
+		end
+		outbounds[#outbounds + 1] = ob
+	end
+end
+
+-- Load subscriptions and resolve the Basic-mode server selection in one pass,
+-- memoized for the lifetime of the build. compute_default_outbound (called
+-- from build_dns and build_basic_route) and build_basic_outbounds all need
+-- the same filtered member list — without the shared filter, the default
+-- could refer to a tag that build_basic_outbounds drops, leaving route.final
+-- dangling and sing-box rejecting the config.
+local _basic_cache
+resolve_basic_members = function(c)
+	if _basic_cache then return _basic_cache.members, _basic_cache.all_map, _basic_cache.all_ordered end
+	local all_ordered, all_map, seen = {}, {}, {}
+	load_subscription_nodes(c, all_ordered, all_map, seen)
+	local basic = c:get_all("treadle", "basic") or {}
+	local selected = uci_list_or_string(basic, "server")
+	-- Drop selections that no longer resolve (subscription removed, node
+	-- renamed) and dedupe. Stable order preserves the user's pick sequence.
+	local members, member_set = {}, {}
+	for _, t in ipairs(selected) do
+		if all_map[t] and not member_set[t] then
+			members[#members + 1] = t
+			member_set[t] = true
+		end
+	end
+	_basic_cache = { members = members, all_map = all_map, all_ordered = all_ordered }
+	return members, all_map, all_ordered
+end
+
+-- Basic mode: import subscription nodes + synthesise a default outbound from
+-- treadle.basic.server (single → that node is the default, N>1 → wrap in a
+-- urltest tagged BASIC_AUTO_TAG, zero → no proxy default and build_route's
+-- `final` stays "direct"). Manual nodes (treadle.node), custom rules
+-- (treadle.rule) and group regexes are ignored — they stay on disk for an
+-- Advanced switch-back but are not compiled in.
+local function build_basic_outbounds(c)
+	local members, all_map, all_ordered = resolve_basic_members(c)
+
+	if #members > 1 then
+		-- `interval` is deliberately omitted so sing-box applies its own 3m
+		-- default. Basic mode exposes no Interval box, so a value hard-coded
+		-- here is one no Basic user can reach, and the 5m this carried was
+		-- simply slower than upstream at leaving a degraded-but-alive node.
+		-- Omitting it also matches what Advanced emits for an empty Interval
+		-- field. `tolerance` is set to sing-box's own default purely to keep
+		-- the synthesised group self-documenting.
+		local group = {
+			type      = "urltest",
+			tag       = BASIC_AUTO_TAG,
+			outbounds = members,
+			url       = "https://www.gstatic.com/generate_204",
+			tolerance = 50
+		}
+		all_map[BASIC_AUTO_TAG] = group
+		all_ordered[#all_ordered + 1] = group
+	end
+
+	-- Emit: direct first, then only the selected members + the synthesised
+	-- group. Unselected subscription nodes stay on disk — latency testing
+	-- probes them through the ephemeral --probe instance, so the running
+	-- config no longer needs to carry unreferenced nodes.
+	local member_set = {}
+	for _, t in ipairs(members) do member_set[t] = true end
+	local timeout   = connect_timeout(c)
+	local outbounds = { direct_outbound() }
+	local endpoints = {}
+	for _, ob in ipairs(all_ordered) do
+		if member_set[ob.tag] or ob.tag == BASIC_AUTO_TAG then
+			place_node(ob, outbounds, endpoints, timeout)
+		end
+	end
+
+	return outbounds, endpoints
+end
+
+-- Load every node Treadle knows about, preserving order, deduping by tag.
+-- Manual nodes (UCI type="node") come first, ordered by their order field.
+-- Subscription JSON files follow (sorted by filename for stability).
+-- First-seen-wins deduplication means manual nodes always take precedence.
+-- Step 1 of build_outbounds, shared with build_probe_config.
+local function load_all_nodes(c)
+	local all_ordered = {}
+	local all_map     = {}
+	local seen        = {}
+
+	-- Manual nodes from UCI (reconstruct outbound from individual fields).
+	-- `_source` marks the origin so urltest regex can be restricted to a
+	-- subset of subscriptions; `_manual` is the sentinel for UCI-defined
+	-- nodes, mirroring the UI's MultiValue choice value.
+	c:foreach("treadle", "node", function(s)
+		local ob = build_node_from_uci(s)
+		if ob and OUTBOUND_RESERVED_TAGS[ob.tag] then
+			io.stderr:write("treadle build-config: node tag '" .. ob.tag ..
+				"' is reserved; skipping\n")
+		elseif ob and not seen[ob.tag] then
+			ob._source      = "_manual"
+			seen[ob.tag]    = true
+			all_map[ob.tag] = ob
+			all_ordered[#all_ordered + 1] = ob
+		end
+	end)
+
+	-- Subscription nodes (orphan-prune + parse) — same loader Basic uses.
+	load_subscription_nodes(c, all_ordered, all_map, seen)
+	return all_ordered, all_map
+end
+
+local function build_outbounds(c)
+	if read_mode(c) == "basic" then return build_basic_outbounds(c) end
+
+	-- ── Step 1: load every node, preserving order, deduping by tag ────────
+	local all_ordered, all_map = load_all_nodes(c)
+
+	-- ── Step 2: collect outbound tags referenced by the active route config ──
+	-- The final outbound catches anything no rule matched; each enabled rule
+	-- nominates one outbound.  A user who wants "global proxy" just sets the
+	-- final to a node; one who wants "bypass" sets the final to direct and
+	-- (optionally) disables individual rules.
+	local referenced = {}
+	local fin = c:get("treadle", "routing", "final_outbound") or "direct"
+	if fin ~= "" then referenced[fin] = true end
+
+	c:foreach("treadle", "rule", function(s)
+		if s.enabled ~= "0" and s.outbound and s.outbound ~= "" then
+			referenced[s.outbound] = true
+		end
+	end)
+
+	-- ── Step 3: expand urltest group outbounds transitively ──────────
+	-- For each referenced group, expand _outbound_regex (Treadle-internal
+	-- marker, must be stripped) then pull its member tags into the
+	-- referenced set. The worklist handles nested groups correctly.
+	--
+	-- Pattern semantics: POSIX ERE, evaluated by `grep -E`. Lua 5.1 has
+	-- no PCRE; shelling out to grep is the simplest correct engine and
+	-- runs only at config-build time (once per regex-mode group). `|`
+	-- is native ERE alternation, so existing plain-substring patterns
+	-- continue to match (every literal substring is also a valid ERE).
+	-- Pattern is single-quoted into the shell command; the only escape
+	-- needed is `'` → `'\''`. UCI values are single-line so we don't
+	-- have to worry about embedded newlines.
+	local function shell_squote(s)
+		return "'" .. (s:gsub("'", "'\\''")) .. "'"
+	end
+	local function regex_match_set(pattern, tags)
+		local set = {}
+		if pattern == "" or #tags == 0 then return set end
+		local args = {}
+		for i, t in ipairs(tags) do args[i] = shell_squote(t) end
+		local cmd = "printf '%s\\n' " .. table.concat(args, " ")
+			.. " | grep -E -- " .. shell_squote(pattern) .. " 2>/dev/null"
+		local h = io.popen(cmd, "r")
+		if not h then return set end
+		for line in h:lines() do
+			if line ~= "" then set[line] = true end
+		end
+		h:close()
+		return set
+	end
+
+	local sub_names = sub_display_names(c)
+
+	local worklist = {}
+	for tag in pairs(referenced) do worklist[#worklist + 1] = tag end
+	local i = 1
+	while i <= #worklist do
+		local tag = worklist[i]; i = i + 1
+		local ob = all_map[tag]
+		if ob and ob.type == "urltest" then
+			if ob._outbound_regex then
+				local pattern  = ob._outbound_regex
+				local src_list = ob._outbound_regex_sources
+				ob._outbound_regex = nil  -- strip before handing to sing-box
+				ob._outbound_regex_sources = nil
+				-- Source restriction (optional, additive): when
+				-- urltest_regex_sources is set to a non-empty list, ONLY
+				-- subscriptions in that list contribute candidates (plus
+				-- manual nodes, always). When unset, every source is
+				-- considered — the original behaviour, and the only
+				-- non-breaking default for existing regex-mode groups.
+				-- An earlier attempt to reverse this default (SEC-3) was
+				-- reverted because it silently emptied every regex group
+				-- whose user hadn't yet typed an explicit source list,
+				-- in turn dropping the group, the routes pointing at it,
+				-- and finally the user's DNS.
+				local src_set = nil
+				if type(src_list) == "table" and #src_list > 0 then
+					src_set = {}
+					for _, sid in ipairs(src_list) do src_set[sid] = true end
+				end
+				-- Per-source admit counts for the SEC-3 audit log. A regex
+				-- group that auto-admits subscription nodes is the SEC-3
+				-- attack surface (hostile sub ships nodes matching the
+				-- user's pattern, slots itself into the auto-pool).
+				-- Logging each source's contribution lets the user notice
+				-- a new sub joining; gating is left to the optional
+				-- urltest_regex_sources whitelist.
+				local by_source = {}
+				if type(ob.outbounds) ~= "table" or #ob.outbounds == 0 then
+					ob.outbounds = {}
+					-- Collect candidate tags (apply src_set restriction
+					-- first so we don't ship hostile sources through grep
+					-- unnecessarily), then evaluate the pattern in one
+					-- subprocess. Iterate all_ordered again to preserve
+					-- the deterministic order in the emitted outbounds list.
+					local candidates = {}
+					for _, other in ipairs(all_ordered) do
+						if other.type ~= "urltest"
+						   and (not src_set or src_set[other._source or ""]) then
+							candidates[#candidates + 1] = other.tag
+						end
+					end
+					-- matched only contains candidate tags, which were
+					-- already filtered by src_set above — no need to
+					-- re-apply the restriction here.
+					local matched = regex_match_set(pattern, candidates)
+					for _, other in ipairs(all_ordered) do
+						if other.type ~= "urltest" and matched[other.tag] then
+							ob.outbounds[#ob.outbounds + 1] = other.tag
+							local src = other._source or "_manual"
+							by_source[src] = (by_source[src] or 0) + 1
+						end
+					end
+				end
+				-- Audit line per source that contributed. Skips "_manual" —
+				-- manual nodes by definition came from the user's own UCI.
+				-- Tagged `info:` so /etc/init.d/treadle logs it at daemon.info:
+				-- it is routine audit output, and at the warn level the rest
+				-- of this stream uses it would bury a real warning under one
+				-- line per contributing source per regex group, every apply.
+				for src, count in pairs(by_source) do
+					if src ~= "_manual" then
+						io.stderr:write("treadle build-config: info: urltest '" .. ob.tag
+							.. "' regex admitted " .. count
+							.. " node(s) from subscription '"
+							.. (sub_names[src] or src) .. "'\n")
+					end
+				end
+			end
+			-- Prune members that don't resolve to a real outbound. A dangling
+			-- tag (e.g. a member node that was since deleted) would otherwise
+			-- make sing-box reject the whole config with "outbound not found".
+			if type(ob.outbounds) == "table" then
+				local kept = {}
+				for _, member in ipairs(ob.outbounds) do
+					if all_map[member] or member == "direct" then
+						kept[#kept + 1] = member
+						if not referenced[member] then
+							referenced[member] = true
+							worklist[#worklist + 1] = member
+						end
+					else
+						io.stderr:write("treadle build-config: " .. ob.type ..
+							" '" .. ob.tag ..
+							"' drops missing member '" .. tostring(member) .. "'\n")
+					end
+				end
+				ob.outbounds = kept
+			end
+		end
+	end
+
+	-- ── Step 4: assemble final list — builtins first, then referenced nodes ──
+	-- Preserve original file order so urltest member ordering is predictable.
+	-- (See direct_outbound for why the seed carries domain_resolver:"local".)
+	-- block is no longer a builtin outbound — a rule that drops traffic now
+	-- compiles to a reject rule action (see build_route). sing-box removed
+	-- the legacy `block` special outbound in 1.13.
+	local timeout   = connect_timeout(c)
+	local outbounds = { direct_outbound() }
+	local endpoints = {}
+	-- Only referenced nodes reach the running config — unreferenced
+	-- subscription nodes stay on disk. Latency testing does not need them
+	-- here: the test-all-runner probes every known node through a separate,
+	-- short-lived sing-box instance built by --probe (build_probe_config).
+	for _, ob in ipairs(all_ordered) do
+		if referenced[ob.tag] then
+			if ob.type == "urltest"
+			   and (type(ob.outbounds) ~= "table" or #ob.outbounds == 0) then
+				-- Skip the empty group rather than emit it: sing-box
+				-- rejects urltest with no members and the whole
+				-- config goes back to the last working version.
+				-- Anywhere this tag was referenced (route rule,
+				-- dns detour, parent group member) gets pruned by
+				-- the validation pass / member-prune downstream and
+				-- falls back to direct, which is a sane no-op.
+				io.stderr:write("treadle build-config: urltest '" .. ob.tag ..
+					"' has no usable members; dropping the group\n")
+			else
+				place_node(ob, outbounds, endpoints, timeout)
+			end
+		end
+	end
+
+	return outbounds, endpoints
+end
+
+-- ─── DNS ─────────────────────────────────────────────────────────────────
+
+-- RFC-reserved special-use names and RFC1918/link-local/ULA reverse zones
+-- that should never leak to public DNS. Routed unconditionally to local-net
+-- so they hit the system resolver (dnsmasq) instead of the upstream server.
+local LOCAL_DOMAINS = {
+	"home.arpa", "local", "localhost", "invalid", "test", "lan", "internal",
+	"10.in-addr.arpa", "168.192.in-addr.arpa", "254.169.in-addr.arpa",
+	"16.172.in-addr.arpa", "17.172.in-addr.arpa", "18.172.in-addr.arpa",
+	"19.172.in-addr.arpa", "20.172.in-addr.arpa", "21.172.in-addr.arpa",
+	"22.172.in-addr.arpa", "23.172.in-addr.arpa", "24.172.in-addr.arpa",
+	"25.172.in-addr.arpa", "26.172.in-addr.arpa", "27.172.in-addr.arpa",
+	"28.172.in-addr.arpa", "29.172.in-addr.arpa", "30.172.in-addr.arpa",
+	"31.172.in-addr.arpa", "d.f.ip6.arpa", "8.e.f.ip6.arpa"
+}
+
+-- Render the dnsmasq managed-DNS drop-in. Derived from LOCAL_DOMAINS so that
+-- list is the single source of truth, rather than a static file kept in
+-- lock-step with it by hand. /etc/init.d/treadle copies the generated file
+-- into dnsmasq's conf-dir while sing-box is running.
+local function build_dnsmasq_dropin()
+	local out = {
+		"# Treadle managed DNS — generated by build-config, copied into dnsmasq's",
+		"# conf-dir by /etc/init.d/treadle while sing-box is running and removed",
+		"# when it stops. Generated on every (re)start; do not edit by hand.",
+		"#",
+		"# no-resolv: sing-box is the only upstream — dnsmasq must not consult",
+		"# the WAN/ISP resolvers, whose answers are DNS-poisoned on a censored",
+		"# network. A poisoned answer is worse than none, so there is no ISP",
+		"# fallback; a clean stop removes this drop-in.",
+		"no-resolv",
+		"server=127.0.0.1#" .. DNS_IN_PORT,
+		"",
+		"# Make dnsmasq authoritative for RFC-reserved and private-use zones so",
+		"# it answers them locally instead of forwarding to sing-box, which would",
+		"# route them back to local-net (= dnsmasq) in an endless loop."
+	}
+	for _, d in ipairs(LOCAL_DOMAINS) do
+		out[#out + 1] = "local=/" .. d .. "/"
+	end
+	return table.concat(out, "\n") .. "\n"
+end
+
+-- Derive the DNS rules from the routing rules. A rule contributes a DNS rule
+-- only when it has a domain component — literal domains or a geosite-* rule-
+-- set; IP/port-only rules leave their queries to dns.final. The DNS server
+-- mirrors the outbound: a directly-routed domain resolves via `local`, a
+-- proxied domain via `fakeip` when fake-IP is enabled globally, else
+-- `remote`. `block` rules contribute nothing.
+-- A rule's AND/OR structure is deliberately not reflected in DNS: a query's
+-- protocol/network/port/IP cannot be known at resolution time, so every domain-
+-- bearing condition (literal domains and geosite rule-sets) is mirrored onto
+-- the server the rule's outbound implies, regardless of how the conditions
+-- are joined. This is an over-approximation that only affects which resolver
+-- answers a name, never how its traffic is routed.
+local DOMAIN_KINDS = {
+	domain = true, domain_suffix = true,
+	domain_keyword = true, domain_regex = true
+}
+
+-- Returns (rules, per_outbound) where per_outbound is a set of outbound tags
+-- for which a dedicated `remote-<tag>` DNS server must be emitted so the
+-- lookup exits through the same outbound as the connection. The flag
+-- `rule.dns_via_outbound` (UCI: option dns_via_outbound, default on for any
+-- proxied rule) turns this on per-rule; for unflagged rules and for
+-- direct/block/fakeip the mirror still points at the generic `local` /
+-- `remote` / `fakeip` server.
+local function build_routing_dns_rules(prepared, fakeip_on)
+	local rules = {}
+	local per_outbound = {}
+	for _, pr in ipairs(prepared) do
+		local s = pr.section
+		if s.outbound ~= "block" then
+			local server
+			if s.outbound == "direct" then
+				server = "local"
+			elseif fakeip_on then
+				server = "fakeip"
+			elseif s.dns_via_outbound ~= "0" then
+				server = "remote-" .. s.outbound
+				per_outbound[s.outbound] = true
+			else
+				server = "remote"
+			end
+
+			local literal = {
+				domain = {}, domain_suffix = {},
+				domain_keyword = {}, domain_regex = {}
+			}
+			local has_literal = false
+			local geosite = {}
+			for _, r in ipairs(pr.conditions) do
+				if DOMAIN_KINDS[r.kind] then
+					for _, v in ipairs(r.values) do
+						if v ~= "" then
+							local bucket = literal[r.kind]
+							bucket[#bucket + 1] = v
+							has_literal = true
+						end
+					end
+				end
+				for _, t in ipairs(r.geosite_tags) do
+					geosite[#geosite + 1] = t
+				end
+			end
+
+			-- Literal domains and a geosite rule-set are distinct sing-box
+			-- matchers — placed on one rule they are AND-combined and would
+			-- match nothing. Emit them as separate rules; separate DNS rules
+			-- are OR'd, which is the intended semantics.
+			if has_literal then
+				local r = { action = "route", server = server }
+				for k, v in pairs(literal) do
+					if #v > 0 then r[k] = v end
+				end
+				rules[#rules + 1] = r
+			end
+			if #geosite > 0 then
+				rules[#rules + 1] = {
+					action   = "route",
+					server   = server,
+					rule_set = geosite
+				}
+			end
+		end
+	end
+	return rules, per_outbound
+end
+
+-- The `local` DNS server entry: resolver for directly-routed traffic, and
+-- the bootstrap resolver for outbound endpoint hostnames (proxy node
+-- servers, the `remote` server's own SNI host). Always emitted, always
+-- detour:direct. It must not chain through local-net: with managed DNS
+-- active dnsmasq forwards back into sing-box, so resolving direct traffic
+-- or a node hostname via dnsmasq would loop. local_server picks the
+-- upstream — "wan" or blank auto-detects the WAN-assigned resolver,
+-- anything else is a literal address. tls://1.1.1.1 (literal IP, no
+-- recursion) is the fallback when WAN is down at boot; the iface hotplug
+-- regenerates the config once WAN comes up. Shared by build_dns and
+-- build_probe_config.
+local function build_local_dns_entry(c)
+	local local_server_value = c:get("treadle", "dns", "local_server") or ""
+	local local_addr
+	if local_server_value == "" or local_server_value == "wan" then
+		local wan_dns = lib.detect_wan_dns(jsonc)
+		local_addr = (wan_dns and wan_dns ~= "") and wan_dns or "tls://1.1.1.1"
+	else
+		local_addr = local_server_value
+	end
+	local entry  = parse_dns_url(local_addr)
+	entry.tag    = "local"
+	entry.detour = "direct"
+	return entry
+end
+
+local function build_dns(c, prepared)
+	local strategy         = c:get("treadle", "dns", "strategy") or ""
+	-- Mode-aware: Advanced reads the user's final-outbound knob, Basic derives
+	-- it from treadle.basic.server so the remote DNS server still detours
+	-- through the active proxy.
+	local default_outbound = compute_default_outbound(c)
+	if default_outbound == "direct" then default_outbound = "" end
+
+	-- "block" compiles to a reject rule, not an outbound, so for DNS it
+	-- behaves like "no default proxy": the remote server isn't detoured
+	-- through it and unmatched queries resolve via the local resolver.
+	local default_is_proxy = (default_outbound ~= "" and default_outbound ~= "direct"
+	                          and default_outbound ~= "block")
+
+	-- ── local-net: the on-router resolver (dnsmasq), for local domains only ──
+	local servers = {
+		build_local_dns_entry(c),
+		{ type = "udp", tag = "local-net", server = "127.0.0.1", server_port = 53, detour = "direct" }
+	}
+
+	-- ── remote: resolver for proxied traffic; blank user value falls back to
+	-- Cloudflare DoT. Detoured through the default outbound so the lookup
+	-- exits where the proxied traffic does.
+	local remote_addr = c:get("treadle", "dns", "remote_server") or ""
+	if remote_addr == "" then remote_addr = "tls://1.1.1.1" end
+	local remote_entry = parse_dns_url(remote_addr)
+	remote_entry.tag = "remote"
+	if default_is_proxy then
+		remote_entry.detour = default_outbound
+	end
+	servers[#servers + 1] = remote_entry
+
+	-- ── fakeip: when enabled, every proxied-domain query resolves here ──
+	local fakeip_on = (c:get("treadle", "dns", "fakeip_enabled") == "1")
+	if fakeip_on then
+		servers[#servers + 1] = {
+			type        = "fakeip",
+			tag         = "fakeip",
+			inet4_range = c:get("treadle", "dns", "fakeip_range_v4") or "198.18.0.0/15",
+			inet6_range = c:get("treadle", "dns", "fakeip_range_v6") or "fc00::/18"
+		}
+	end
+
+	-- ── rules ──
+	-- Local/reserved domains first (always → local-net), then the routing
+	-- rules mirrored onto DNS servers. Anything unmatched falls to `final`.
+	local rules = {}
+
+	-- HTTPS/SVCB (DNS type 65/64) record queries cannot be answered by the
+	-- fakeip server ("only IP queries are supported by fakeip") — sing-box
+	-- errors and retries with backoff. Intercept them first and return an
+	-- empty NOERROR so clients fall back to plain A/AAAA, which fakeip maps.
+	if fakeip_on then
+		rules[#rules + 1] = {
+			query_type = { 64, 65 },
+			action     = "predefined",
+			rcode      = "NOERROR"
+		}
+	end
+
+	local local_suffixes = {}
+	for _, d in ipairs(LOCAL_DOMAINS) do local_suffixes[#local_suffixes + 1] = d end
+	local dnsmasq_domain = detect_local_domain(c)
+	if dnsmasq_domain and dnsmasq_domain ~= "" then
+		-- Prepend so the OpenWrt-configured local domain takes precedence in
+		-- error messages and is visible first in the generated config.
+		table.insert(local_suffixes, 1, dnsmasq_domain)
+	end
+	rules[#rules + 1] = {
+		domain_suffix = local_suffixes,
+		action        = "route",
+		server        = "local-net"
+	}
+
+	local routing_rules, per_outbound = build_routing_dns_rules(prepared, fakeip_on)
+	for _, r in ipairs(routing_rules) do rules[#rules + 1] = r end
+
+	-- Per-outbound DNS servers: one `remote-<tag>` per outbound flagged via
+	-- `rule.dns_via_outbound`, so the DNS lookup for a domain exits through
+	-- the same outbound as the connection. Same upstream as `remote` (so the
+	-- user's chosen resolver is honoured), only the `detour` differs.
+	-- Sorted for deterministic generator output.
+	local outbound_tags = {}
+	for tag in pairs(per_outbound) do
+		outbound_tags[#outbound_tags + 1] = tag
+	end
+	table.sort(outbound_tags)
+	for _, tag in ipairs(outbound_tags) do
+		local extra = parse_dns_url(remote_addr)
+		extra.tag    = "remote-" .. tag
+		extra.detour = tag
+		servers[#servers + 1] = extra
+	end
+
+	-- `final`: unmatched queries resolve where the default outbound sends
+	-- their traffic — `remote` when it is a proxy, `local` otherwise
+	-- (direct, unset, or block).
+	local final_server = default_is_proxy and "remote" or "local"
+
+	local dns = {
+		servers = servers,
+		rules   = rules,
+		final   = final_server
+	}
+	if strategy ~= "" then dns.strategy = strategy end
+	if fakeip_on then dns.independent_cache = true end
+
+	return dns
+end
+
+-- ─── route ───────────────────────────────────────────────────────────────
+
+-- Port values may be plain numbers or "lo-hi" ranges; split them into the
+-- numeric `port` array and the "lo:hi" `port_range` array sing-box expects.
+local function split_ports(values)
+	local ports, ranges = {}, {}
+	for _, p in ipairs(values) do
+		p = tostring(p):match("^%s*(.-)%s*$")
+		if p:find("-") then
+			ranges[#ranges + 1] = (p:gsub("-", ":"))
+		else
+			local n = tonumber(p)
+			if n then ports[#ports + 1] = n end
+		end
+	end
+	return ports, ranges
+end
+
+-- Compile one resolved condition into a sing-box match node. Each condition
+-- becomes its own node, so domain and ip_cidr matchers are never placed on a
+-- single rule (the sing-box default-rule AND-trap) — no inline rule-set is
+-- needed. A condition flagged `invert` carries sing-box's `invert: true`,
+-- negating just that node's match. Returns nil when the condition resolves
+-- to nothing: an empty value list, a ruleset whose every token failed to
+-- resolve, or a `network` condition naming both transports. The
+-- `emit_ruleset` callback registers the route-level remote rule_set objects.
+local function compile_condition(r, emit_ruleset)
+	local k = r.kind
+	local node
+	if k == "domain" or k == "domain_suffix"
+	   or k == "domain_keyword" or k == "domain_regex" then
+		if #r.values > 0 then node = { [k] = r.values } end
+	elseif k == "ip_cidr" then
+		if #r.values > 0 then node = { ip_cidr = r.values } end
+	elseif k == "protocol" then
+		if #r.values > 0 then node = { protocol = r.values } end
+	elseif k == "network" then
+		-- Transport matcher. sing-box only understands "tcp" and "udp";
+		-- anything else fails `sing-box check`, so an unknown token (only
+		-- reachable by hand-editing UCI — the UI offers a two-option
+		-- select) is dropped rather than passed through.
+		--
+		-- Both transports at once is a tautology: nothing but TCP and UDP
+		-- ever reaches sing-box (firewall.sh's prerouting chain accepts
+		-- every other l4proto before the tproxy rules, and the TUN carries
+		-- no other routed connection), so the condition is dropped. Inside
+		-- an AND-run that is exactly equivalent to emitting it; as a rule's
+		-- only condition it makes the rule skip instead of matching every
+		-- destination and shadowing every rule below it, which is the same
+		-- posture an empty rule already gets. Inverted, though, "neither
+		-- tcp nor udp" matches nothing and is emitted verbatim — that is
+		-- what was written, and it shadows nothing.
+		local nets, seen = {}, {}
+		for _, v in ipairs(r.values) do
+			v = tostring(v):lower():match("^%s*(.-)%s*$")
+			if (v == "tcp" or v == "udp") and not seen[v] then
+				seen[v] = true
+				nets[#nets + 1] = v
+			end
+		end
+		if #nets > 0 and not (#nets == 2 and not r.invert) then
+			node = { network = nets }
+		end
+	elseif k == "port" then
+		local ports, ranges = split_ports(r.values)
+		if #ports > 0 or #ranges > 0 then
+			node = {}
+			if #ports  > 0 then node.port       = ports  end
+			if #ranges > 0 then node.port_range = ranges end
+		end
+	elseif k == "ruleset" then
+		if #r.tags > 0 then
+			for _, tag in ipairs(r.tags) do
+				emit_ruleset(tag, r.rs_meta[tag])
+			end
+			node = { rule_set = r.tags }
+		end
+	end
+	if node and r.invert then
+		node.invert = true
+	end
+	return node
+end
+
+-- Fold a list of match nodes into a single sing-box rule: one node is
+-- returned as-is, several are wrapped in a `logical` rule of the given mode.
+local function join_nodes(nodes, mode)
+	if #nodes == 1 then return nodes[1] end
+	return { type = "logical", mode = mode, rules = nodes }
+end
+
+-- Common-ports preset for Basic mode's "proxy only common ports" choice.
+-- SSH / mail / DNS / HTTP(S) / DoT / IMAP / POP3 / XMPP-fallback / alt-web.
+-- Modern messengers (WhatsApp, Telegram, Signal) run over 443 and are
+-- already covered by HTTPS; 5222 / 5223 are kept for legacy fallback.
+local BASIC_COMMON_PORTS = {
+	22, 25, 53, 80, 110, 143, 443, 465, 587, 853,
+	993, 995, 5222, 5223, 8080, 8443
+}
+
+-- Basic mode route block. Fixed structure: sniff → DNS hijack → private-IP
+-- bypass → optional country bypass (geoip + geosite for the picked country
+-- ISO code → direct) → optional common-ports proxy rule → final routes to
+-- the synthesised default outbound (or stays direct when no server is
+-- selected, leaving sing-box as a configured but transparent forwarder).
+local function build_basic_route(c)
+	local route = {
+		rules = {},
+		auto_detect_interface = true,
+		default_domain_resolver = { server = "local" }
+	}
+
+	local imode = c:get("treadle", "inbounds", "mode") or "tproxy"
+	if imode == "tproxy" or imode == "tproxy_mixed" then
+		route.default_mark = 255
+	end
+
+	route.rules[#route.rules + 1] = { action = "sniff" }
+	route.rules[#route.rules + 1] = { protocol = "dns", action = "hijack-dns" }
+	if c:get("treadle", "dns", "managed_dns") ~= "0" then
+		route.rules[#route.rules + 1] = { inbound = "dns-in", action = "hijack-dns" }
+	end
+	route.rules[#route.rules + 1] = { ip_is_private = true, outbound = "direct" }
+
+	local basic        = c:get_all("treadle", "basic") or {}
+	local routing_mode = basic.routing or "all"
+	local cc           = string.lower(basic.bypass_country or "")
+	local ports_mode   = basic.ports   or "all"
+	local delivery     = c:get("treadle", "global", "ruleset_delivery") or "github"
+
+	-- Basic always fetches rule-sets directly via WAN, regardless of the
+	-- Advanced ruleset_download_detour knob. The default-outbound path is a
+	-- chicken-and-egg trap at startup: sing-box initialises rule-sets before
+	-- the urltest has picked a member, so dialling through `basic-auto`
+	-- times out and the whole service aborts with a FATAL. WAN is always
+	-- reachable at this point (the treadle init script gates start_service on
+	-- WAN being up); once one fetch succeeds, experimental.cache_file lets
+	-- subsequent boots load rule-sets from flash regardless of the network.
+	local rule_sets = {}
+	local function emit_rs(tag, url)
+		rule_sets[#rule_sets + 1] = {
+			type = "remote", tag = tag, format = "binary", url = url,
+			download_detour = "direct"
+		}
+	end
+
+	-- Country bypass — geoip catches direct-IP destinations, geosite catches
+	-- domain-routed ones. `rule_set` on a route rule is OR-matched in
+	-- sing-box, so one rule with both tags suffices. Provider is hardcoded
+	-- to sagernet to match the rule-set Advanced mode emits by default.
+	-- Known gap: lookups for bypassed-country domains still exit via the
+	-- `remote` resolver — DNS routing rules are not synthesised in Basic
+	-- (prepare_rules returns {}). With fakeip off the resolution is over
+	-- DoT and content is encrypted, so it is a mild correctness wart but
+	-- not a leak. With fakeip on (an Advanced setting that persists in UCI
+	-- if a user crosses modes) `remote` returns a fake IP that still routes
+	-- direct via the geoip set after demap, but the resolver used was the
+	-- proxied one — same wart, different surface.
+	-- Sagernet's geoip catalog covers ~all ISO codes (every Basic-mode
+	-- option resolves), but their geosite catalog ships only a handful
+	-- of per-country lists — at the time of writing, only `cn`.
+	-- Emitting geosite-<cc> for every country produces 404s on the
+	-- .srs fetch, sing-box logs the failure and the rule is half-effective
+	-- (direct-IP traffic bypassed, domain-routed traffic still proxied).
+	-- Gate geosite emission on the known-good set; geoip stays
+	-- unconditional so the bypass at least catches IP-routed packets
+	-- everywhere.
+	local SAGERNET_GEOSITES = { cn = true }
+	if routing_mode == "bypass_country" and cc ~= "" then
+		local geoip_name = "geoip-" .. cc
+		local geoip_tag  = "sagernet-" .. geoip_name
+		emit_rs(geoip_tag, provider_url("sagernet", delivery, geoip_name))
+		local rs_tags = { geoip_tag }
+		if SAGERNET_GEOSITES[cc] then
+			local geosite_name = "geosite-" .. cc
+			local geosite_tag  = "sagernet-" .. geosite_name
+			emit_rs(geosite_tag, provider_url("sagernet", delivery, geosite_name))
+			rs_tags[#rs_tags + 1] = geosite_tag
+		end
+		route.rules[#route.rules + 1] = {
+			rule_set = rs_tags,
+			outbound = "direct"
+		}
+	end
+
+	local default_outbound = compute_default_outbound(c)
+
+	if ports_mode == "common" then
+		-- Match common ports → proxy; everything else falls through to final
+		-- = direct. The rule is skipped when no server is selected (the
+		-- default outbound resolves to "direct" and the rule would be a
+		-- no-op anyway).
+		if default_outbound ~= "direct" then
+			route.rules[#route.rules + 1] = {
+				port     = BASIC_COMMON_PORTS,
+				outbound = default_outbound
+			}
+		end
+		route["final"] = "direct"
+	else
+		route["final"] = default_outbound
+	end
+
+	if #rule_sets > 0 then
+		route.rule_set = rule_sets
+	end
+
+	return route
+end
+
+local function build_route(c, prepared)
+	if read_mode(c) == "basic" then return build_basic_route(c) end
+
+	local route = {
+		rules = {},
+		auto_detect_interface = true,
+		-- sing-box 1.12 requires explicit domain resolution for outbound
+		-- endpoint hostnames (e.g. the `remote` DNS server's own SNI host).
+		-- The `local` server resolves them via a direct upstream — never
+		-- through local-net, which under managed DNS forwards back into
+		-- sing-box and would deadlock node-hostname resolution at startup.
+		default_domain_resolver = { server = "local" }
+	}
+
+	-- Mark sing-box's own outbound sockets so the OUTPUT-chain nftables rules
+	-- (when router-traffic capture is enabled) skip them and don't loop the
+	-- proxy back through itself. Harmless when no firewall rule references
+	-- mark 255. tun mode doesn't need it but setting it unconditionally is
+	-- simpler than threading inbound mode through here.
+	local imode = c:get("treadle", "inbounds", "mode") or "tproxy"
+	if imode == "tproxy" or imode == "tproxy_mixed" then
+		route.default_mark = 255
+	end
+
+	-- Sniff action rule must be first so protocol/domain metadata is populated
+	-- before any subsequent rules inspect it (sing-box 1.11+ action syntax).
+	route.rules[#route.rules + 1] = { action = "sniff" }
+
+	-- Per-host bypass for tun mode. firewall.sh handles bypasses directly
+	-- in tproxy / tproxy_mixed via an `accept` rule at the head of the
+	-- prerouting chain; here we get the same effect at the routing layer
+	-- so a bypassed source_ip lands on the `direct` outbound before any
+	-- user rule can claim it. MAC bypasses are inert in tun mode (the L2
+	-- address is not visible at the IP layer the TUN device exposes) — the
+	-- UI surfaces a warning row for those entries.
+	if imode == "tun" then
+		local cidrs = {}
+		c:foreach("treadle", "bypass", function(s)
+			if s.enabled ~= "0" and s.kind == "ip"
+			   and s.value and s.value ~= "" then
+				local v = s.value
+				if not v:find("/", 1, true) then
+					v = v .. (v:find(":", 1, true) and "/128" or "/32")
+				end
+				cidrs[#cidrs + 1] = v
+			end
+		end)
+		if #cidrs > 0 then
+			route.rules[#route.rules + 1] = {
+				source_ip_cidr = cidrs,
+				outbound       = "direct"
+			}
+		end
+	end
+
+	-- DNS hijack: traffic destined for any DNS server is intercepted and
+	-- answered by sing-box's resolver. The dns-out outbound was removed in
+	-- sing-box 1.12 in favour of the explicit hijack-dns action.
+	route.rules[#route.rules + 1] = { protocol = "dns", action = "hijack-dns" }
+
+	-- Managed DNS: queries arriving on the dns-in inbound (forwarded by
+	-- dnsmasq) are answered by sing-box's resolver. Matched by inbound tag,
+	-- so it works regardless of protocol sniffing.
+	if c:get("treadle", "dns", "managed_dns") ~= "0" then
+		route.rules[#route.rules + 1] = { inbound = "dns-in", action = "hijack-dns" }
+	end
+
+	-- Private destinations bypass the proxy. RFC1918, loopback, link-local,
+	-- multicast and IPv6 ULA all match ip_is_private (sing/common/network
+	-- IsPublicAddr); CGNAT (100.64/10) and the IPv4 fakeip default
+	-- (198.18/15) intentionally do not. In tproxy / tproxy_mixed mode this
+	-- is inert because firewall.sh already filters reserved ranges at
+	-- prerouting; in tun mode it is load-bearing — without it a Default
+	-- server pointing at a proxy would tunnel LAN-to-LAN traffic too.
+	-- Fakeip-mapped destinations are safe: sing-box demaps them to an FQDN
+	-- at the start of matchRule (route/route.go:434), before any rule
+	-- evaluates, so by the time this rule runs metadata.Destination.Addr
+	-- is invalid and ip_is_private short-circuits to false.
+	route.rules[#route.rules + 1] = { ip_is_private = true, outbound = "direct" }
+
+	-- Remote rule-set objects, deduplicated by tag across rules. sing-box
+	-- downloads and refreshes each one itself; download_detour decides
+	-- whether that fetch goes out the WAN ("direct") or, when blank, through
+	-- the default outbound (the proxy). `update_interval` is omitted: sing-box
+	-- defaults it to "1d", which is exactly what Treadle wants.
+	--
+	-- NOTE: `download_detour` is deprecated in sing-box 1.14 and removed in
+	-- 1.16; its replacement is the `http_client` rule-set field (1.14+).
+	-- Treadle's sing-box floor is 1.12, so `download_detour` is still the only
+	-- form valid across the whole supported range. When that floor is raised
+	-- to 1.14, migrate this to `http_client`.
+	local detour    = c:get("treadle", "global", "ruleset_download_detour") or "direct"
+	local seen_tags = {}
+	local rule_sets = {}
+	local function emit_remote_ruleset(tag, meta)
+		if seen_tags[tag] then return end
+		seen_tags[tag] = true
+		local rs = {
+			type   = "remote",
+			tag    = tag,
+			format = (meta and meta.format) or "binary",
+			url    = meta and meta.url
+		}
+		if detour == "direct" then
+			rs.download_detour = "direct"
+		end
+		rule_sets[#rule_sets + 1] = rs
+	end
+
+	for _, pr in ipairs(prepared) do
+		local s = pr.section
+
+		-- Compile each condition to a match node; a condition that resolves
+		-- to nothing (e.g. a custom rule-set with no registry URL) is dropped
+		-- along with its operator slot, so a surviving condition simply links
+		-- to its nearest surviving predecessor.
+		local frags = {}
+		for _, r in ipairs(pr.conditions) do
+			local node = compile_condition(r, emit_remote_ruleset)
+			if node then
+				frags[#frags + 1] = { node = node, op = r.op }
+			end
+		end
+
+		-- An empty rule (no conditions, or every condition unresolved) is
+		-- skipped, not emitted: with no matchers it would match every
+		-- destination and shadow every rule below it, while route.final
+		-- already handles otherwise-unmatched traffic. So `#frags == 0`
+		-- always means skip.
+		if #frags == 0 then
+			local label = (s.name and s.name ~= "") and s.name or s[".name"]
+			local why = (#pr.conditions == 0)
+				and "has no conditions"
+				or  "has no resolvable destination"
+			io.stderr:write("treadle build-config: rule '" .. label ..
+				"' " .. why .. "; skipping\n")
+		else
+			-- Build the match tree: split the fragments into AND-runs at
+			-- every condition whose operator is "or", then OR the runs
+			-- together. AND binds tighter than OR (standard precedence), so
+			-- the result is an OR-of-ANDs.
+			local runs = {}
+			local cur  = { frags[1].node }
+			for i = 2, #frags do
+				if frags[i].op == "and" then
+					cur[#cur + 1] = frags[i].node
+				else
+					runs[#runs + 1] = cur
+					cur = { frags[i].node }
+				end
+			end
+			runs[#runs + 1] = cur
+
+			local run_nodes = {}
+			for _, run in ipairs(runs) do
+				run_nodes[#run_nodes + 1] = join_nodes(run, "and")
+			end
+			local rule = join_nodes(run_nodes, "or")
+
+			if s.outbound == "block" then
+				-- "block" compiles to a reject action, not an outbound.
+				rule.action = "reject"
+			else
+				rule.action   = "route"
+				rule.outbound = s.outbound or "direct"
+			end
+
+			route.rules[#route.rules + 1] = rule
+		end
+	end
+
+	if #rule_sets > 0 then
+		route.rule_set = rule_sets
+	end
+
+	local fin = c:get("treadle", "routing", "final_outbound") or "direct"
+	if fin == "" then fin = "direct" end
+	if fin == "block" then
+		-- There is no "block" outbound to point `final` at — append a
+		-- catch-all reject rule (matches everything no earlier rule did)
+		-- and leave `final` on the always-present direct outbound, where it
+		-- is now unreachable.
+		route.rules[#route.rules + 1] = { action = "reject" }
+		route["final"] = "direct"
+	else
+		route["final"] = fin
+	end
+	return route
+end
+
+-- ─── top-level assembly + merge slot ─────────────────────────────────────
+
+-- Valid sing-box log levels. An invalid level aborts sing-box startup, so an
+-- unrecognised UCI value falls back to warn rather than being passed through.
+local LOG_LEVELS = {
+	trace = true, debug = true, info  = true, warn = true,
+	error = true, fatal = true, panic = true
+}
+
+-- `timestamp = false`: sing-box's log goes to stdout, procd hands that to
+-- syslog, and logread already stamps every line — so a timestamped line
+-- carries two clock readings, and they disagree (syslog prints local time,
+-- sing-box prints UTC), which is worse than merely redundant when reading
+-- raw logread output. The Status page never showed the second one anyway:
+-- LOG_RE in status.js has always matched it as an optional group and
+-- dropped it. What is reclaimed is space in the syslog ring buffer, which
+-- is the binding constraint on how much history survives — a steadily
+-- logging sing-box can evict the whole buffer in well under an hour,
+-- taking Treadle's own control-plane narrative with it.
+--
+-- Colour is NOT configurable here: sing-box has no `log.disable_color`
+-- (it rejects the key outright) and ignores NO_COLOR, TERM and CLICOLOR,
+-- so its ANSI escapes reach syslog regardless. status.js strips them on
+-- display via ANSI_RE; there is nothing to do about them at config level.
+--
+-- A user who routes the log to a file via extra.json's log.output can set
+-- `timestamp` back to true in the same merge slot.
+local function build_log(c)
+	local level = c:get("treadle", "global", "log_level")
+	if not level or not LOG_LEVELS[level] then level = "warn" end
+	return { level = level, timestamp = false }
+end
+
+
+-- Drop a dangling outbound reference (deleted manual node, renamed subscription
+-- tag) to "direct" with a warning to stderr. sing-box rejects the whole config
+-- on a route.final or dns.servers[].detour pointing at a missing outbound, and
+-- the init.d fall-back-to-last-working logic hides the failure from the user;
+-- this surfaces the cause and keeps the new save valid.
+--
+-- `originset[tag]` carries the origin info for that tag (one of "manual",
+-- "subscription <id>", "group"). Used to emit the SEC-4 audit line below:
+-- when a route or DNS reference resolves to a subscription LEAF node (not a
+-- group), it's unusual — the field is typically aimed at a group tag — and
+-- a hostile subscription that happened to ship a node matching the user's
+-- typed tag would silently fulfil the reference. We don't reject (the user
+-- may have intended it), but we surface it for audit.
+local function validate_tag(label, tag, tagset, originset)
+	if tag == nil or tag == "" or tag == "direct" or tag == "block" then return tag end
+	if tagset[tag] then
+		local origin = originset and originset[tag]
+		if origin and origin:sub(1, 13) == "subscription " then
+			io.stderr:write("treadle build-config: " .. label .. " '"
+				.. tostring(tag) .. "' resolved to a " .. origin
+				.. " node — verify intent (route fields typically target groups, "
+				.. "not individual subscription nodes)\n")
+		end
+		return tag
+	end
+	io.stderr:write("treadle build-config: " .. label .. " references unknown outbound '"
+		.. tostring(tag) .. "', falling back to 'direct'\n")
+	return "direct"
+end
+
+local function build_config(c)
+	local prepared = prepare_rules(c)
+	local dns   = build_dns(c, prepared)
+	local route = build_route(c, prepared)
+	local outbounds, endpoints = build_outbounds(c)
+
+	-- Post-build validation: route.final and every dns.servers[].detour must
+	-- resolve to a tag that build_outbounds actually emitted (plus the
+	-- builtins direct/block). Stale Advanced final_outbound and DNS detour
+	-- references — surfaced by a deleted manual node or a renamed
+	-- subscription tag — would otherwise produce a config sing-box rejects,
+	-- and the init.d fallback would hide that from the user indefinitely.
+	local tagset    = {}
+	local originset = {}
+	-- Subscription uid → display name, so the SEC-4 audit line shows the
+	-- friendly name instead of the 16-hex section id.
+	local sub_names = sub_display_names(c)
+	local function classify(ob)
+		if ob.type == "urltest" or ob.type == "selector" then return "group" end
+		if ob._source == "_manual" or ob._source == nil then return "manual" end
+		return "subscription " .. tostring(sub_names[ob._source] or ob._source)
+	end
+	for _, ob in ipairs(outbounds) do
+		if ob.tag then tagset[ob.tag] = true; originset[ob.tag] = classify(ob) end
+	end
+	for _, ob in ipairs(endpoints) do
+		if ob.tag then tagset[ob.tag] = true; originset[ob.tag] = classify(ob) end
+	end
+	route["final"] = validate_tag("route.final", route["final"], tagset, originset)
+	if type(dns.servers) == "table" then
+		for _, s in ipairs(dns.servers) do
+			if s.detour then
+				s.detour = validate_tag("dns.servers[" .. (s.tag or "?") .. "].detour", s.detour, tagset, originset)
+			end
+		end
+	end
+
+	local config = {
+		log       = build_log(c),
+		dns       = dns,
+		inbounds  = build_inbounds(c),
+		outbounds = outbounds,
+		route     = route
+	}
+	-- endpoints (WireGuard) is emitted only when non-empty, so a config with
+	-- no WireGuard nodes stays byte-identical to before.
+	if #endpoints > 0 then
+		config.endpoints = endpoints
+	end
+
+	local experimental = {}
+
+	-- Persist the remote rule-set cache to flash. On startup sing-box loads
+	-- rule-sets from this cache instead of downloading, so after one
+	-- successful fetch it starts offline — no network needed at init, no
+	-- cold-boot FATAL. The background update loop refreshes them later.
+	-- Emitted only when there is a rule-set to cache. The fakeip and
+	-- DNS-result stores both default off, so the file is written only when
+	-- a rule-set actually changes (~daily) — negligible flash wear, unlike
+	-- the per-query churn those stores would add.
+	if route.rule_set then
+		os.execute("mkdir -p /etc/treadle 2>/dev/null")
+		experimental.cache_file = {
+			enabled = true,
+			path    = "/etc/treadle/cache.db"
+		}
+	end
+
+	-- Clash-compatible API for on-demand node latency probes. Loopback-only
+	-- (127.0.0.1:9090); no secret because the API is bound to 127.0.0.1 and
+	-- our threat model has no scenario where dropping it loses ground: any
+	-- attacker on the router with the capability to reach port 9090 is
+	-- already root and can read UCI, restart sing-box, etc. directly. With
+	-- no `secret` field sing-box's auth middleware is a no-op, which lets
+	-- uclient-fetch reach the API without a custom Authorization header (a
+	-- flag uclient-fetch has no spelling for). The API is opt-in via
+	-- `clash_api_enabled` — default off, nothing listens until the user
+	-- toggles it from Settings → Advanced.
+	if c:get("treadle", "global", "clash_api_enabled") == "1" then
+		experimental.clash_api = {
+			external_controller = "127.0.0.1:9090"
+		}
+	end
+
+	if next(experimental) ~= nil then
+		config.experimental = experimental
+	end
+	return config
+end
+
+local function apply_extra(c, config)
+	-- Basic mode ignores extra.json — the file is kept on disk for an
+	-- Advanced switch-back, but the merge is a builder gate, not data.
+	if read_mode(c) == "basic" then return config end
+	local raw = read_file(EXTRA_PATH)
+	if not raw or raw:match("^%s*$") then return config end
+	local ok, extra = pcall(jsonc.parse, raw)
+	if not ok or type(extra) ~= "table" then
+		io.stderr:write("treadle build-config: " .. EXTRA_PATH .. " is not valid JSON, skipping\n")
+		return config
+	end
+	-- Shallow merge: top-level keys in extra win. Arrays are replaced, not
+	-- concatenated — users who want to add inbounds must restate all of them.
+	for k, v in pairs(extra) do config[k] = v end
+	return config
+end
+
+-- ─── probe config (--probe): ephemeral latency-test instance ─────────────
+--
+-- The running config is lean — only nodes referenced by a rule or group
+-- reach sing-box. Latency testing needs every known node dialable, so
+-- test-all-runner spins up a second, short-lived sing-box instance from
+-- this config: every concrete node Treadle knows about (manual + every
+-- subscription), a loopback clash API on its own port, and nothing else.
+-- No inbounds, no route rules, no rule-sets and no cache_file (the live
+-- instance holds a bbolt lock on cache.db). The runner probes
+-- /proxies/<tag>/delay on PROBE_CLASH_HOST and tears the instance down
+-- when the batch finishes.
+--
+-- Loop safety mirrors the production config: auto_detect_interface binds
+-- dials to the real upstream interface (escaping the live instance's TUN
+-- auto-route), and default_mark=255 makes firewall.sh's OUTPUT chain skip
+-- probe sockets in tproxy(_mixed) mode exactly like the live instance's
+-- own traffic — without these, probes would tunnel through the live proxy
+-- and measure the double-hop instead of the node.
+local function build_probe_config(c)
+	local all_ordered = load_all_nodes(c)
+
+	local outbounds = { direct_outbound() }
+	local endpoints = {}
+	for _, ob in ipairs(all_ordered) do
+		-- Groups are skipped: their concrete members are all emitted
+		-- individually, and an unexpanded urltest would be rejected.
+		if ob.type ~= "urltest" then
+			-- No connect_timeout here, deliberately: the probe instance
+			-- already has an explicit per-probe budget (test-all-runner's
+			-- PROBE_TIMEOUT_MS, with REQ_TIMEOUT_S outside it), tuned against
+			-- real batch contention. A second, shorter deadline underneath it
+			-- would fail the dial before that budget is spent and record a
+			-- distant-but-healthy node as down — the exact flapping the
+			-- PROBE_TIMEOUT_MS comment documents having already paid for.
+			place_node(ob, outbounds, endpoints)
+		end
+	end
+
+	local route = {
+		auto_detect_interface   = true,
+		default_domain_resolver = { server = "local" }
+	}
+	local imode = c:get("treadle", "inbounds", "mode") or "tproxy"
+	if imode == "tproxy" or imode == "tproxy_mixed" then
+		route.default_mark = 255
+	end
+
+	local config = {
+		log       = { level = "warn", timestamp = false },
+		dns       = { servers = { build_local_dns_entry(c) }, final = "local" },
+		outbounds = outbounds,
+		route     = route,
+		experimental = {
+			clash_api = { external_controller = PROBE_CLASH_HOST }
+		}
+	}
+	if #endpoints > 0 then
+		config.endpoints = endpoints
+	end
+	return config
+end
+
+-- ─── main ────────────────────────────────────────────────────────────────
+
+local c = uci_mod.cursor()
+
+-- Argv: build-config [--preview|--probe] [out_path]
+-- --preview / -n: pure-read mode for get_config (no orphan deletion, no
+-- dnsmasq drop-in rewrite). out_path is required in preview mode so the
+-- caller controls where the preview goes (defaulting would clobber the
+-- live config_path).
+-- --probe: build the ephemeral latency-test instance config instead
+-- (side-effect-free like --preview; out_path defaults to
+-- PROBE_CONFIG_PATH, never the live config_path).
+local out_path
+local args = {}
+for _, a in ipairs(arg) do args[#args + 1] = a end
+local i = 1
+while i <= #args do
+	if args[i] == "--preview" or args[i] == "-n" then
+		PREVIEW_MODE = true
+	elseif args[i] == "--probe" then
+		PROBE_MODE   = true
+		PREVIEW_MODE = true
+	elseif not out_path then
+		out_path = args[i]
+	end
+	i = i + 1
+end
+if not out_path or out_path == "" then
+	out_path = PROBE_MODE and PROBE_CONFIG_PATH
+		or c:get("treadle", "global", "config_path") or "/var/etc/treadle/sing-box.json"
+end
+
+local config = PROBE_MODE and build_probe_config(c)
+	or apply_extra(c, build_config(c))
+c:close()
+
+-- Pretty-print, then unescape forward slashes. luci.jsonc wraps json-c, which
+-- escapes `/` as `\/` unconditionally (a legacy guard against `</script>`
+-- breakouts in HTML embeds, irrelevant here) and does not expose the
+-- JSON_C_TO_STRING_NOSLASHESCAPE flag. Replacing `\/` with `/` is
+-- semantics-preserving for any standards-compliant encoder output: a literal
+-- backslash always encodes as `\\`, so the only `\/` byte-pair this gsub can
+-- match is a slash that the encoder escaped — and the same byte-pair decodes
+-- back to `/` either way.
+local json = jsonc.stringify(config, true):gsub("\\/", "/")
+local ok, err = write_atomic(out_path, json)
+if not ok then
+	io.stderr:write("treadle build-config: " .. err .. "\n")
+	os.exit(1)
+end
+
+-- (Re)generate the dnsmasq managed-DNS drop-in. The content is deterministic
+-- (derived purely from LOCAL_DOMAINS), so writing it on every build is
+-- harmless; /etc/init.d/treadle only copies it into place when managed DNS is
+-- enabled. A failure here is non-fatal — the sing-box config is the build's
+-- critical output. Skipped in --preview mode so a read-only get_config can
+-- never overwrite the live drop-in.
+if PREVIEW_MODE then os.exit(0) end
+local dropin_ok, dropin_err = write_atomic(DNSMASQ_DROPIN, build_dnsmasq_dropin())
+if not dropin_ok then
+	io.stderr:write("treadle build-config: " .. dropin_err .. "\n")
+end
+
+io.stdout:write("treadle build-config: wrote " .. out_path .. "\n")

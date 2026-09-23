@@ -1,0 +1,57 @@
+port: 7890
+mode: rule
+proxies:
+  - name: SG-01
+    type: ss
+    server: 203.0.113.20
+    port: 8388
+    cipher: aes-128-gcm
+    password: "<password>"
+  - name: SG-02
+    type: vmess
+    server: example.com
+    port: 443
+    uuid: 00000000-0000-0000-0000-000000000000
+    alterId: 0
+    cipher: auto
+    tls: true
+    servername: example.com
+    network: ws
+    ws-opts:
+      path: /ws
+      headers:
+        Host: example.com
+  - {name: SG-03, type: trojan, server: example.org, port: 443, password: "<password>", sni: example.org, skip-cert-verify: true}
+  - name: SG-04
+    type: vless
+    server: example.net
+    port: 443
+    uuid: 00000000-0000-0000-0000-000000000000
+    tls: true
+    servername: example.org
+    flow: xtls-rprx-vision
+    reality-opts:
+      public-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+      short-id: "01"
+    client-fingerprint: chrome
+  - name: SG-05
+    type: hysteria2
+    server: 203.0.113.21
+    port: 443
+    password: "<password>"
+    sni: example.com
+  - name: SG-06
+    type: tuic
+    server: 203.0.113.22
+    port: 443
+    uuid: 00000000-0000-0000-0000-000000000000
+    password: "<password>"
+    sni: example.com
+    congestion-controller: bbr
+  - {name: SG-07, type: anytls, server: example.net, port: 443, password: "<password>", sni: example.net}
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies: [SG-01, SG-02]
+rules:
+  - MATCH,Proxy

@@ -1,0 +1,167 @@
+name: CI
+
+# Every pull request and every push to main runs the same checks: static
+# lint, a package build with a syntax check of what actually ships, and an
+# end-to-end smoke test on real OpenWrt userlands (one apk-era, one
+# opkg-era release). A push to main that passes all of them also publishes
+# the rolling snapshot, so the snapshot is always the latest tested main.
+#
+# Actions are pinned by commit SHA; the tag each SHA was taken from is in
+# the trailing comment. Dependabot keeps both in step.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SHELLCHECK_VERSION: v0.11.0
+  SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      # The distro shellcheck predates the busybox dialect the router
+      # scripts are checked against, so fetch a pinned release.
+      - name: Install shellcheck and luacheck
+        run: |
+          curl -fsSL -o /tmp/sc.tar.xz \
+            "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          echo "${SHELLCHECK_SHA256}  /tmp/sc.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/sc.tar.xz -C /tmp
+          sudo install -m 0755 "/tmp/shellcheck-${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq lua-check
+          shellcheck --version | head -n2
+          luacheck --version | head -n1
+
+      - name: Lint
+        run: sh scripts/lint.sh
+
+  build:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # package.sh reads tags and HEAD's commit date
+
+      - name: Install apk-tools
+        uses: ./.github/actions/install-apk-tools
+
+      - name: Build packages
+        run: scripts/package.sh
+
+      - name: Check version against apk's parser
+        id: version
+        run: |
+          BUILT=$(basename "$(ls dist/*.apk | head -n1)" .apk)
+          BUILT="${BUILT#luci-app-treadle-}"
+          echo "version=${BUILT}" >> "$GITHUB_OUTPUT"
+          scripts/version-check.sh "$BUILT"
+
+      - name: Syntax-check the staged package tree
+        run: |
+          sudo apt-get install -y -qq lua5.1
+          sh scripts/check-stage.sh
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: packages-${{ github.sha }}
+          path: dist/
+          retention-days: 30
+          if-no-files-found: error
+
+  smoke:
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - openwrt/rootfs:x86_64-25.12.4    # apk
+          - openwrt/rootfs:x86_64-v24.10.8   # opkg
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: packages-${{ github.sha }}
+          path: dist/
+
+      - name: Smoke test on ${{ matrix.image }}
+        run: docker run --rm -v "$PWD:/work" "${{ matrix.image }}" /bin/sh /work/tests/smoke.sh
+
+  # The rolling snapshot: latest tested main, one stable URL. Only a push to
+  # main that passed every job above gets here.
+  snapshot:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [lint, build, smoke]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write   # move the snapshot tag, update its pre-release
+    concurrency:
+      group: snapshot
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: packages-${{ github.sha }}
+          path: dist/
+
+      - name: Publish the rolling snapshot pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILT_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          mkdir -p snapshot
+          for ext in apk ipk; do
+            src=$(ls dist/*."$ext" | head -n1)
+            cp "$src"        "snapshot/luci-app-treadle-snapshot.$ext"
+            cp "$src.sha256" "snapshot/luci-app-treadle-snapshot.$ext.sha256"
+          done
+
+          DL="https://github.com/${GITHUB_REPOSITORY}/releases/download/snapshot"
+          NOTES_FILE=$(mktemp)
+          sh scripts/release-notes.sh \
+            "${DL}/luci-app-treadle-snapshot.apk" \
+            "${DL}/luci-app-treadle-snapshot.ipk" \
+            > "$NOTES_FILE" <<EOF
+          Rolling snapshot of \`main\` — replaced by every merge that passes CI.
+
+          **Built version:** \`${BUILT_VERSION}\`
+          **Commit:** \`${GITHUB_SHA}\`
+          EOF
+
+          # The snapshot tag is not a version; it follows main.
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -f snapshot
+          git push origin snapshot --force
+
+          if gh release view snapshot >/dev/null 2>&1; then
+            gh release edit snapshot --title "Snapshot — ${BUILT_VERSION}" \
+              --notes-file "$NOTES_FILE" --prerelease --target "${GITHUB_SHA}"
+            gh release upload snapshot snapshot/* --clobber
+          else
+            gh release create snapshot snapshot/* --title "Snapshot — ${BUILT_VERSION}" \
+              --notes-file "$NOTES_FILE" --prerelease --target "${GITHUB_SHA}"
+          fi

@@ -1,0 +1,3 @@
+# Sourced OpenWrt helpers (/lib/functions.sh, jshn.sh, common.sh) live on
+# the router, not in this tree.
+disable=SC1091

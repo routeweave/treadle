@@ -1,0 +1,62 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 RouteWeave
+#
+# Hourly maintenance tick. Drives subscription auto-update and the periodic
+# latency test; each task decides for itself whether its interval has
+# elapsed, so an hour with nothing due costs only this script's own run.
+#
+# Rule-sets are not refreshed here — sing-box fetches and refreshes its
+# `remote` rule-sets itself. The recovery watchdog keeps its own */5 cron.
+
+. /lib/functions.sh
+
+# Subscriptions: sync-subscriptions walks each enabled subscription and
+# fetches only those whose auto_update interval (in hours) has elapsed.
+[ -x /usr/libexec/treadle/sync-subscriptions ] && \
+	/usr/libexec/treadle/sync-subscriptions
+
+# Periodic latency test: one full test-all-runner pass every
+# treadle.global.auto_test_hours hours (0/unset = off; requires latency
+# testing to be enabled). Deliberately a single run per tick AFTER the
+# whole sync pass above — not one per subscription sync: the runner
+# rebuilds its probe config from disk at start, so one run covers every
+# subscription's fresh nodes, while per-sync triggers would be dropped by
+# the runner's lock whenever a previous run is still probing (concurrent
+# runners exit immediately rather than queue).
+#
+# The last-run marker lives on tmpfs, so the first tick after a reboot
+# runs a test — that re-primes /var/etc/treadle/latency.json, which a reboot
+# wiped anyway.
+auto_latency_test() {
+	local enabled hours marker now last
+
+	config_load treadle
+	config_get_bool enabled global clash_api_enabled 0
+	[ "$enabled" = "1" ] || return 0
+	config_get hours global auto_test_hours 0
+	[ "$hours" -gt 0 ] 2>/dev/null || return 0
+	[ -x /usr/libexec/treadle/test-all-runner ] || return 0
+
+	marker=/var/etc/treadle/.last-auto-test
+	now=$(date +%s)
+	if [ -f "$marker" ]; then
+		last=$(cat "$marker" 2>/dev/null)
+		[ $((now - ${last:-0})) -ge $((hours * 3600)) ] || return 0
+	fi
+
+	# Written before the fork: if the runner declines to start (a manual
+	# test is holding the lock), skip this tick and retry next interval
+	# rather than re-arming every hour against a busy lock.
+	mkdir -p /var/etc/treadle 2>/dev/null
+	echo "$now" > "$marker"
+
+	# A full run must not inherit a stale tag-scoping file from an earlier
+	# aborted UI-triggered run.
+	rm -f /var/etc/treadle/.test-all-tags
+
+	logger -p daemon.info -t treadle "auto-test: probing all nodes (every ${hours}h)"
+	/usr/libexec/treadle/test-all-runner </dev/null >/dev/null 2>&1 &
+}
+
+auto_latency_test

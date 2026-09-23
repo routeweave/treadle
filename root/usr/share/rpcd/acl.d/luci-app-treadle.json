@@ -1,0 +1,17 @@
+{
+	"luci-app-treadle": {
+		"description": "LuCI interface for sing-box",
+		"read": {
+			"ubus": {
+				"luci.treadle": [ "get_status", "get_log", "get_logs", "get_config", "get_extra_config", "list_outbounds", "list_subscription_nodes", "list_rulesets", "list_dhcp_leases", "get_wan_dns", "get_last_latency", "test_all_status", "get_active_groups", "get_clash_stats" ]
+			},
+			"uci": [ "treadle" ]
+		},
+		"write": {
+			"ubus": {
+				"luci.treadle": [ "reload_if_changed", "reconcile_subscriptions", "set_enabled", "set_extra_config", "sync_subscription", "sync_all_subscriptions", "start", "stop", "restart", "test_all_start", "set_mode", "refresh_rulesets" ]
+			},
+			"uci": [ "treadle" ]
+		}
+	}
+}

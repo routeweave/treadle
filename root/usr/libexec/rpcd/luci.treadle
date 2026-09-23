@@ -1,0 +1,2428 @@
+#!/usr/bin/env lua
+-- SPDX-License-Identifier: GPL-3.0-only
+-- Copyright (C) 2026 RouteWeave
+
+-- luci.jsonc (from luci-lib-jsonc) is required for argument parsing.
+-- Load it lazily so that a missing module doesn't crash the list command:
+-- rpcd calls the handler with "list" first to discover methods, and if the
+-- script exits non-zero with no output, rpcd never registers the ubus object,
+-- causing every subsequent call to fail with "Object not found".
+local _jsonc_ok, _jsonc = pcall(require, "luci.jsonc")
+
+-- Shared helpers, loaded via dofile() with an absolute path (cwd-independent).
+-- treadlelib.lua ships in this package alongside this handler, so unlike the
+-- optional luci.jsonc it is always present when the handler is.
+local lib = dofile("/usr/libexec/treadle/treadlelib.lua")
+local read_file = lib.read_file
+
+-- Minimal JSON serialiser used when luci.jsonc is unavailable.
+-- Only handles the flat tables produced by this handler.
+local function _json_encode(v)
+	local t = type(v)
+	if t == "nil" then return "null"
+	elseif t == "boolean" then return v and "true" or "false"
+	elseif t == "number" then return tostring(v)
+	elseif t == "string" then
+		return '"' .. v:gsub('\\', '\\\\'):gsub('"', '\\"')
+		             :gsub('\n', '\\n'):gsub('\r', '\\r'):gsub('\t', '\\t') .. '"'
+	elseif t == "table" then
+		if #v > 0 then
+			local parts = {}
+			for i = 1, #v do parts[i] = _json_encode(v[i]) end
+			return "[" .. table.concat(parts, ",") .. "]"
+		end
+		local parts = {}
+		for k, val in pairs(v) do
+			parts[#parts + 1] = _json_encode(tostring(k)) .. ":" .. _json_encode(val)
+		end
+		return "{" .. table.concat(parts, ",") .. "}"
+	end
+	return "null"
+end
+
+local function json_stringify(v)
+	return _json_encode(v)
+end
+
+-- Serialise a `call` reply. Prefer luci.jsonc's C encoder: get_logs pushes
+-- up to 1000 syslog strings through here on every 2s Status-page poll, and
+-- the pure-Lua fallback runs 5 chained gsub's per string. One semantic
+-- difference: luci.jsonc encodes an empty Lua table as [] where the
+-- fallback emits {} — fine inside call replies (every nested empty here is
+-- a list the JS side iterates or indexes), but the top level must stay an
+-- object for rpcd's exec plugin, so an all-empty reply takes the fallback.
+-- The `list` reply stays on json_stringify: rpcd parses its nested arg
+-- tables for method registration and must see them as objects.
+local function json_stringify_reply(v)
+	if _jsonc_ok and not (type(v) == "table" and next(v) == nil) then
+		local ok, s = pcall(_jsonc.stringify, v)
+		if ok and s then return s end
+	end
+	return _json_encode(v)
+end
+
+local function json_parse(s)
+	if _jsonc_ok then
+		local ok, result = pcall(_jsonc.parse, s)
+		if ok then return result end
+	end
+	return nil
+end
+
+-- Base64 decode table covering both standard (+/) and URL-safe (-_) alphabets.
+local B64_DEC = {}
+do
+	local alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	for i = 1, #alpha do B64_DEC[alpha:sub(i, i)] = i - 1 end
+	B64_DEC["-"] = 62  -- URL-safe alternative for +
+	B64_DEC["_"] = 63  -- URL-safe alternative for /
+end
+
+-- Decode a Base64 string (standard or URL-safe, with or without padding).
+-- Uses only Lua 5.1 arithmetic — no bit library required.
+local function base64_decode(s)
+	s = s:gsub("[^A-Za-z0-9+/%-_=]", "")
+	s = s:gsub("%-", "+"):gsub("_", "/")  -- normalise URL-safe to standard
+	local pad = #s % 4
+	if pad == 2 then s = s .. "=="
+	elseif pad == 3 then s = s .. "=" end
+	local out = {}
+	for i = 1, #s - 3, 4 do
+		local a = B64_DEC[s:sub(i,   i  )] or 0
+		local b = B64_DEC[s:sub(i+1, i+1)] or 0
+		local c = B64_DEC[s:sub(i+2, i+2)] or 0
+		local d = B64_DEC[s:sub(i+3, i+3)] or 0
+		-- Pack four 6-bit values into three bytes using arithmetic (no bit ops)
+		local n = a * 262144 + b * 4096 + c * 64 + d
+		out[#out + 1] = string.char(math.floor(n / 65536))
+		if s:sub(i+2, i+2) ~= "=" then
+			out[#out + 1] = string.char(math.floor(n / 256) % 256)
+		end
+		if s:sub(i+3, i+3) ~= "=" then
+			out[#out + 1] = string.char(n % 256)
+		end
+	end
+	return table.concat(out)
+end
+
+-- Collect up to this many node names for logging.
+local MAX_NAMES = 20
+
+-- Parse a single proxy URI line into a complete sing-box outbound object
+-- (tag, type, server, server_port plus all protocol-specific fields like
+-- uuid, password, tls, transport, etc.). Returns nil if the line can't be
+-- recognised. The result is meant to be serialised verbatim as the outbound's
+-- payload, so it must contain everything sing-box needs to actually connect.
+
+-- URL-decode a percent-encoded string (handles +→space too, since some
+-- producers URL-encode query params that way).
+local function url_decode(s)
+	if not s then return "" end
+	return (s:gsub("%+", " "):gsub("%%(%x%x)", function(h)
+		return string.char(tonumber(h, 16))
+	end))
+end
+
+-- Split a URI userinfo into (user, pass) on the first ':'. Decode first
+-- because some generators percent-encode the separator as %3A (RFC 3986
+-- allows it inside userinfo), which would otherwise hide the split and
+-- collapse user:pass into a single field.
+local function split_userinfo(ui)
+	local decoded = url_decode(ui or "")
+	local a, b = decoded:match("^([^:]*):(.*)$")
+	if a then return a, b end
+	return decoded, nil
+end
+
+-- Parse "k1=v1&k2=v2&..." into { [k]=v } with URL-decoded keys and values.
+local function parse_query(s)
+	local q = {}
+	if not s or s == "" then return q end
+	for pair in s:gmatch("[^&]+") do
+		local k, v = pair:match("^([^=]+)=(.*)$")
+		if k then
+			q[url_decode(k)] = url_decode(v)
+		else
+			q[url_decode(pair)] = ""
+		end
+	end
+	return q
+end
+
+-- Split a CSV string into an array, returning nil for empty input so the
+-- caller can omit the field cleanly.
+local function split_csv(s)
+	if not s or s == "" then return nil end
+	local out = {}
+	for part in s:gmatch("[^,]+") do
+		part = part:match("^%s*(.-)%s*$")
+		if part ~= "" then out[#out + 1] = part end
+	end
+	return #out > 0 and out or nil
+end
+
+-- Pull a host and numeric port out of "host:port" or "[v6host]:port".
+local function split_host_port(s)
+	-- The authority ends at the first '/' (RFC 3986): subscription
+	-- generators commonly emit "host:port/?query", and a kept path would
+	-- make the trailing-digits port match below fail on every such URI.
+	s = s:match("^%s*(.-)%s*$"):gsub("/.*$", "")
+	local h, p = s:match("^%[([^%]]+)%]:(%d+)$")
+	if not h then h, p = s:match("^(.+):(%d+)$") end
+	return h, tonumber(p)
+end
+
+-- Build the sing-box `tls` sub-block from a URI query table. Returns nil
+-- when the URI doesn't request TLS so we don't emit an empty block. For
+-- protocols that are always TLS (hysteria2, tuic, anytls), the caller
+-- should pre-seed q.security = "tls" before calling.
+local function build_tls_from_query(q)
+	local sec = q.security or ""
+	if sec ~= "tls" and sec ~= "reality" and sec ~= "xtls" then return nil end
+	local tls = { enabled = true }
+	if q.sni and q.sni ~= "" then tls.server_name = q.sni end
+	if q.allowInsecure == "1" or q.insecure == "1" or q.allow_insecure == "1" then
+		tls.insecure = true
+	end
+	local alpn = split_csv(q.alpn)
+	if alpn then tls.alpn = alpn end
+	if q.fp and q.fp ~= "" then
+		tls.utls = { enabled = true, fingerprint = q.fp }
+	end
+	if sec == "reality" then
+		tls.reality = { enabled = true }
+		if q.pbk and q.pbk ~= "" then tls.reality.public_key = q.pbk end
+		if q.sid and q.sid ~= "" then tls.reality.short_id  = q.sid end
+	end
+	return tls
+end
+
+-- Build the sing-box `transport` sub-block from a URI query table.
+-- Returns nil for tcp/raw (the default has no transport block), or
+-- nil plus a reason when the URI names a transport sing-box cannot dial
+-- (Xray's `xhttp`, say) — the caller rejects the node rather than building
+-- it without the transport and letting every handshake fail.
+local function build_transport_from_query(q)
+	local t = (q.type or "tcp"):lower()
+	if t == "" or t == "tcp" or t == "raw" then return nil end
+	-- XHTTP is not a sing-box transport, but its stream-one mode is the
+	-- same wire shape as sing-box's `http`; map it instead of rejecting.
+	if t == "xhttp" then
+		return lib.map_xhttp_transport(q.path, q.host, q.mode)
+	end
+	if not lib.SUPPORTED_TRANSPORTS[t] and t ~= "h2" then
+		return nil, "transport '" .. t .. "' is not supported by sing-box"
+	end
+	if t == "ws" then
+		local tr = { type = "ws" }
+		if q.path and q.path ~= "" then tr.path = q.path end
+		if q.host and q.host ~= "" then tr.headers = { Host = q.host } end
+		return tr
+	end
+	if t == "grpc" then
+		local tr = { type = "grpc" }
+		local sn = q.serviceName or q.service_name
+		if sn and sn ~= "" then tr.service_name = sn end
+		return tr
+	end
+	if t == "http" or t == "h2" then
+		local tr = { type = "http" }
+		if q.path and q.path ~= "" then tr.path = q.path end
+		local hosts = split_csv(q.host)
+		if hosts then tr.host = hosts end
+		return tr
+	end
+	if t == "httpupgrade" then
+		local tr = { type = "httpupgrade" }
+		if q.path and q.path ~= "" then tr.path = q.path end
+		if q.host and q.host ~= "" then tr.host = q.host end
+		return tr
+	end
+	-- quic: sing-box takes an options-less transport block.
+	return { type = t }
+end
+
+-- Shallow-copy a query table then force security="tls". Used for protocols
+-- that are unconditionally TLS so build_tls_from_query produces the block.
+local function force_tls(q)
+	local out = {}
+	for k, v in pairs(q) do out[k] = v end
+	out.security = "tls"
+	return out
+end
+
+local function parse_proxy_uri(line)
+	line = line:match("^%s*(.-)%s*$")
+	local scheme = line:match("^([a-z][a-z0-9+%-]*)://")
+	if not scheme then return nil end
+	local body = line:sub(#scheme + 4)   -- everything after "://"
+
+	-- Display name (URL-encoded) lives in the fragment.
+	local name
+	local frag = body:find("#")
+	if frag then
+		name = url_decode(body:sub(frag + 1)):match("^%s*(.-)%s*$")
+		if name == "" then name = nil end
+		body = body:sub(1, frag - 1)
+	end
+
+	-- VMess: base64-encoded JSON, no userinfo@host:port structure.
+	if scheme == "vmess" then
+		if not _jsonc_ok then return nil end
+		local b64 = body:match("^([^?]+)") or ""
+		local ok, o = pcall(_jsonc.parse, base64_decode(b64))
+		if not ok or type(o) ~= "table" then return nil end
+		local server = type(o.add) == "string" and o.add or ""
+		if server == "" then return nil end
+		local tag = name or (type(o.ps) == "string" and o.ps ~= "" and o.ps) or server
+		local ob = {
+			type        = "vmess",
+			tag         = tag,
+			server      = server,
+			server_port = tonumber(o.port) or 0,
+			uuid        = type(o.id) == "string" and o.id or "",
+			alter_id    = tonumber(o.aid) or 0,
+			security    = (type(o.scy) == "string" and o.scy ~= "" and o.scy) or "auto"
+		}
+		local net = (type(o.net) == "string" and o.net or "tcp"):lower()
+		if net == "xhttp" then
+			local tr, reason = lib.map_xhttp_transport(o.path, o.host, o.mode)
+			if not tr then return nil, tag .. ": " .. reason end
+			ob.transport = tr
+		elseif net ~= "" and net ~= "tcp" and net ~= "raw"
+		   and not lib.SUPPORTED_TRANSPORTS[net] and net ~= "h2" then
+			return nil, tag .. ": transport '" .. net .. "' is not supported by sing-box"
+		end
+		if net == "ws" then
+			ob.transport = { type = "ws" }
+			if o.path and o.path ~= "" then ob.transport.path = o.path end
+			if o.host and o.host ~= "" then ob.transport.headers = { Host = o.host } end
+		elseif net == "grpc" then
+			ob.transport = { type = "grpc" }
+			if o.path and o.path ~= "" then ob.transport.service_name = o.path end
+		elseif net == "h2" or net == "http" then
+			ob.transport = { type = "http" }
+			if o.path and o.path ~= "" then ob.transport.path = o.path end
+			local hosts = split_csv(o.host)
+			if hosts then ob.transport.host = hosts end
+		end
+		if o.tls == "tls" or o.tls == "reality" then
+			ob.tls = { enabled = true }
+			local sni = (o.sni and o.sni ~= "" and o.sni) or
+			            (o.host and o.host ~= "" and o.host) or nil
+			if sni then ob.tls.server_name = sni end
+			local alpn = split_csv(o.alpn)
+			if alpn then ob.tls.alpn = alpn end
+			if o.fp and o.fp ~= "" then
+				ob.tls.utls = { enabled = true, fingerprint = o.fp }
+			end
+		end
+		return ob
+	end
+
+	-- Shadowsocks has two URI shapes; handle both before the userinfo split.
+	if scheme == "ss" then
+		local at = body:find("@")
+		local method, password, host, port
+		if at then
+			local userinfo = body:sub(1, at - 1)
+			local rest = body:sub(at + 1)
+			local hostport = rest:match("^([^?]+)") or rest
+			host, port = split_host_port(hostport)
+			if not host then return nil end
+			local decoded = base64_decode(userinfo)
+			method, password = decoded:match("^(.-):(.+)$")
+			if not method then
+				decoded = url_decode(userinfo)
+				method, password = decoded:match("^(.-):(.+)$")
+			end
+		else
+			local b64 = body:match("^([^?]+)") or ""
+			local dec = base64_decode(b64)
+			method, password, host, port = dec:match("^(.-):(.-)@(.+):(%d+)$")
+			if not method then return nil end
+			port = tonumber(port)
+		end
+		return {
+			type        = "shadowsocks",
+			tag         = name or host,
+			server      = host,
+			server_port = port or 0,
+			method      = method or "",
+			password    = password or ""
+		}
+	end
+
+	-- Remaining protocols share the userinfo@host:port?query shape.
+	local at = body:find("@")
+	if not at then return nil end
+	local userinfo = body:sub(1, at - 1)
+	local rest     = body:sub(at + 1)
+	local hostport, qstr = rest:match("^([^?]+)%?(.*)$")
+	if not hostport then hostport = rest; qstr = "" end
+	local h, p = split_host_port(hostport)
+	if not h then return nil end
+	local q = parse_query(qstr)
+	local tag = name or h
+
+	if scheme == "vless" then
+		local ob = {
+			type = "vless", tag = tag, server = h, server_port = p or 0,
+			uuid = url_decode(userinfo)
+		}
+		if q.flow and q.flow ~= "" then ob.flow = q.flow end
+		local tls = build_tls_from_query(q);       if tls then ob.tls = tls end
+		local tr, reject = build_transport_from_query(q)
+		if reject then return nil, tag .. ": " .. reject end
+		if tr then ob.transport = tr end
+		return ob
+	end
+
+	if scheme == "trojan" then
+		local ob = {
+			type = "trojan", tag = tag, server = h, server_port = p or 0,
+			password = url_decode(userinfo)
+		}
+		local tls = build_tls_from_query(force_tls(q));  if tls then ob.tls = tls end
+		local tr, reject = build_transport_from_query(q)
+		if reject then return nil, tag .. ": " .. reject end
+		if tr then ob.transport = tr end
+		return ob
+	end
+
+	if scheme == "hysteria2" or scheme == "hy2" then
+		local ob = {
+			type = "hysteria2", tag = tag, server = h, server_port = p or 0,
+			password = url_decode(userinfo)
+		}
+		local tls = build_tls_from_query(force_tls(q))
+		if tls then ob.tls = tls end
+		if q.obfs and q.obfs ~= "" then
+			ob.obfs = { type = q.obfs }
+			local opw = q["obfs-password"] or q.obfs_password
+			if opw and opw ~= "" then ob.obfs.password = opw end
+		end
+		if q.up   and q.up   ~= "" then ob.up_mbps   = tonumber(q.up)   end
+		if q.down and q.down ~= "" then ob.down_mbps = tonumber(q.down) end
+		return ob
+	end
+
+	if scheme == "tuic" then
+		local u, pw = split_userinfo(userinfo)
+		local ob = {
+			type = "tuic", tag = tag, server = h, server_port = p or 0,
+			uuid     = u  or "",
+			password = pw or ""
+		}
+		if q.congestion_control and q.congestion_control ~= "" then
+			ob.congestion_control = q.congestion_control
+		end
+		if q.udp_relay_mode and q.udp_relay_mode ~= "" then
+			ob.udp_relay_mode = q.udp_relay_mode
+		end
+		local tls = build_tls_from_query(force_tls(q))
+		if tls then ob.tls = tls end
+		return ob
+	end
+
+	if scheme == "anytls" then
+		local ob = {
+			type = "anytls", tag = tag, server = h, server_port = p or 0,
+			password = url_decode(userinfo)
+		}
+		local tls = build_tls_from_query(force_tls(q))
+		if tls then ob.tls = tls end
+		return ob
+	end
+
+	if scheme == "socks5" or scheme == "socks" then
+		local user, pwd = split_userinfo(userinfo)
+		local ob = {
+			type = "socks", tag = tag, server = h, server_port = p or 0,
+			version = "5"
+		}
+		if user and user ~= "" then ob.username = user end
+		if pwd  and pwd  ~= "" then ob.password = pwd  end
+		return ob
+	end
+
+	return nil
+end
+
+-- ─── Clash YAML helpers ──────────────────────────────────────────────────────
+-- Clash subscriptions list each proxy either as an inline flow mapping —
+--   - { name: 'X Y', type: anytls, alpn: [h2, http/1.1], password: '...', ... }
+-- — or as block-style nested keys. The flow form needs a parser that handles
+-- quoted scalars (which can contain commas and spaces), [...] arrays, and
+-- nested {...} maps; a naive key:value gmatch stops at the first whitespace
+-- inside a quoted name and truncates fields like '🇭🇰 HK1' to '🇭🇰'.
+
+-- Encode a Unicode code point as UTF-8 bytes. Lua 5.1 has no utf8 library
+-- and node names routinely carry non-BMP characters (flag emoji are
+-- regional-indicator pairs in the U+1F1E6-U+1F1FF range, 4-byte UTF-8).
+local function utf8_encode(cp)
+	if cp < 0x80 then
+		return string.char(cp)
+	elseif cp < 0x800 then
+		return string.char(0xC0 + math.floor(cp / 0x40),
+		                    0x80 + (cp % 0x40))
+	elseif cp < 0x10000 then
+		return string.char(0xE0 + math.floor(cp / 0x1000),
+		                    0x80 + (math.floor(cp / 0x40) % 0x40),
+		                    0x80 + (cp % 0x40))
+	else
+		return string.char(0xF0 + math.floor(cp / 0x40000),
+		                    0x80 + (math.floor(cp / 0x1000) % 0x40),
+		                    0x80 + (math.floor(cp / 0x40) % 0x40),
+		                    0x80 + (cp % 0x40))
+	end
+end
+
+-- Single-character YAML double-quoted escapes (YAML 1.1/1.2 core schema),
+-- keyed by the character following the backslash.
+local YAML_SHORT_ESCAPES = {
+	["0"] = "\0",         a = "\7",  b = "\8",   t = "\9",
+	n     = "\10",  v = "\11", f = "\12",  r = "\13",
+	e     = "\27",  ["\\"] = "\\", ['"'] = '"', ["/"] = "/",
+	N     = utf8_encode(0x85),   ["_"] = utf8_encode(0xA0),
+	L     = utf8_encode(0x2028), P = utf8_encode(0x2029),
+}
+
+-- Decode YAML backslash escapes inside a double-quoted scalar's raw content
+-- (outer quotes already stripped). \xXX / \uXXXX / \UXXXXXXXX are hex code
+-- point escapes; everything else is a single-character escape or, for an
+-- unrecognised backslash sequence, the escaped character verbatim.
+local function decode_dq_escapes(s)
+	local out, j, n = {}, 1, #s
+	while j <= n do
+		local c = s:sub(j, j)
+		if c == "\\" and j < n then
+			local esc = s:sub(j + 1, j + 1)
+			if esc == "x" then
+				out[#out + 1] = utf8_encode(tonumber(s:sub(j + 2, j + 3), 16) or 0)
+				j = j + 4
+			elseif esc == "u" then
+				out[#out + 1] = utf8_encode(tonumber(s:sub(j + 2, j + 5), 16) or 0)
+				j = j + 6
+			elseif esc == "U" then
+				out[#out + 1] = utf8_encode(tonumber(s:sub(j + 2, j + 9), 16) or 0)
+				j = j + 10
+			else
+				out[#out + 1] = YAML_SHORT_ESCAPES[esc] or esc
+				j = j + 2
+			end
+		else
+			out[#out + 1] = c
+			j = j + 1
+		end
+	end
+	return table.concat(out)
+end
+
+local function clash_read_quoted(s, i)
+	local q = s:sub(i, i)
+	if q ~= "'" and q ~= '"' then return nil, i end
+	local j = i + 1
+	local out = {}
+	while j <= #s do
+		local c = s:sub(j, j)
+		if c == q then
+			-- '' inside a single-quoted scalar is an escaped single quote.
+			if q == "'" and s:sub(j + 1, j + 1) == "'" then
+				out[#out + 1] = "'"
+				j = j + 2
+			else
+				local content = table.concat(out)
+				if q == '"' then content = decode_dq_escapes(content) end
+				return content, j + 1
+			end
+		elseif q == '"' and c == "\\" then
+			-- Keep the escape sequence's backslash+marker verbatim; the hex
+			-- digits that may follow (for \x/\u/\U) are plain characters
+			-- and fall through to the else branch untouched. decode_dq_escapes
+			-- interprets the whole thing once the closing quote is found.
+			out[#out + 1] = c
+			out[#out + 1] = s:sub(j + 1, j + 1)
+			j = j + 2
+		else
+			out[#out + 1] = c
+			j = j + 1
+		end
+	end
+	local content = table.concat(out)
+	if q == '"' then content = decode_dq_escapes(content) end
+	return content, j
+end
+
+local function clash_read_value(s, i)
+	while i <= #s and s:sub(i, i):match("[ \t]") do i = i + 1 end
+	local c = s:sub(i, i)
+	if c == "'" or c == '"' then
+		return clash_read_quoted(s, i)
+	elseif c == "[" or c == "{" then
+		local close = (c == "[") and "]" or "}"
+		local depth, j = 0, i
+		while j <= #s do
+			local ch = s:sub(j, j)
+			if ch == c then
+				depth = depth + 1
+			elseif ch == close then
+				depth = depth - 1
+				if depth == 0 then return s:sub(i, j), j + 1 end
+			elseif ch == "'" or ch == '"' then
+				local _, k = clash_read_quoted(s, j)
+				j = k - 1
+			end
+			j = j + 1
+		end
+		return s:sub(i), j
+	else
+		local j = i
+		while j <= #s do
+			local ch = s:sub(j, j)
+			if ch == "," or ch == "}" or ch == "\n" then break end
+			j = j + 1
+		end
+		return s:sub(i, j - 1):match("^%s*(.-)%s*$"), j
+	end
+end
+
+-- Parse the body of a YAML flow mapping (the text between the outer { }).
+local function clash_parse_flow(s)
+	local fields = {}
+	local i = 1
+	while i <= #s do
+		while i <= #s and s:sub(i, i):match("[ \t,]") do i = i + 1 end
+		if i > #s or s:sub(i, i) == "}" then break end
+		local k_start = i
+		while i <= #s and s:sub(i, i) ~= ":" and s:sub(i, i) ~= "}" do
+			i = i + 1
+		end
+		local key = s:sub(k_start, i - 1):match("^%s*(.-)%s*$")
+		if s:sub(i, i) ~= ":" then break end
+		i = i + 1
+		local val, ni = clash_read_value(s, i)
+		i = ni
+		if key ~= "" then fields[key] = val end
+	end
+	return fields
+end
+
+local function clash_parse_list(raw)
+	if not raw or raw == "" then return nil end
+	local body = raw:match("^%[(.*)%]$")
+	if not body then return nil end
+	local out = {}
+	local i = 1
+	while i <= #body do
+		while i <= #body and body:sub(i, i):match("[ \t,]") do i = i + 1 end
+		if i > #body then break end
+		local v, ni = clash_read_value(body, i)
+		if v and v ~= "" then out[#out + 1] = v end
+		i = ni
+	end
+	if #out == 0 then return nil end
+	return out
+end
+
+local function clash_truthy(v)
+	if type(v) == "boolean" then return v end
+	if type(v) ~= "string"  then return false end
+	v = v:lower()
+	return v == "true" or v == "yes" or v == "1"
+end
+
+-- Build the sing-box `transport` sub-block from a Clash entry's `network`
+-- plus its matching `<net>-opts` mapping (already stored under dotted keys
+-- by extract_clash). Returns:
+--   nil, nil     — no transport (plain tcp), the common case
+--   table, nil   — the transport block
+--   nil, reason  — the entry asks for a transport sing-box cannot dial
+local function build_clash_transport(fields)
+	local net = (fields["network"] or ""):lower()
+	if net == "" or net == "tcp" or net == "raw" then return nil, nil end
+	-- mihomo ships XHTTP as `network: xhttp` plus an `xhttp-opts` mapping.
+	-- stream-one maps onto sing-box's `http` transport; other modes do not.
+	if net == "xhttp" then
+		return lib.map_xhttp_transport(fields["xhttp-opts.path"],
+			fields["xhttp-opts.host"], fields["xhttp-opts.mode"])
+	end
+	if not lib.SUPPORTED_TRANSPORTS[net] and net ~= "h2" then
+		return nil, "transport '" .. net .. "' is not supported by sing-box"
+	end
+
+	if net == "ws" then
+		local tr = { type = "ws" }
+		local path = fields["ws-opts.path"]
+		if path and path ~= "" then tr.path = path end
+		local host = fields["ws-opts.headers.Host"] or fields["ws-opts.headers.host"]
+		if host and host ~= "" then tr.headers = { Host = host } end
+		local med = tonumber(fields["ws-opts.max-early-data"])
+		if med then tr.max_early_data = med end
+		local edh = fields["ws-opts.early-data-header-name"]
+		if edh and edh ~= "" then tr.early_data_header_name = edh end
+		-- mihomo spells httpupgrade as a ws-opts flag rather than its own
+		-- network value; sing-box has it as a distinct transport type.
+		if clash_truthy(fields["ws-opts.v2ray-http-upgrade"]) then
+			tr.type = "httpupgrade"
+			tr.headers, tr.max_early_data, tr.early_data_header_name = nil, nil, nil
+			if host and host ~= "" then tr.host = host end
+		end
+		return tr, nil
+	end
+
+	if net == "grpc" then
+		local tr = { type = "grpc" }
+		local sn = fields["grpc-opts.grpc-service-name"] or fields["grpc-opts.service-name"]
+		if sn and sn ~= "" then tr.service_name = sn end
+		return tr, nil
+	end
+
+	if net == "http" or net == "h2" then
+		local tr = { type = "http" }
+		local prefix = (net == "h2") and "h2-opts." or "http-opts."
+		local path = fields[prefix .. "path"]
+		if path and path ~= "" then tr.path = path end
+		local hosts = clash_parse_list(fields[prefix .. "host"])
+		if hosts then
+			tr.host = hosts
+		else
+			local h = fields[prefix .. "host"]
+			if h and h ~= "" then tr.host = { h } end
+		end
+		return tr, nil
+	end
+
+	if net == "httpupgrade" then
+		local tr = { type = "httpupgrade" }
+		local path = fields["ws-opts.path"] or fields["httpupgrade-opts.path"]
+		if path and path ~= "" then tr.path = path end
+		local host = fields["ws-opts.headers.Host"] or fields["httpupgrade-opts.host"]
+		if host and host ~= "" then tr.host = host end
+		return tr, nil
+	end
+
+	-- quic: sing-box takes an options-less transport block.
+	return { type = net }, nil
+end
+
+-- Map a Clash proxy fields table to a sing-box outbound table.
+-- Returns nil when the entry lacks the minimum required keys (name/type/server),
+-- or nil plus a "<tag>: <reason>" string when the entry is well-formed but
+-- describes something sing-box cannot dial — the caller logs those so a node
+-- vanishing from the list is explainable.
+local function build_clash_outbound(fields)
+	local nm  = fields["name"]
+	local srv = fields["server"]
+	local typ = fields["type"]
+	if not nm or nm == "" or not srv or srv == "" or not typ or typ == "" then
+		return nil
+	end
+	if typ == "ss"  then typ = "shadowsocks" end
+	if typ == "hy2" then typ = "hysteria2"  end
+
+	local ob = {
+		type        = typ,
+		tag         = nm,
+		server      = srv,
+		server_port = tonumber(fields["port"]) or 0
+	}
+
+	-- Protocols whose wire format is always TLS. Used to enable tls when the
+	-- Clash entry omits explicit tls/sni/alpn but the protocol requires it.
+	local function tls_implicit(t)
+		return t == "trojan" or t == "anytls" or t == "hysteria2" or t == "tuic"
+	end
+	local function apply_tls()
+		local sni    = fields["sni"] or fields["servername"]
+		local alpn   = clash_parse_list(fields["alpn"])
+		local cfp    = fields["client-fingerprint"]
+		local insec  = clash_truthy(fields["skip-cert-verify"])
+		-- REALITY is always TLS, and providers routinely ship the node with
+		-- no `tls: true` alongside it — the reality-opts block IS the
+		-- indicator. Without this the whole tls block was omitted and the
+		-- handshake failed with no diagnostic at all.
+		local pbk    = fields["reality-opts.public-key"]
+		local indic  = sni or alpn or cfp or insec or pbk or clash_truthy(fields["tls"])
+		if not (indic or tls_implicit(typ)) then return end
+		ob.tls = { enabled = true }
+		if sni and sni ~= "" then ob.tls.server_name = sni end
+		if alpn               then ob.tls.alpn        = alpn end
+		if insec              then ob.tls.insecure    = true end
+		if cfp and cfp ~= "" then
+			ob.tls.utls = { enabled = true, fingerprint = cfp }
+		end
+		if pbk and pbk ~= "" then
+			ob.tls.reality = { enabled = true, public_key = pbk }
+			local sid = fields["reality-opts.short-id"]
+			if sid and sid ~= "" then ob.tls.reality.short_id = sid end
+		end
+	end
+
+	if typ == "anytls" or typ == "trojan" then
+		ob.password = fields["password"] or ""
+		apply_tls()
+	elseif typ == "vless" then
+		ob.uuid = fields["uuid"] or ""
+		if fields["flow"] and fields["flow"] ~= "" then ob.flow = fields["flow"] end
+		apply_tls()
+	elseif typ == "vmess" then
+		ob.uuid     = fields["uuid"] or ""
+		ob.alter_id = tonumber(fields["alterId"]) or 0
+		ob.security = fields["cipher"] or "auto"
+		apply_tls()
+	elseif typ == "hysteria2" then
+		ob.password = fields["password"] or fields["auth"] or ""
+		apply_tls()
+		local obfs = fields["obfs"]
+		if obfs and obfs ~= "" then
+			ob.obfs = { type = obfs }
+			local opw = fields["obfs-password"]
+			if opw and opw ~= "" then ob.obfs.password = opw end
+		end
+		if fields["up"]   then ob.up_mbps   = tonumber(fields["up"])   end
+		if fields["down"] then ob.down_mbps = tonumber(fields["down"]) end
+	elseif typ == "tuic" then
+		ob.uuid     = fields["uuid"]     or ""
+		ob.password = fields["password"] or ""
+		if fields["congestion-control"] then ob.congestion_control = fields["congestion-control"] end
+		if fields["udp-relay-mode"]     then ob.udp_relay_mode     = fields["udp-relay-mode"]     end
+		apply_tls()
+	elseif typ == "shadowsocks" then
+		ob.method   = fields["cipher"]   or ""
+		ob.password = fields["password"] or ""
+	elseif typ == "socks5" or typ == "socks" then
+		ob.type    = "socks"
+		ob.version = "5"
+		if fields["username"] then ob.username = fields["username"] end
+		if fields["password"] then ob.password = fields["password"] end
+	end
+
+	-- Transport last, and only for the V2Ray-family protocols that carry
+	-- one — the same set parse_proxy_uri builds a transport for. Elsewhere
+	-- Clash's `network` key means something else entirely (udp/tcp
+	-- selection), so it must not be read as a transport.
+	--
+	-- A transport sing-box cannot dial rejects the whole node: building it
+	-- without the transport yields a plausible-looking outbound that is
+	-- selectable, testable, and fails every handshake.
+	if typ == "vless" or typ == "vmess" or typ == "trojan" then
+		local tr, reject = build_clash_transport(fields)
+		if reject then
+			return nil, nm .. ": " .. reject
+		end
+		if tr then ob.transport = tr end
+	end
+
+	return ob, nil
+end
+
+-- ─── node extraction ─────────────────────────────────────────────────────
+-- Each extractor turns one subscription format into a flat list of
+-- { tag, type, server, server_port, payload } node tables. parse_subscription
+-- routes a body to exactly one extractor, so the body is parsed a single time.
+
+-- Reserved tags are dropped at parse time so they never reach the nodes
+-- JSON or list_subscription_nodes; build-config drops them again at
+-- emission time. One shared table in treadlelib keeps the filters in step.
+local RESERVED_TAGS = lib.RESERVED_TAGS
+
+-- SingBox JSON: the outbounds array, minus builtin and group outbounds.
+-- lib.ALLOWED_PROTOCOLS is the same whitelist build-config's sanitiser
+-- enforces; applying it here too means an unsupported type (notably `ssh`,
+-- `tor`, or a future sing-box outbound that takes a filesystem path
+-- argument) is rejected at parse time and never written to
+-- /etc/treadle/nodes/*.json.
+local function extract_singbox(body)
+	local nodes, skipped = {}, {}
+	if not _jsonc_ok then return nodes, skipped end
+	local ok, cfg = pcall(_jsonc.parse, body)
+	if not ok or not cfg or type(cfg.outbounds) ~= "table" then return nodes, skipped end
+	for _, ob in ipairs(cfg.outbounds) do
+		if type(ob) == "table" and ob.tag and lib.ALLOWED_PROTOCOLS[ob.type]
+		   and not RESERVED_TAGS[ob.tag]
+		   and not ob.tag:find("[%c]") then
+			-- A sing-box-format subscription can name a transport this
+			-- sing-box has no dialer for just as a Clash one can; reject
+			-- the node rather than import an outbound that cannot connect.
+			local ttype = type(ob.transport) == "table" and ob.transport.type or nil
+			-- An xhttp block here maps onto `http` exactly as it does in the
+			-- other two formats; rewrite it in place before the payload is
+			-- stringified so the stored node is already dialable.
+			local xreason
+			if ttype == "xhttp" then
+				local tr
+				tr, xreason = lib.map_xhttp_transport(ob.transport.path,
+					ob.transport.host, ob.transport.mode)
+				if tr then ob.transport, ttype = tr, "http" end
+			end
+			if xreason then
+				skipped[#skipped + 1] = ob.tag .. ": " .. xreason
+			elseif ttype and ttype ~= "" and not lib.SUPPORTED_TRANSPORTS[ttype] then
+				skipped[#skipped + 1] = ob.tag .. ": transport '" .. tostring(ttype)
+					.. "' is not supported by sing-box"
+			else
+				nodes[#nodes + 1] = {
+					tag         = ob.tag,
+					type        = ob.type or "",
+					server      = ob.server and tostring(ob.server) or "",
+					server_port = tonumber(ob.server_port) or 0,
+					payload     = _jsonc.stringify(ob)
+				}
+			end
+		end
+	end
+	return nodes, skipped
+end
+
+-- Strip optional surrounding quotes from a whole-line-captured scalar value
+-- (block-style "key: value" lines, already sliced out by the caller's line
+-- regex) and decode double-quoted escapes. This does its own quote match
+-- rather than reusing clash_read_quoted because the value is already a
+-- complete, isolated slice with no need to hunt for the terminating quote.
+local function unquote_scalar(v)
+	local dq = v:match('^"(.*)"$')
+	if dq then return decode_dq_escapes(dq) end
+	local sq = v:match("^'(.*)'$")
+	if sq then return (sq:gsub("''", "'")) end
+	return v
+end
+
+-- Clash YAML: the proxies: list, in inline-flow or block style.
+--
+-- Sequence items under `proxies:` are valid YAML at *any* indentation,
+-- including flush with the key itself ("proxies:\n- name: ..."), which is
+-- what several real-world subscription generators emit. The indentation of
+-- the first entry dash seen is recorded as `entry_indent`; only dash lines
+-- at exactly that indentation start a new proxy. A dash line indented
+-- *deeper* than that (e.g. "  - h2" under a block-style "alpn:" list) is a
+-- nested list item, not a new proxy — its value is appended to the pending
+-- list field instead of flushing the entry early.
+local function extract_clash(body)
+	local nodes, skipped = {}, {}
+	local in_proxies, fields = false, {}
+	local entry_indent = nil
+	local list_key, list_items = nil, nil
+	-- Open block-style nested mappings ("ws-opts:" with its keys on the
+	-- following, deeper-indented lines), innermost last. Each frame carries
+	-- the dotted prefix its keys are stored under and the indentation of the
+	-- line that opened it. A line pops every frame at or above its own
+	-- indent, so returning from "ws-opts.headers" to a sibling of "path"
+	-- lands back in "ws-opts" rather than at the top level.
+	local nest = {}
+
+	local function close_list()
+		if list_key and list_items and #list_items > 0 then
+			fields[list_key] = "[" .. table.concat(list_items, ", ") .. "]"
+		end
+		list_key, list_items = nil, nil
+	end
+
+	local function flush()
+		close_list()
+		local ob, reject = build_clash_outbound(fields)
+		if ob and (RESERVED_TAGS[ob.tag] or ob.tag:find("[%c]")) then ob = nil end
+		if reject then
+			skipped[#skipped + 1] = reject
+		end
+		if ob then
+			local payload
+			if _jsonc_ok then
+				local okp, str = pcall(_jsonc.stringify, ob)
+				payload = okp and str or json_stringify(ob)
+			else
+				payload = json_stringify(ob)
+			end
+			nodes[#nodes + 1] = {
+				tag         = ob.tag,
+				type        = ob.type,
+				server      = ob.server,
+				server_port = ob.server_port,
+				payload     = payload
+			}
+		end
+		fields = {}
+		nest = {}
+	end
+
+	-- Expand an inline flow mapping into `fields`. clash_read_value hands
+	-- back a nested flow mapping as its literal "{...}" text, so recurse
+	-- into those under a dotted prefix — flow and block style then produce
+	-- exactly the same keys.
+	local function expand_flow(prefix, body_text)
+		for k, v in pairs(clash_parse_flow(body_text)) do
+			local key   = prefix and (prefix .. "." .. k) or k
+			local inner = type(v) == "string" and v:match("^{(.*)}$")
+			if inner then
+				expand_flow(key, inner)
+			else
+				fields[key] = v
+			end
+		end
+	end
+
+	-- Store a parsed "key: value" pair. An empty value (e.g. "alpn:" with
+	-- the list on following lines, or "ws-opts:" with a nested mapping)
+	-- opens a pending block instead of setting the field directly: which
+	-- kind it turns out to be is decided by the next deeper-indented line —
+	-- a dash makes it a list, a "k: v" pair makes it a mapping.
+	--
+	-- Nested mapping keys are stored dotted ("ws-opts.headers.Host"), not
+	-- flattened onto the top level. Flattening lost which block a key came
+	-- from, so `path` under ws-opts and under h2-opts were the same field
+	-- and nothing could read either one back reliably.
+	local function set_field(k, v, indent)
+		if indent then
+			while #nest > 0 and indent <= nest[#nest].indent do
+				table.remove(nest)
+			end
+		else
+			nest = {}
+		end
+		local key = (#nest > 0) and (nest[#nest].key .. "." .. k) or k
+		if v == "" then
+			close_list()
+			list_key, list_items = key, nil
+			if indent then nest[#nest + 1] = { key = key, indent = indent } end
+		elseif not fields[key] then
+			close_list()
+			fields[key] = unquote_scalar(v)
+		end
+	end
+
+	for line in (body .. "\n"):gmatch("([^\n]*)\n") do
+		if line:match("^proxies%s*:") then
+			in_proxies = true
+			entry_indent = nil
+		elseif in_proxies then
+			local indent  = #line:match("^(%s*)")
+			local is_dash = line:match("^%s*%-")
+
+			if is_dash and entry_indent and indent > entry_indent then
+				-- Nested block-style list item under the pending list_key.
+				local v = line:match("^%s*%-%s*(.-)%s*$")
+				if list_key and v and v ~= "" then
+					list_items = list_items or {}
+					list_items[#list_items + 1] = v
+				end
+			elseif is_dash then
+				flush()
+				entry_indent = entry_indent or indent
+				-- Inline flow form: "  - { name: 'X', type: T, ... }"
+				local inline = line:match("^%s*%-%s*{(.+)}%s*$")
+				if inline then
+					expand_flow(nil, inline)
+				else
+					-- Block-style dash with first key on the same line.
+					local k, v = line:match("^%s*%-%s*([%a][%w%-_]*)%s*:%s*(.-)%s*$")
+					if k then set_field(k, v, indent) end
+				end
+			elseif line:match("^%S") then
+				flush(); in_proxies = false
+			else
+				local k, v = line:match("^%s+([%a][%w%-_]*)%s*:%s*(.-)%s*$")
+				if k then set_field(k, v, indent) end
+			end
+		end
+	end
+	flush()
+	return nodes, skipped
+end
+
+-- Plain or Base64-decoded URI list: one proxy:// URI per line.
+local function extract_uris(text)
+	local nodes, skipped = {}, {}
+	for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+		local ob, reject = parse_proxy_uri(line)
+		if reject then skipped[#skipped + 1] = reject end
+		if ob and ob.server ~= "" and not RESERVED_TAGS[ob.tag]
+		   and not ob.tag:find("[%c]") then
+			-- Keep the full sing-box outbound as the payload — that's what
+			-- build-config later splices verbatim into route.outbounds.
+			nodes[#nodes + 1] = {
+				tag         = ob.tag,
+				type        = ob.type,
+				server      = ob.server,
+				server_port = ob.server_port,
+				payload     = (_jsonc_ok and _jsonc.stringify(ob)) or json_stringify(ob)
+			}
+		end
+	end
+	return nodes, skipped
+end
+
+-- Identify a subscription's format and extract its nodes in a single pass.
+-- The format is just "which parser succeeded": a cheap pre-check (first
+-- character, a proxies: line, the base64 alphabet) routes the body to one
+-- extractor, which then runs exactly once. Returns the format string, the
+-- node list, and a list of "<tag>: <reason>" strings for entries that parsed
+-- but describe something sing-box cannot dial (see build_clash_transport).
+-- Order: SingBox JSON → Clash YAML → Base64 URI list → plain URI.
+local function parse_subscription(body)
+	if not body or body == "" then return "unknown", {} end
+	local trimmed = body:match("^%s*(.-)%s*$")
+	if trimmed == "" then return "unknown", {} end
+
+	-- SingBox JSON: root object starts with {
+	if trimmed:sub(1, 1) == "{" then
+		return "singbox", extract_singbox(trimmed)
+	end
+
+	-- Clash YAML: proxies: appears as an unindented top-level key
+	if trimmed:find("^proxies:") or trimmed:find("\nproxies:") then
+		return "clash", extract_clash(trimmed)
+	end
+
+	-- Base64-encoded URI list: content is entirely base64 alphabet
+	-- characters. A plain URI list can never pass this check (every URI
+	-- contains ':'), so a match IS base64 — return even with 0 nodes so a
+	-- failed parse is logged as format=base64 rather than unknown.
+	local stripped = trimmed:gsub("%s", "")
+	if #stripped >= 16 and stripped:match("^[A-Za-z0-9+/%-_=]+$") then
+		return "base64", extract_uris(base64_decode(stripped))
+	end
+
+	-- Plain URI list
+	local nodes, skipped = extract_uris(trimmed)
+	return (#nodes > 0 and "uri-list" or "unknown"), nodes, skipped
+end
+
+local function uci_cursor()
+	-- Use the raw libuci C binding rather than the luci.model.uci Lua wrapper.
+	-- The wrapper does not reliably expose named-section creation via the
+	-- 3-argument cursor:set(config, section, type) call, and its cursor object
+	-- omits close() from its metatable (causing the nil-method crash we saw).
+	-- The C binding has a complete, stable API and works correctly on all
+	-- OpenWrt versions including 25.12.
+	return require("uci").cursor()
+end
+
+-- Log a Treadle control-plane event to syslog. `level` is the severity
+-- (info/notice/warn/err) — mirrors the shell treadle_log helper's convention.
+-- Normalise 'warn' to 'warning' before handing to logger: busybox logger
+-- accepts both, but the get_logs filter's SEV table only recognises the
+-- canonical POSIX spelling — so a syslog line tagged daemon.warn would
+-- otherwise classify as info (the SEV fallback) and a user-set
+-- treadle_log_level=warning would silently fail to suppress info lines.
+local function log_treadle(level, msg)
+	if level == "warn" then level = "warning" end
+	local safe = msg:gsub("'", "'\\''")
+	os.execute("logger -p daemon." .. level .. " -t treadle '" .. safe .. "' 2>/dev/null")
+end
+
+-- ─── Node latency probes ──────────────────────────────────────────────────
+-- All probes run through the background test-all-runner, which builds an
+-- ephemeral probe config (`build-config --probe`: every known node + a
+-- loopback clash API on 127.0.0.1:9091, nothing else), starts a short-lived
+-- second sing-box instance from it, probes /proxies/<tag>/delay there, and
+-- tears the instance down. The running (production) config stays lean — it
+-- carries only nodes referenced by a rule or group, and the probes measure
+-- through the real protocol stack regardless. Results land in a tmpfs cache
+-- so a page reload doesn't drop measurements; `get_last_latency` reads the
+-- cache for the Nodes panel's Latency column.
+
+local LATENCY_CACHE_PATH  = "/var/etc/treadle/latency.json"
+
+-- Read the current latency cache. Empty object when the file is missing or
+-- malformed — both are normal first-run states.
+local function read_latency_cache()
+	local raw = read_file(LATENCY_CACHE_PATH)
+	if not raw or raw == "" then return { results = {} } end
+	if not _jsonc_ok then return { results = {} } end
+	local ok, parsed = pcall(_jsonc.parse, raw)
+	if not ok or type(parsed) ~= "table" then return { results = {} } end
+	if type(parsed.results) ~= "table" then parsed.results = {} end
+	return parsed
+end
+
+local TEST_STATUS_PATH = "/var/etc/treadle/.test-all-status"
+local TEST_TAGS_PATH   = "/var/etc/treadle/.test-all-tags"
+local TEST_RUNNER      = "/usr/libexec/treadle/test-all-runner"
+
+-- True when a runner is currently alive per its status file. The runner's
+-- own /var/lock/treadle-test-all lock is the authoritative gate; this
+-- pre-check exists so callers can avoid writing a tag file that a
+-- lock-refused fork would leave behind to scope someone else's next full
+-- run (the runner consumes the file only when it actually runs). A stale
+-- running=true from a SIGKILL'd runner is treated as idle after 60 s
+-- without an updated_at advance.
+local function test_runner_busy()
+	local raw = read_file(TEST_STATUS_PATH)
+	if not raw or raw == "" or not _jsonc_ok then return false end
+	local ok, st = pcall(_jsonc.parse, raw)
+	if not ok or type(st) ~= "table" or not st.running then return false end
+	if type(st.updated_at) == "number"
+	   and (os.time() - st.updated_at) < 60 then
+		return true
+	end
+	log_treadle("warn", "test runner status stale ("
+		.. tostring(os.time() - (tonumber(st.updated_at) or 0))
+		.. "s), reclaiming")
+	return false
+end
+
+-- Write the optional tag list and fork the runner detached (all FDs
+-- redirected so the parent rpcd worker can exit without waiting on the
+-- child's pipes). Tag-file protocol: one tag per line; absent file means
+-- "probe every known node" — argv would run into shell-quoting hazards
+-- with emoji and CJK tags. Returns true, or false + an error token.
+local function fork_test_runner(tags)
+	os.execute("mkdir -p /var/etc/treadle 2>/dev/null")
+	local lines = {}
+	if type(tags) == "table" then
+		for _, t in ipairs(tags) do
+			if type(t) == "string" and t ~= "" then
+				lines[#lines + 1] = t
+			end
+		end
+	end
+	if #lines > 0 then
+		local f = io.open(TEST_TAGS_PATH, "w")
+		if f then
+			f:write(table.concat(lines, "\n"))
+			f:close()
+		end
+	else
+		os.remove(TEST_TAGS_PATH)
+	end
+	-- Pre-flight: the fork-and-forget below loses any exec failure
+	-- (missing or non-executable runner after a partial upgrade) because
+	-- the shell only reports back the fork exit, not the child's. Test
+	-- executability synchronously so callers get a clear error instead of
+	-- waiting on a status file no runner will ever write.
+	if os.execute("test -x " .. TEST_RUNNER) ~= 0 then
+		log_treadle("err", "test runner missing or non-executable at " .. TEST_RUNNER)
+		os.remove(TEST_TAGS_PATH)
+		return false, "runner unavailable"
+	end
+	os.execute(TEST_RUNNER .. " </dev/null >/dev/null 2>&1 &")
+	return true
+end
+
+-- Node storage:
+--   Manual nodes: UCI sections of type "node" in /etc/config/treadle.
+--     Each section stores individual protocol fields (tag, type, server,
+--     server_port, uuid, password, transport_type, tls_*, etc.).
+--     build-config reconstructs the sing-box outbound JSON from these fields
+--     at config-generation time. form.Map handles all UCI CRUD automatically.
+--   Subscription nodes: /etc/treadle/nodes/<uid>.json (one file per sub).
+--     These come from remote URLs and can number in the hundreds, making UCI
+--     storage impractical. Each entry has a payload field with the full
+--     sing-box outbound JSON (needed by build-config).
+--
+-- A subscription's uid IS its UCI section name (a 16-hex random id assigned
+-- at create time). Section names are persisted to disk by libuci, so the id
+-- is stable across every parse — unlike the volatile cfgXXXX libuci hands
+-- out for anonymous sections. The UI Add path mints the uid up front, and
+-- stabilise_section_name below renames any section added another way.
+
+local NODES_DIR = lib.NODES_DIR
+
+local function nodes_file(uid)
+	local safe = uid:gsub("[^%w%-_]", "_")
+	return NODES_DIR .. "/" .. safe .. ".json"
+end
+
+-- 16 hex chars from /dev/urandom (= 64 bits). Used by the cfg-rename
+-- backstop below for sections created outside the UI (e.g. someone ran
+-- `uci add treadle subscription` over SSH).
+local function generate_uid()
+	local f = io.open("/dev/urandom", "rb")
+	if not f then return nil end
+	local bytes = f:read(8)
+	f:close()
+	if not bytes or #bytes < 8 then return nil end
+	return (bytes:gsub(".", function(c) return string.format("%02x", string.byte(c)) end))
+end
+
+-- Promote a `^cfg…` anonymous section to a stable uid section name, in
+-- place. This covers hand-rolled `uci add treadle …` sections, which
+-- would otherwise inherit a volatile cfgXXXX name and lose their on-disk
+-- file the next time some other section rotates the counter.
+-- Returns the (possibly new) section id; nil if rename failed.
+local function stabilise_section_name(c, section_id)
+	if type(section_id) ~= "string" or not section_id:match("^cfg") then
+		return section_id
+	end
+	local new_id = generate_uid()
+	if not new_id then return nil end
+	c:rename("treadle", section_id, new_id)
+	c:commit("treadle")
+	return new_id
+end
+
+-- True when procd reports the named `singbox` procd instance is running.
+-- Authoritative (procd's own view), distinct from the UCI `enabled` flag.
+-- The instance walk lives in lib.singbox_instance — see the comment there
+-- for why the specific instance must be addressed.
+local function service_running()
+	local inst = lib.singbox_instance(_jsonc_ok and _jsonc or nil)
+	return inst ~= nil and inst.running == true
+end
+
+-- Detect whether the active outbound set changed since sing-box was last
+-- (re)started, and reload if so. "Active" means anything build-config emits —
+-- the final outbound, every enabled rule's outbound, and urltest members
+-- expanded transitively. We compare a freshly-generated preview to the file
+-- at treadle.global.config_path: if a sync added nodes that no rule or urltest
+-- references the generated output is byte-identical and we skip.
+-- Returns true when a reload was triggered.
+local function reload_if_config_changed()
+	-- Only a running sing-box needs its config reloaded. Gate on the live
+	-- runtime state, not the UCI `enabled` autostart flag — a user can run
+	-- the service manually with autostart off (or have autostart on while
+	-- the service is stopped).
+	if not service_running() then return false end
+
+	local c = uci_cursor()
+	local path = c:get("treadle", "global", "config_path") or "/var/etc/treadle/sing-box.json"
+	c:close()
+
+	local preview = "/var/etc/treadle/sync-check.json"
+	local rc = os.execute("/usr/libexec/treadle/build-config '" .. preview .. "' >/dev/null 2>&1")
+	if rc ~= 0 then
+		os.remove(preview)
+		return false
+	end
+
+	local current = read_file(path)
+	local new     = read_file(preview)
+	os.remove(preview)
+
+	if current == new then return false end
+
+	log_treadle("info", "sync: active outbounds changed, reloading sing-box")
+	os.execute("/etc/init.d/treadle reload >/dev/null 2>&1")
+	return true
+end
+
+local function read_nodes_file(uid)
+	if not _jsonc_ok then return {} end
+	local f = io.open(nodes_file(uid), "r")
+	if not f then return {} end
+	local content = f:read("*a")
+	f:close()
+	if not content or content == "" then return {} end
+	local ok, parsed = pcall(_jsonc.parse, content)
+	if not ok or type(parsed) ~= "table" then return {} end
+	return parsed
+end
+
+-- write_secure: nodes file contains every subscription node's payload,
+-- which in turn carries uuid/password/uri for each proxy. Default umask
+-- 0022 would let any local non-root daemon read them.
+local function write_nodes_file(uid, nodes)
+	if not _jsonc_ok then return false end
+	return lib.write_secure(nodes_file(uid), _jsonc.stringify(nodes))
+end
+
+-- Fix up subscription bookkeeping left stale by a reinstall. `/etc/config/treadle`
+-- is a conffile and survives a sysupgrade "keep settings" reinstall, but
+-- /etc/treadle/nodes/<uid>.json is plain runtime data with no fixed shipped
+-- filename to check against — it cannot be a conffile, and unless the router
+-- was also told to preserve the directory via /etc/sysupgrade.conf, the file
+-- is gone after reinstall while the subscription's `node_count`/`status`
+-- fields (just UCI options) come back untouched. Without this, the Nodes tab
+-- would show a subscription with its old node count and an "ok" status while
+-- zero of its nodes actually exist. Called at every boot (start_service), so
+-- the UI is honest before the user ever opens the tab.
+local function reconcile_subscriptions()
+	local c = uci_cursor()
+	local changed = false
+	c:foreach("treadle", "subscription", function(s)
+		local id = s[".name"]
+		local count = tonumber(s.node_count) or 0
+		if count > 0 and not lib.file_exists(nodes_file(id)) then
+			c:set("treadle", id, "node_count", "0")
+			c:set("treadle", id, "status", "stale")
+			changed = true
+		end
+	end)
+	if changed then c:commit("treadle") end
+	c:close()
+	return changed
+end
+
+-- Set of uids for which a current `subscription` UCI section exists. The
+-- subscription's section name IS its uid. A `<uid>.json` whose basename
+-- is not in this set is an orphan (subscription deleted, or hand-edit
+-- wiped the section) and must not feed into outbound dropdowns — its tags
+-- would silently appear alongside live ones, with no subscription label
+-- to disambiguate them.
+local function valid_sub_uids()
+	local set = {}
+	local c = uci_cursor()
+	c:foreach("treadle", "subscription", function(s)
+		set[s[".name"]] = true
+	end)
+	c:close()
+	return set
+end
+
+-- Delete node files on disk whose uid no longer corresponds to a current
+-- UCI subscription. Called from the write-path RPCs (sync_one /
+-- sync_all_subscriptions) so the directory is swept whenever a user runs a
+-- sync — manually or via the hourly cron — bounding the lag between deleting
+-- a subscription in the UI and its file being removed to at most one hour.
+local function prune_orphan_nodes()
+	local valid = valid_sub_uids()
+	for _, nf in ipairs(lib.node_files()) do
+		if not valid[nf.uid] then
+			os.remove(nf.path)
+			log_treadle("info", "sync: pruned orphan nodes file " .. nf.path)
+		end
+	end
+end
+
+-- Return all nodes merged into a single ordered list.
+-- Manual nodes (UCI type="node") come first, sorted by their order field.
+-- Subscription nodes (JSON files) follow, one file per subscription.
+-- Sets n.subscription = "" for manual nodes, uid for subscription nodes.
+local function list_all_nodes()
+	local all = {}
+
+	-- Manual nodes plus the valid-subscription uid set from one cursor —
+	-- this runs in the list_outbounds request path, so don't pay for a
+	-- second UCI load.
+	local c = uci_cursor()
+	local manual = {}
+	c:foreach("treadle", "node", function(s)
+		manual[#manual + 1] = {
+			id          = s[".name"],
+			tag         = s.tag or "",
+			type        = s.type or "",
+			server      = s.server or "",
+			server_port = tonumber(s.server_port) or 0,
+			order       = tonumber(s.order) or 0
+		}
+	end)
+	local valid = {}
+	c:foreach("treadle", "subscription", function(s)
+		valid[s[".name"]] = true
+	end)
+	c:close()
+	table.sort(manual, function(a, b)
+		if a.order == b.order then return a.id < b.id end
+		return a.order < b.order
+	end)
+	for _, n in ipairs(manual) do
+		n.subscription = ""
+		all[#all + 1] = n
+	end
+
+	-- Subscription nodes from JSON files — skip any file whose uid is not
+	-- a current UCI subscription's uid. Such a file is an orphan: a sync
+	-- ran against a subscription that has since been deleted, and there is no
+	-- live UCI row to provide its display name. Loading it would surface its
+	-- tags in dropdowns with no prefix to identify the source, making them
+	-- indistinguishable from manual nodes — and worse, the prefix-less tags
+	-- can collide with valid subscription tags. Read-only here; the explicit
+	-- delete happens in prune_orphan_nodes().
+	for _, nf in ipairs(lib.node_files()) do
+		if valid[nf.uid] then
+			for _, n in ipairs(read_nodes_file(nf.uid)) do
+				n.subscription = nf.uid
+				all[#all + 1] = n
+			end
+		end
+	end
+	return all
+end
+
+-- Cooperative sync lock. This RPC is the single owner of the lock — the cron
+-- `sync-subscriptions` wrapper drives the hourly pass by calling this RPC
+-- per due subscription and deliberately does NOT hold the lock itself (a
+-- held-then-recursed `lock -n` from the wrapper process would fail and the
+-- RPC would skip every cron sync). Serializes manual and cron-driven
+-- sync_subscription / sync_all_subscriptions runs against each other, so
+-- concurrent sync_one() runs can't race on /etc/config/treadle: without it, two
+-- writers can stage disjoint c2:set's, the second commit's full-file rewrite
+-- wins, and one of them silently loses its status/last_sync/node_count writes.
+-- Non-blocking (`lock -n`) to match the rest of the codebase and keep the
+-- UI responsive — a collision returns status="busy" and the user retries
+-- rather than blocking the RPC for a whole cron pass.
+local SYNC_LOCK = "/var/lock/treadle-sync.lock"
+
+local function sync_lock_acquire()
+	os.execute("mkdir -p /var/lock 2>/dev/null")
+	return os.execute("lock -n " .. SYNC_LOCK .. " 2>/dev/null") == 0
+end
+
+local function sync_lock_release()
+	os.execute("lock -u " .. SYNC_LOCK .. " 2>/dev/null")
+end
+
+-- sing-box version is static between package upgrades; cache the first
+-- line of `sing-box version` (e.g. "sing-box version 1.12.4") in tmpfs so
+-- callers — the 5s Overview poll, every subscription sync — do not fork
+-- sing-box on each call. /var is tmpfs, so the cache is cleared on reboot
+-- and re-detected fresh. Returns nil when sing-box is not present.
+local function singbox_version()
+	local VCACHE = "/var/etc/treadle/.singbox-version"
+	local version = read_file(VCACHE)
+	if version then
+		version = version:gsub("%s+$", "")
+		if version == "" then version = nil end
+	end
+	if not version then
+		local vf = io.popen("/usr/bin/sing-box version 2>/dev/null")
+		if vf then
+			version = vf:read("*l")
+			vf:close()
+		end
+		if version and version ~= "" then
+			os.execute("mkdir -p /var/etc/treadle 2>/dev/null")
+			local wf = io.open(VCACHE, "w")
+			if wf then wf:write(version); wf:close() end
+		end
+	end
+	return version
+end
+
+-- Fetch a subscription URL and update its UCI state.
+-- Returns a result table { status, node_count } on success.
+local function sync_one(id)
+	-- id is interpolated into a temp-file path (and a shell command via it)
+	-- and used as a UCI section reference. Reject anything that is not a
+	-- plain section name before it can reach either — defence in depth: UCI
+	-- already constrains section names, but this handler must not rely on
+	-- that invariant being upheld by every caller.
+	if type(id) ~= "string" or not id:match("^[%w_%-]+$") then
+		log_treadle("err", "sync: rejected invalid subscription id")
+		return { status = "error", node_count = 0 }
+	end
+
+	local c = uci_cursor()
+	-- Promote a `^cfg` section name to a stable uid before any file write:
+	-- a `uci add treadle subscription` over SSH would otherwise inherit a
+	-- volatile cfgXXXX name and lose its on-disk file the next time some
+	-- other section rotates the counter. After this point, `id` is the
+	-- stable uid.
+	local new_id = stabilise_section_name(c, id)
+	if not new_id then
+		c:close()
+		log_treadle("err", "sync '" .. id .. "': could not assign stable uid")
+		return { status = "error", node_count = 0 }
+	end
+	id = new_id
+
+	local url        = c:get("treadle", id, "url")        or ""
+	local sub_name   = c:get("treadle", id, "name")       or id
+	local user_agent = c:get("treadle", id, "user_agent") or ""
+	local uid        = id
+	c:close()
+
+	if url == "" then
+		log_treadle("warn", "sync '" .. sub_name .. "': no URL configured")
+		return { status = "error", node_count = 0 }
+	end
+
+	-- No URL in the log line. A subscription URL is a bearer credential:
+	-- anyone holding it gets the user's paid service and their whole node
+	-- list. get_logs feeds syslog straight into the Status page log box, so a
+	-- logged URL is one support screenshot away from being handed out, and
+	-- syslog is forwarded off-box wherever log_proto/log_ip are set. Redacting
+	-- it down to the scheme was tried and read as a broken URL rather than as
+	-- a deliberate omission; nothing diagnostic is lost by dropping it, since
+	-- the line already names the subscription.
+	log_treadle("info", "sync '" .. sub_name .. "': fetching")
+
+	-- uclient-fetch is always present on OpenWrt (part of uclient).
+	-- Write to a temp file so we can cap size and check the exit code cleanly.
+	local safe_url = url:gsub("'", "'\\''")
+	os.execute("mkdir -p /var/etc/treadle 2>/dev/null")
+	local tmp_body = "/var/etc/treadle/sub-" .. id .. ".tmp"
+	-- Default UA: identify as the installed sing-box rather than as
+	-- uclient-fetch — providers increasingly gate the reply (or pick its
+	-- format) on a recognisable client UA. An explicit user_agent on the
+	-- subscription overrides this.
+	if user_agent == "" then
+		local v = singbox_version()
+		-- major.minor only ("sing-box/1.12"): field testing showed at least
+		-- one provider rejects the UA with the full patch version appended.
+		local num = v and (v:match("(%d+%.%d+)") or v:match("(%d%S*)"))
+		user_agent = num and ("sing-box/" .. num) or "sing-box"
+	end
+	local ua_flag = " -U '" .. user_agent:gsub("'", "'\\''") .. "'"
+	local fetch_cmd = "uclient-fetch -q --timeout=15" .. ua_flag .. " -O '" .. tmp_body .. "' '" .. safe_url .. "' 2>/dev/null"
+	local fetch_ok = (os.execute(fetch_cmd) == 0)
+
+	local body = ""
+	if fetch_ok then
+		local bf = io.open(tmp_body, "r")
+		if bf then
+			-- 2 MB cap guards against unexpectedly large responses
+			body = bf:read(2097152) or ""
+			bf:close()
+		end
+	end
+	os.remove(tmp_body)
+
+	local status, node_count
+	-- Set when this sync is the subscription's FIRST successful import (no
+	-- nodes file existed before the write) — the trigger for the scoped
+	-- post-add latency test below.
+	local first_import_tags
+	if fetch_ok and body ~= "" then
+		-- Single pass: identify the format and extract its nodes at once.
+		local fmt, nodes, skipped = parse_subscription(body)
+		local count = #nodes
+		status = "ok"
+		node_count = count
+		log_treadle("info", string.format("sync '%s': format=%s, %d node(s)", sub_name, fmt, count))
+		-- Nodes the provider ships that this sing-box cannot dial at all
+		-- (Xray-only transports, chiefly `xhttp`). They are dropped rather
+		-- than imported half-built, so say so — otherwise a subscription
+		-- quietly returns fewer nodes than the provider's own app shows and
+		-- there is nothing anywhere explaining the difference.
+		if skipped and #skipped > 0 then
+			local names = {}
+			for _, reason in ipairs(skipped) do
+				if #names >= MAX_NAMES then break end
+				names[#names + 1] = reason
+			end
+			local listed = table.concat(names, "; ")
+			if #skipped > #names then
+				listed = listed .. string.format(" (+%d more)", #skipped - #names)
+			end
+			log_treadle("warn", string.format(
+				"sync '%s': skipped %d unsupported node(s): %s", sub_name, #skipped, listed))
+		end
+		if count == 0 then
+			log_treadle("warn", "sync '" .. sub_name .. "': URL returned no recognisable proxy nodes")
+		else
+			-- Node names for the log line, capped at MAX_NAMES.
+			local names = {}
+			for _, n in ipairs(nodes) do
+				if #names >= MAX_NAMES then break end
+				if type(n.tag) == "string" and n.tag ~= "" then
+					names[#names + 1] = n.tag
+				end
+			end
+			local listed = table.concat(names, ", ")
+			if count > #names then
+				listed = listed .. string.format(" (+%d more)", count - #names)
+			end
+			log_treadle("info", "sync '" .. sub_name .. "' nodes: " .. listed)
+
+			local had_file = lib.file_exists(nodes_file(uid))
+			if write_nodes_file(uid, nodes) then
+				log_treadle("info", string.format("sync '%s': %d nodes saved to %s",
+					sub_name, count, nodes_file(uid)))
+				if not had_file then
+					first_import_tags = {}
+					for _, n in ipairs(nodes) do
+						if type(n.tag) == "string" and n.tag ~= "" then
+							first_import_tags[#first_import_tags + 1] = n.tag
+						end
+					end
+				end
+			else
+				log_treadle("err", "sync '" .. sub_name .. "': failed to write nodes file")
+			end
+		end
+	else
+		status = "error"
+		node_count = 0
+		log_treadle("err", "sync '" .. sub_name .. "': fetch failed — check URL or network")
+	end
+
+	local now = os.date("%Y-%m-%d %H:%M")
+
+	local c2 = uci_cursor()
+	-- Extra parens around c2:get force single-value semantics: on this
+	-- libuci-lua, a missing option returns (nil, errmsg), and without the
+	-- parens that second string would be passed as tonumber's `base`
+	-- argument and throw "bad argument #2". sync_one runs under pcall, so
+	-- the throw silently bailed out before the c2:set/commit below — first
+	-- syncs of a subscription (the only time node_count is unset) never
+	-- persisted status/last_sync/node_count and surfaced as "Sync failed"
+	-- in the UI despite the file write succeeding.
+	local old_count = tonumber((c2:get("treadle", id, "node_count"))) or 0
+	c2:set("treadle", id, "last_sync", now)
+	c2:set("treadle", id, "status", status)
+	if status == "ok" then
+		c2:set("treadle", id, "node_count", tostring(node_count))
+	end
+	-- Read the clash flag (used by the first-import test below) off this
+	-- cursor instead of opening a third one a few lines later.
+	local clash_on = (c2:get("treadle", "global", "clash_api_enabled") == "1")
+	c2:commit("treadle")
+	c2:close()
+
+	-- Post-add latency test: a subscription's FIRST successful import gets
+	-- a runner pass scoped to its new tags, so the Latency cells fill in
+	-- without a manual Test-all. Re-syncs do not trigger (the periodic
+	-- auto-test covers drift), and a busy runner skips the trigger
+	-- entirely — its lock drops concurrent forks rather than queueing
+	-- them, and the tag file must not be written for a fork that will be
+	-- dropped. The UI's Nodes tab resumes the progress poll on render
+	-- when it finds a runner in flight.
+	if first_import_tags and #first_import_tags > 0 then
+		if clash_on and not test_runner_busy() then
+			log_treadle("info", "sync '" .. sub_name .. "': first import, testing "
+				.. #first_import_tags .. " new node(s)")
+			fork_test_runner(first_import_tags)
+		end
+	end
+
+	return { status = status, node_count = (status == "ok") and node_count or old_count }
+end
+
+local methods = {
+
+	get_status = {
+		call = function()
+			-- Wrap UCI in pcall: luci.model.uci may not be present on all
+			-- builds; a thrown error here would propagate through the outer
+			-- pcall, causing os.exit(1) and an UBUS_STATUS_NOT_FOUND reply.
+			local enabled = false
+			local mode = "basic"
+			local c_ok, c = pcall(uci_cursor)
+			if c_ok then
+				local val = c:get("treadle", "global", "enabled")
+				local m   = c:get("treadle", "global", "mode")
+				c:close()
+				enabled = (val == "1")
+				-- Anything but the two known values reads as the shipped
+				-- default, matching build-config's read_mode.
+				if m == "basic" or m == "advanced" then mode = m end
+			end
+
+			local running = service_running()
+
+			local version = singbox_version()
+
+			-- Transient pause marker: present when the user clicked Stop on
+			-- the Status page without disabling the persistent `enabled`
+			-- flag. Frontend uses it to distinguish "user paused for
+			-- testing" from "crashed / not yet started", which need
+			-- different button labels and a different message.
+			local paused = false
+			local pf = io.open("/var/run/treadle.paused", "r")
+			if pf then paused = true; pf:close() end
+
+			return {
+				enabled = enabled,
+				running = running,
+				paused = paused,
+				version = version,
+				mode    = mode
+			}
+		end
+	},
+
+	-- UI-mode switch. Basic mode hides Nodes / Routing / Settings and builds
+	-- the running config from `treadle.basic` only; Advanced is today's full UI.
+	-- The flag is purely a builder gate — switching modes does not touch any
+	-- other UCI section, so going Advanced → Basic → Advanced is non-destructive.
+	-- Routing through here (rather than a plain `uci set` from JS) keeps the
+	-- commit + service reload atomic so the running sing-box config always
+	-- matches the mode the UI is showing.
+	set_mode = {
+		args = { mode = "" },
+		call = function(args)
+			local m = args.mode
+			if m ~= "basic" and m ~= "advanced" then
+				return { ok = false, error = "invalid mode" }
+			end
+			local c = uci_cursor()
+			c:set("treadle", "global", "mode", m)
+			-- The shipped config has a `config treadle 'basic'` section, but a
+			-- hand-edited one may not. Without it, form.NamedSection on the
+			-- Basic panel renders the section title but skips every option
+			-- underneath, and build_basic_route reads all-empty defaults.
+			-- Recreate it with the shipped defaults when missing; idempotent.
+			if not c:get("treadle", "basic") then
+				c:set("treadle", "basic", "treadle")
+				c:set("treadle", "basic", "routing", "all")
+				c:set("treadle", "basic", "bypass_country", "cn")
+				c:set("treadle", "basic", "ports", "all")
+			end
+			c:commit("treadle")
+			c:close()
+			log_treadle("notice", "ui: switched to " .. m .. " mode")
+			os.execute("/etc/init.d/treadle reload >/dev/null 2>&1")
+			return { ok = true, mode = m }
+		end
+	},
+
+	-- Return a fresh preview of the sing-box config built from the current UCI
+	-- state. The canonical file at treadle.global.config_path is what sing-box
+	-- actually runs — we do NOT overwrite it here, so a stale "running" config
+	-- can never be silently replaced just by opening the tab. The preview goes
+	-- to /var/etc/treadle/ (tmpfs, same as every other generated Treadle file) so
+	-- the user always sees what their saved changes would produce on the next
+	-- reload. `exists` tells the UI whether the running file is present so it
+	-- can flag "preview differs from running" cases.
+	get_config = {
+		call = function()
+			local c = uci_cursor()
+			local path = c:get("treadle", "global", "config_path") or "/var/etc/treadle/sing-box.json"
+			c:close()
+
+			local preview_path = "/var/etc/treadle/preview.json"
+			-- --preview keeps build-config side-effect-free: no orphan node
+			-- file deletion, no dnsmasq drop-in rewrite. get_config is on
+			-- the read side of the ACL and must not mutate persistent state.
+			local hf = io.popen("/usr/libexec/treadle/build-config --preview '" .. preview_path .. "' 2>&1; echo __RC__$?")
+			local output = ""
+			if hf then output = hf:read("*a") or ""; hf:close() end
+			local rc = tonumber(output:match("__RC__(%d+)") or "1") or 1
+			output = output:gsub("__RC__%d+%s*$", ""):gsub("%s+$", "")
+
+			local content, err = "", nil
+			if rc == 0 then
+				local f = io.open(preview_path, "r")
+				if f then
+					content = f:read("*a") or ""
+					f:close()
+				end
+				os.remove(preview_path)
+			else
+				err = (output ~= "" and output) or "generator failed"
+			end
+
+			local running_exists = false
+			local rf = io.open(path, "r")
+			if rf then running_exists = true; rf:close() end
+
+			return { json = content, path = path, exists = running_exists, error = err }
+		end
+	},
+
+	-- Read /etc/treadle/extra.json (top-level JSON object shallow-merged into
+	-- the generated config). Returns an empty string when the file is absent.
+	get_extra_config = {
+		call = function()
+			local content = ""
+			local f = io.open("/etc/treadle/extra.json", "r")
+			if f then content = f:read("*a") or ""; f:close() end
+			return { json = content }
+		end
+	},
+
+	-- Validate JSON, then write /etc/treadle/extra.json atomically. An empty
+	-- payload removes the file (which is equivalent to "no overrides").
+	set_extra_config = {
+		args = { payload = "" },
+		call = function(args)
+			local raw = args.payload or ""
+			if raw:match("^%s*$") then
+				os.remove("/etc/treadle/extra.json")
+				log_treadle("notice", "config: extra.json removed")
+				return { ok = true }
+			end
+			if not _jsonc_ok then
+				log_treadle("warning", "config: extra.json rejected — luci.jsonc not available")
+				return { ok = false, error = "luci.jsonc not available" }
+			end
+			local ok, parsed = pcall(_jsonc.parse, raw)
+			if not ok or type(parsed) ~= "table" then
+				log_treadle("warning", "config: extra.json rejected — invalid JSON object")
+				return { ok = false, error = "invalid JSON object" }
+			end
+			-- write_secure: extra.json may contain overrides with
+			-- credentials, secret URLs, or per-protocol passwords.
+			local wok, werr = lib.write_secure("/etc/treadle/extra.json", raw)
+			if not wok then
+				log_treadle("warning", "config: extra.json rejected — " .. werr)
+				return { ok = false, error = werr }
+			end
+			log_treadle("notice", string.format("config: extra.json updated (%d bytes)", #raw))
+			return { ok = true }
+		end
+	},
+
+	get_log = {
+		args = { lines = 100 },
+		call = function(args)
+			local n = tonumber(args.lines) or 100
+			if n > 500 then n = 500 end
+
+			local result = {}
+			-- Merge sing-box service output with treadle subscription activity,
+			-- sorted by the syslog timestamp that prefixes every line.
+			local f = io.popen(
+				"logread 2>/dev/null | grep -e 'sing-box' -e ' treadle:' | tail -n " .. n
+			)
+			if f then
+				for line in f:lines() do
+					result[#result + 1] = line
+				end
+				f:close()
+			end
+			return { log = result }
+		end
+	},
+
+	-- Same syslog source as get_log, but split into separate treadle and
+	-- sing-box arrays so the Status page can render them in two boxes. Treadle
+	-- lines are filtered by the `treadle_log_level` UCI threshold (display-only
+	-- — the syslog still accumulates everything; the level only hides lines
+	-- below the threshold when the UI asks for them). sing-box's own log
+	-- level controls what *it* emits, so no filtering happens here for it.
+	get_logs = {
+		args = { lines = 20 },
+		call = function(args)
+			local n = tonumber(args.lines) or 20
+			if n > 500 then n = 500 end
+
+			-- Keys are the POSIX severity names syslog actually emits,
+			-- which is what the daemon.<sev> match below yields. The
+			-- `error`/`warn` aliases exist because the Settings dropdown
+			-- writes sing-box's spelling (it sits directly beneath the
+			-- sing-box log-level control, which legitimately uses those
+			-- names) — without them SEV["error"] is nil, the lookup below
+			-- falls through to its `or 6` default, and "Error", the
+			-- strictest setting offered, silently filters nothing at all.
+			local SEV = {
+				emerg = 0, alert = 1, crit = 2, err = 3,
+				warning = 4, notice = 5, info = 6, debug = 7,
+				error = 3, warn = 4
+			}
+			local c = uci_cursor()
+			local threshold = SEV[c:get("treadle", "global", "treadle_log_level") or "info"] or 6
+			c:close()
+
+			-- Retain only the last n lines of each category while
+			-- scanning, in a fixed-size ring buffer, instead of appending
+			-- every match and trimming at the end. The split has to happen
+			-- here rather than in the pipeline — a single `tail` before the
+			-- split cannot guarantee n of *each* category — so the scan
+			-- still walks the whole syslog ring buffer, but it no longer
+			-- allocates a table slot per line to do it. That mattered:
+			-- on a box whose sing-box is logging steadily, the sing-box
+			-- side is the overwhelming majority of matches and essentially
+			-- all of them were appended only to be discarded, on every
+			-- single 2s Status poll.
+			if n < 1 then n = 1 end
+			local function ring() return { buf = {}, len = 0 } end
+			local function push(r, line)
+				r.len = r.len + 1
+				r.buf[(r.len - 1) % n + 1] = line
+			end
+			local function drain(r)
+				local out = {}
+				local count = r.len < n and r.len or n
+				local start = r.len <= n and 0 or r.len - n
+				for i = 1, count do
+					out[i] = r.buf[(start + i - 1) % n + 1]
+				end
+				return out
+			end
+
+			local treadle, singbox = ring(), ring()
+			-- Prefilter in the pipeline so the per-line Lua loop below only
+			-- sees candidate lines — this runs on every 2s Status-page poll
+			-- and the full syslog ring buffer can be hundreds of KB. The
+			-- grep patterns are deliberately broader than the Lua matches
+			-- (no anchoring spaces), so the Lua classification still decides.
+			local f = io.popen(
+				"logread 2>/dev/null | grep -e 'treadle:' -e 'sing-box'"
+			)
+			if f then
+				for line in f:lines() do
+					if line:find(" treadle: ", 1, true) then
+						local sev = line:match("daemon%.(%w+) ")
+						if not sev or (SEV[sev] or 6) <= threshold then
+							push(treadle, line)
+						end
+					elseif line:find("sing-box[", 1, true) or
+					       line:find(" sing-box: ", 1, true) then
+						push(singbox, line)
+					end
+				end
+				f:close()
+			end
+
+			return { treadle = drain(treadle), singbox = drain(singbox) }
+		end
+	},
+
+	-- Two distinct concepts, two distinct RPCs:
+	--   * set_enabled — persistent master switch (UCI global.enabled). Off
+	--     means installed-but-dormant: no autostart, watchdog idle, no
+	--     procd instance. Toggled from the Status page Enable toggle.
+	--   * start / stop / restart — transient runtime controls, used to
+	--     test whether an issue is caused by Treadle without changing the
+	--     persistent enable state. Stop writes a tmpfs marker that the
+	--     init script and watchdog honour, so a paused service stays
+	--     stopped until the user clicks Start (or the router reboots —
+	--     /var/run is tmpfs, so the marker dies with the box and the
+	--     enabled service comes back automatically).
+	set_enabled = {
+		args = { enabled = true },
+		call = function(args)
+			local on = (args.enabled == true) or (args.enabled == 1)
+				or (args.enabled == "1")
+			local c = uci_cursor()
+			c:set("treadle", "global", "enabled", on and "1" or "0")
+			c:commit("treadle")
+			c:close()
+			-- Clear any prior pause when changing the master switch — a
+			-- transient pause across an enable/disable cycle would be
+			-- surprising. set_enabled is the canonical reset point.
+			os.remove("/var/run/treadle.paused")
+			log_treadle("notice", on and "service: enabled" or "service: disabled")
+			local cmd = on and "start" or "stop"
+			local rc = os.execute("/etc/init.d/treadle " .. cmd
+				.. " >/dev/null 2>&1")
+			return { ok = (rc == 0) }
+		end
+	},
+
+	start = {
+		call = function()
+			-- Manual start is for clearing a transient pause and booting
+			-- the service back up; it deliberately does NOT auto-flip the
+			-- persistent `enabled` flag (set_enabled does that, exposed
+			-- via the Status Enable toggle). If the service is disabled
+			-- at the UCI level, start_service returns 1 silently and the
+			-- user has no signal that nothing happened — surface an
+			-- actionable error so the UI can guide them to the toggle.
+			local c = uci_cursor()
+			local enabled = c:get("treadle", "global", "enabled")
+			c:close()
+			if enabled ~= "1" then
+				return { ok = false,
+					error = "Treadle is disabled — flip the Enable toggle first." }
+			end
+			os.remove("/var/run/treadle.paused")
+			log_treadle("notice", "service: manual start")
+			local rc = os.execute("/etc/init.d/treadle start >/dev/null 2>&1")
+			return { ok = (rc == 0) }
+		end
+	},
+
+	stop = {
+		call = function()
+			-- Mark the pause before stopping so the cron watchdog (which
+			-- can fire at any minute) sees the marker if it runs between
+			-- the write and the init-script stop.
+			local mf = io.open("/var/run/treadle.paused", "w")
+			if mf then mf:close() end
+			log_treadle("notice", "service: manual stop (paused — will not autostart until cleared)")
+			os.execute("/etc/init.d/treadle stop >/dev/null 2>&1")
+			return { ok = true }
+		end
+	},
+
+	restart = {
+		call = function()
+			-- Restart implies "be running" — clear any pause so the
+			-- restart actually takes effect (start_service refuses while
+			-- the marker is present).
+			os.remove("/var/run/treadle.paused")
+			log_treadle("notice", "service: manual restart")
+			local rc = os.execute("/etc/init.d/treadle restart >/dev/null 2>&1")
+			return { ok = (rc == 0) }
+		end
+	},
+
+	sync_subscription = {
+		args = { id = "" },
+		call = function(args)
+			if not args.id or args.id == "" then
+				return { error = "id required" }
+			end
+			if not sync_lock_acquire() then
+				return { status = "busy", node_count = 0 }
+			end
+			-- pcall so a throw inside sync_one (e.g. libuci-lua returning a
+			-- second value into a tonumber call) still releases the lock
+			-- before propagating, otherwise the lock daemon outlives this
+			-- handler and jams every subsequent sync.
+			local ok, result = pcall(function()
+				local r = sync_one(args.id)
+				prune_orphan_nodes()
+				return r
+			end)
+			sync_lock_release()
+			if not ok then error(result) end
+			return result
+		end
+	},
+
+	sync_all_subscriptions = {
+		call = function()
+			if not sync_lock_acquire() then
+				return { status = "busy", synced = 0, errors = 0, reloaded = false }
+			end
+			local ok, result = pcall(function()
+				local c = uci_cursor()
+				local ids = {}
+				c:foreach("treadle", "subscription", function(s)
+					if s.enabled == "1" then
+						ids[#ids + 1] = s[".name"]
+					end
+				end)
+				c:close()
+				local synced, errors = 0, 0
+				for _, id in ipairs(ids) do
+					local r = sync_one(id)
+					if r and r.status == "ok" then
+						synced = synced + 1
+					else
+						errors = errors + 1
+					end
+				end
+				prune_orphan_nodes()
+				local reloaded = reload_if_config_changed()
+				return { synced = synced, errors = errors, reloaded = reloaded }
+			end)
+			sync_lock_release()
+			if not ok then error(result) end
+			return result
+		end
+	},
+
+	-- Diff a freshly-generated config against the running one and reload
+	-- sing-box when they differ. Called by the cron sync wrapper and the
+	-- single-subscription Sync button so we trigger at most one restart per
+	-- batch instead of once per subscription.
+	reload_if_changed = {
+		call = function()
+			return { reloaded = reload_if_config_changed() }
+		end
+	},
+
+	-- Called once by /etc/init.d/treadle at every start_service (boot + reload)
+	-- to fix up any subscription whose node_count/status UCI fields survived
+	-- a reinstall while its /etc/treadle/nodes/<uid>.json did not. See
+	-- reconcile_subscriptions above.
+	reconcile_subscriptions = {
+		call = function()
+			return { changed = reconcile_subscriptions() }
+		end
+	},
+
+	-- Return all nodes for use in outbound dropdowns (routing, urltest members).
+	-- Manual nodes come from UCI node sections; subscription nodes from JSON files.
+	list_outbounds = {
+		call = function()
+			local all = list_all_nodes()
+			local outbounds = {}
+			for _, n in ipairs(all) do
+				local sdisp = n.server or ""
+				if sdisp ~= "" and n.server_port and n.server_port ~= 0 then
+					sdisp = sdisp .. ":" .. tostring(n.server_port)
+				end
+				outbounds[#outbounds + 1] = {
+					id             = n.id or "",
+					tag            = n.tag or "",
+					type           = n.type or "",
+					server         = n.server or "",
+					server_port    = tonumber(n.server_port) or 0,
+					server_display = sdisp,
+					subscription   = n.subscription or ""
+				}
+			end
+			return { outbounds = outbounds }
+		end
+	},
+
+	-- Detect the first DNS server advertised on the WAN interface. Used by the
+	-- DNS settings tab to label the "WAN DNS" auto-detect choice.
+	get_wan_dns = {
+		call = function()
+			return { wan_dns = lib.detect_wan_dns(_jsonc_ok and _jsonc or nil) }
+		end
+	},
+
+	-- Return the node list of one subscription, projected to the fields the
+	-- Subscriptions tab's "Nodes" modal renders (tag, type, server, port). The
+	-- on-disk file also carries a `payload` blob per node — the full sing-box
+	-- outbound JSON used by build-config — which is many KB per node and not
+	-- needed in the UI; stripping it here keeps the response small.
+	list_subscription_nodes = {
+		args = { id = "" },
+		call = function(args)
+			local id = args.id or ""
+			if not id:match("^[%w_%-]+$") then
+				return { nodes = {} }
+			end
+			-- The caller passes the subscription's UCI section name, which
+			-- IS its uid (the on-disk file is `<id>.json`).
+			local out = {}
+			for _, n in ipairs(read_nodes_file(id)) do
+				out[#out + 1] = {
+					tag         = n.tag or "",
+					type        = n.type or "",
+					server      = n.server or "",
+					server_port = tonumber(n.server_port) or 0
+				}
+			end
+			return { nodes = out }
+		end
+	},
+
+	-- Return the live state of every urltest group: the currently active
+	-- member (the clash `now` field) plus its last-known latency. Source
+	-- is the snapshot file the active-watch daemon writes every 10s, not
+	-- a fresh /proxies GET — keeps the RPC cheap (no extra HTTP round
+	-- trip on every Status-page tick), and ties the UI to the same view
+	-- the daemon logs against, so what the Treadle log says flipped matches
+	-- what the Groups panel shows is active.
+	--
+	-- Joins UCI on the group tag to surface `interval` / `tolerance` so
+	-- the user can read each group's tuning right next to the evidence
+	-- of it churning. UCI is open as a cursor only once for the whole
+	-- list — group counts are small (a handful).
+	--
+	-- Reports the same `error = "clash API disabled"` as get_clash_stats
+	-- when the feature flag is off, so the UI can render a consistent hint.
+	get_active_groups = {
+		call = function()
+			local c = uci_cursor()
+			local enabled = c:get("treadle", "global", "clash_api_enabled")
+			if enabled ~= "1" then
+				c:close()
+				return { error = "clash API disabled", groups = {} }
+			end
+
+			-- Index UCI urltest group sections by tag so the snapshot
+			-- tag maps back to the user's configured interval/tolerance.
+			local uci_groups = {}
+			c:foreach("treadle", "node", function(s)
+				if s.type == "urltest" then
+					if s.tag and s.tag ~= "" then
+						uci_groups[s.tag] = {
+							interval  = s.urltest_interval or "",
+							tolerance = s.urltest_tolerance or ""
+						}
+					end
+				end
+			end)
+			c:close()
+
+			local snap = read_file("/var/etc/treadle/.active-nodes.json")
+			if not snap or snap == "" or not _jsonc_ok then
+				return { groups = {}, updated_at = 0 }
+			end
+			local ok, parsed = pcall(_jsonc.parse, snap)
+			if not ok or type(parsed) ~= "table" or type(parsed.groups) ~= "table" then
+				return { groups = {}, updated_at = 0 }
+			end
+
+			-- Synthesised groups have no UCI section. basic-auto is the
+			-- Basic-mode urltest emitted by build-config when the user
+			-- picks more than one server; it carries fixed tuning, so
+			-- surface it with the same shape the urltest's UCI peers
+			-- would.
+			local SYNTHESISED = {
+				["basic-auto"] = { interval = "5m", tolerance = "50" },
+			}
+
+			local out = {}
+			for tag, entry in pairs(parsed.groups) do
+				local u = uci_groups[tag] or SYNTHESISED[tag]
+				-- Skip rows whose group has been deleted from UCI but
+				-- still lingers in the snapshot until sing-box's next
+				-- reload. Without this filter the UI would render a
+				-- confusing row with blank interval/tolerance pointing
+				-- at a group the user already removed.
+				if u then
+					out[#out + 1] = {
+						tag       = tag,
+						type      = (entry.type == "URLTest") and "urltest"
+						            or string.lower(tostring(entry.type or "")),
+						now       = entry.now or "",
+						delay_ms  = entry.delay_ms,
+						interval  = u.interval or "",
+						tolerance = u.tolerance or ""
+					}
+				end
+			end
+			-- Stable order so the UI rows don't jump on each refresh —
+			-- pairs() over the snapshot is unordered. Sort by tag.
+			table.sort(out, function(a, b) return a.tag < b.tag end)
+			return { groups = out, updated_at = tonumber(parsed.updated_at) or 0 }
+		end
+	},
+
+	-- Return the live throughput / connection-count snapshot the
+	-- active-watch daemon writes every 10s from /connections. Source is
+	-- the snapshot file, not a fresh GET — same reasoning as
+	-- get_active_groups: the Status page polls every 2s, and we don't
+	-- want to fan that out into a /connections fetch (which on a busy
+	-- router carries the full per-connection list) on every tick. The
+	-- daemon already pays that cost once per 10s and writes the summary.
+	--
+	-- Returns `error = "clash API disabled"` when the feature flag is
+	-- off; the UI hides the row in that case. Empty/missing snapshot
+	-- (first ten seconds after enabling, or daemon not yet started)
+	-- returns the same shape with zero values so the UI just renders
+	-- dashes rather than a special case.
+	get_clash_stats = {
+		call = function()
+			local c = uci_cursor()
+			local enabled = c:get("treadle", "global", "clash_api_enabled")
+			c:close()
+			if enabled ~= "1" then
+				return { error = "clash API disabled" }
+			end
+			local snap = read_file("/var/etc/treadle/.clash-stats.json")
+			if not snap or snap == "" or not _jsonc_ok then
+				return { updated_at = 0 }
+			end
+			local ok, parsed = pcall(_jsonc.parse, snap)
+			if not ok or type(parsed) ~= "table" then
+				return { updated_at = 0 }
+			end
+			return {
+				up_bps     = tonumber(parsed.up_bps)     or 0,
+				down_bps   = tonumber(parsed.down_bps)   or 0,
+				total_up   = tonumber(parsed.total_up)   or 0,
+				total_down = tonumber(parsed.total_down) or 0,
+				conn_count = tonumber(parsed.conn_count) or 0,
+				mem_inuse  = tonumber(parsed.mem_inuse),
+				updated_at = tonumber(parsed.updated_at) or 0
+			}
+		end
+	},
+
+	-- Return the cached latency results so the Nodes panel can render the
+	-- Latency / Last-tested columns without re-probing on every page load.
+	-- Empty `results` table when the cache file is missing (first run, or a
+	-- reboot — /var is tmpfs, so the cache resets when the router restarts).
+	get_last_latency = {
+		call = function()
+			return read_latency_cache()
+		end
+	},
+
+	-- Fork the background latency-test runner. Optional `tags` array narrows
+	-- the run to a subset (the per-row Test button passes one tag, the
+	-- per-subscription "Test all in this subscription" button a list);
+	-- omitted/empty means "probe every node Treadle knows about". The runner
+	-- builds an ephemeral probe config, starts a short-lived sing-box
+	-- instance from it, probes through that instance's clash API, writes
+	-- results into /var/etc/treadle/latency.json, and updates
+	-- /var/etc/treadle/.test-all-status with running=true/false plus
+	-- progress counters. The UI polls test_all_status to know when to
+	-- stop and refreshes cells from get_last_latency between polls.
+	-- Returns immediately so the request stays well under any LuCI
+	-- XHR-timeout limit.
+	test_all_start = {
+		args = { tags = {} },
+		call = function(args)
+			local c = uci_cursor()
+			local enabled = c:get("treadle", "global", "clash_api_enabled")
+			c:close()
+			if enabled ~= "1" then
+				return { error = "clash API disabled" }
+			end
+			-- If a previous runner is still alive, refuse — two runners
+			-- would race on the cache file (the runner's own lock also
+			-- guards this, but failing here keeps the tag file from
+			-- leaking into someone else's run; see test_runner_busy).
+			if test_runner_busy() then
+				return { error = "test already running" }
+			end
+			local ok, err = fork_test_runner(args.tags)
+			if not ok then
+				return { error = err }
+			end
+			return { started = true }
+		end
+	},
+
+	-- Return the runner's status file as-is. UI polls this every couple of
+	-- seconds; when `running` flips to false the batch is done and the
+	-- final summary fields (tested, errors, finished_at) are populated.
+	-- Absent file = no run has happened since boot.
+	test_all_status = {
+		call = function()
+			local raw = read_file("/var/etc/treadle/.test-all-status")
+			if not raw or raw == "" then return { running = false } end
+			if not _jsonc_ok then return { running = false } end
+			local ok, st = pcall(_jsonc.parse, raw)
+			if not ok or type(st) ~= "table" then return { running = false } end
+			return st
+		end
+	},
+
+	-- Active DHCP leases from busybox dnsmasq's lease file. Used by the
+	-- Bypass section on the Routing tab to autocomplete MAC / IP entries
+	-- against current LAN clients. The file format is
+	--   <expire-ts> <mac> <ip> <hostname-or-*> <client-id>
+	list_dhcp_leases = {
+		call = function()
+			local leases = {}
+			local f = io.open("/tmp/dhcp.leases", "r")
+			if f then
+				for line in f:lines() do
+					local mac, ip, hostname =
+						line:match("^%S+%s+(%S+)%s+(%S+)%s+(%S+)")
+					if mac and ip then
+						leases[#leases + 1] = {
+							mac      = mac:lower(),
+							ip       = ip,
+							hostname = (hostname == "*") and "" or hostname
+						}
+					end
+				end
+				f:close()
+			end
+			return { leases = leases }
+		end
+	},
+
+	-- Pure read of the rule-set catalog cache. Returns the cached names plus
+	-- the cache age so the UI can decide whether to call refresh_rulesets.
+	-- Side-effect-free so it can stay on the ACL read side. The actual
+	-- network fetch is the separate refresh_rulesets RPC (write side).
+	list_rulesets = {
+		call = function()
+			local s = read_file("/etc/treadle/rulesets-cache.json")
+			local obj = s and json_parse(s) or nil
+			if type(obj) ~= "table" then
+				return { names = {}, age = nil }
+			end
+			local age = (type(obj.ts) == "number") and (os.time() - obj.ts) or nil
+			return { names = obj.names or {}, age = age }
+		end
+	},
+
+	-- Trigger a background catalog refresh via fetch-catalog (outbound HTTPS
+	-- to GitHub). Write-side so a read-only LuCI user cannot cause outbound
+	-- network requests or flash writes. fetch-catalog self-locks via busybox
+	-- `lock` and exits silently if one is already running.
+	refresh_rulesets = {
+		call = function()
+			os.execute("/usr/libexec/treadle/fetch-catalog >/dev/null 2>&1 &")
+			return { started = true }
+		end
+	}
+}
+
+local cmd = arg[1]
+if cmd == "list" then
+	local list = {}
+	for name, def in pairs(methods) do
+		list[name] = def.args or {}
+	end
+	print(json_stringify(list))
+elseif cmd == "call" then
+	local name = arg[2]
+	local def   = methods[name]
+	if not def then
+		print("{}")
+		os.exit(1)
+	end
+
+	local args = {}
+	if def.args then
+		local raw = io.read("*a")
+		if raw and raw ~= "" then
+			args = json_parse(raw) or {}
+		end
+	end
+
+	local ok, result = pcall(def.call, args)
+	-- Always exit 0: rpcd's exec plugin maps non-zero exit to
+	-- UBUS_STATUS_NOT_FOUND, which LuCI surfaces as "Object not found".
+	-- Errors are communicated through the JSON payload instead.
+	print(json_stringify_reply(ok and result or { error = tostring(result) }))
+end

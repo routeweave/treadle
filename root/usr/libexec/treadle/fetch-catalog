@@ -1,0 +1,138 @@
+#!/usr/bin/env lua
+-- SPDX-License-Identifier: GPL-3.0-only
+-- Copyright (C) 2026 RouteWeave
+--
+-- fetch-catalog: refreshes the rule-set name catalog used by the routing
+-- UI's autocomplete. It walks the SagerNet / Loyalsoldier / MetaCubeX
+-- rule-set repositories via the GitHub tree API and writes the discovered
+-- names to /etc/treadle/rulesets-cache.json.
+--
+-- Rule-sets themselves are no longer downloaded by Treadle: routing rules
+-- reference sing-box `remote` rule-sets, which sing-box fetches and refreshes
+-- itself. This script only feeds UI suggestions and is invoked on demand by
+-- luci.treadle's list_rulesets when the cache is stale.
+--
+-- Self-locks via busybox `lock`; concurrent invocations exit silently.
+
+local function log(msg)
+	local safe = ("fetch-catalog: " .. msg):gsub("'", "'\\''")
+	os.execute("logger -t treadle '" .. safe .. "' 2>/dev/null")
+end
+
+local ok, jsonc = pcall(require, "luci.jsonc")
+if not ok then
+	log("luci.jsonc not available; aborting")
+	os.exit(1)
+end
+
+local CACHE = "/etc/treadle/rulesets-cache.json"
+local LOCK  = "/var/lock/treadle-fetch-catalog.lock"
+
+-- `lock -n` fails non-zero when already held; exit silently in that case.
+if os.execute("lock -n " .. LOCK .. " 2>/dev/null") ~= 0 then
+	os.exit(0)
+end
+
+local function unlock_exit(code)
+	os.execute("lock -u " .. LOCK .. " 2>/dev/null")
+	os.exit(code or 0)
+end
+
+local function sq(s)
+	return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
+end
+
+-- Walk the rule-set repositories and write the name catalog.
+local function refresh_catalog()
+	local function fetch(url)
+		local f = io.popen("uclient-fetch -q -O - " .. sq(url) .. " 2>/dev/null")
+		if not f then return nil end
+		local s = f:read("*a"); f:close()
+		if not s or s == "" then return nil end
+		return s
+	end
+
+	-- Parse a GitHub tree response: { "tree": [{ "path", "type" }] }.
+	local function parse_tree(raw, dir, prepend)
+		if not raw then return {} end
+		local ok2, parsed = pcall(jsonc.parse, raw)
+		if not ok2 or type(parsed) ~= "table" or type(parsed.tree) ~= "table" then
+			return {}
+		end
+		local out = {}
+		for _, e in ipairs(parsed.tree) do
+			if e.type == "blob" then
+				local p = e.path or ""
+				local in_dir = true
+				if dir then
+					if p:sub(1, #dir) ~= dir then
+						in_dir = false
+					else
+						p = p:sub(#dir + 1)
+					end
+				end
+				if in_dir then
+					local name = p:match("^([^/]+)%.srs$")
+					if name then
+						out[#out + 1] = prepend and (prepend .. name) or name
+					end
+				end
+			end
+		end
+		return out
+	end
+
+	local function concat_lists(a, b)
+		for _, v in ipairs(b) do a[#a + 1] = v end
+		return a
+	end
+
+	local function find_subtree_sha(raw, name)
+		if not raw then return nil end
+		local ok2, parsed = pcall(jsonc.parse, raw)
+		if not ok2 or type(parsed) ~= "table" or type(parsed.tree) ~= "table" then return nil end
+		for _, e in ipairs(parsed.tree) do
+			if e.type == "tree" and e.path == name then return e.sha end
+		end
+		return nil
+	end
+
+	local BASE = "https://api.github.com/repos/"
+	local sn_site = fetch(BASE .. "SagerNet/sing-geosite/git/trees/rule-set?recursive=1")
+	local sn_ip   = fetch(BASE .. "SagerNet/sing-geoip/git/trees/rule-set?recursive=1")
+	local ls      = fetch(BASE .. "Loyalsoldier/geoip/git/trees/release?recursive=1")
+
+	-- MetaCubeX: the full sing-branch tree exceeds GitHub's truncation limit;
+	-- walk root → geo → geosite/geoip, each leaf tree is small enough.
+	local mc_root     = fetch(BASE .. "MetaCubeX/meta-rules-dat/git/trees/sing")
+	local geo_sha     = find_subtree_sha(mc_root, "geo")
+	local mc_geo      = geo_sha and fetch(BASE .. "MetaCubeX/meta-rules-dat/git/trees/" .. geo_sha) or nil
+	local geosite_sha = find_subtree_sha(mc_geo, "geosite")
+	local geoip_sha   = find_subtree_sha(mc_geo, "geoip")
+	local mc_site     = geosite_sha and fetch(BASE .. "MetaCubeX/meta-rules-dat/git/trees/" .. geosite_sha) or nil
+	local mc_ip       = geoip_sha   and fetch(BASE .. "MetaCubeX/meta-rules-dat/git/trees/" .. geoip_sha)   or nil
+
+	local names = {
+		sagernet     = concat_lists(parse_tree(sn_site, nil, nil),
+		                            parse_tree(sn_ip,   nil, nil)),
+		metacubex    = concat_lists(parse_tree(mc_site, nil, "geosite-"),
+		                            parse_tree(mc_ip,   nil, "geoip-")),
+		loyalsoldier = parse_tree(ls, "srs/", nil)
+	}
+
+	if #names.sagernet > 0 or #names.metacubex > 0 or #names.loyalsoldier > 0 then
+		os.execute("mkdir -p /etc/treadle 2>/dev/null")
+		local f = io.open(CACHE, "w")
+		if f then
+			f:write(jsonc.stringify({ ts = os.time(), names = names }))
+			f:close()
+			log(string.format("catalog: sagernet=%d metacubex=%d loyalsoldier=%d",
+				#names.sagernet, #names.metacubex, #names.loyalsoldier))
+		end
+	else
+		log("catalog: refresh got no data, cache unchanged")
+	end
+end
+
+refresh_catalog()
+unlock_exit(0)

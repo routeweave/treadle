@@ -1,0 +1,55 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 RouteWeave
+#
+# Called hourly by cron. Syncs each enabled subscription whose auto_update
+# interval (in hours) has elapsed since last_sync. Exits quickly when nothing
+# is due.
+#
+# Serialization lives inside the sync_subscription RPC, which takes
+# /var/lock/treadle-sync.lock around each sync_one (and so against the UI's
+# manual sync and against itself). This wrapper must NOT hold that lock while
+# it calls the RPC: the lock is non-blocking, and a held-then-recursed acquire
+# from this separate process fails, so the RPC returns "busy" and never syncs
+# — leaving last_sync/status frozen. Per-call locking in the RPC already
+# prevents two writers racing on the same /etc/treadle/nodes/<id>.json and on the
+# UCI last_sync/status fields; an overlapping next tick is harmless because a
+# just-synced subscription's updated last_sync makes it no longer due.
+
+. /lib/functions.sh
+
+_sync_one() {
+	local sid enabled auto_update last_sync name label
+	sid="$1"
+
+	config_get_bool enabled     "$sid" enabled     0
+	config_get      auto_update "$sid" auto_update 0
+	config_get      last_sync   "$sid" last_sync   ""
+
+	[ "$enabled" = "1" ] || return
+	[ "$auto_update" -gt 0 ] 2>/dev/null || return
+
+	local now interval_secs
+	now=$(date +%s)
+	interval_secs=$((auto_update * 3600))
+
+	if [ -n "$last_sync" ]; then
+		local last_epoch
+		last_epoch=$(date -d "$last_sync" +%s 2>/dev/null) || return
+		[ $((now - last_epoch)) -ge "$interval_secs" ] || return
+	fi
+
+	config_get name "$sid" name ""
+	[ -n "$name" ] && label="$name" || label="$sid"
+
+	logger -p daemon.info -t treadle "sync: auto-update, syncing subscription '$label'"
+	ubus call luci.treadle sync_subscription "{\"id\":\"$sid\"}" >/dev/null 2>&1
+}
+
+config_load treadle
+config_foreach _sync_one subscription
+
+# After all due subs have been synced, ask the rpcd handler to diff the
+# freshly-generated config against the running one and restart sing-box
+# only when an active outbound (direct or via urltest) actually changed.
+ubus call luci.treadle reload_if_changed >/dev/null 2>&1

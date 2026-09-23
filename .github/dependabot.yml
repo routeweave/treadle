@@ -1,0 +1,14 @@
+# Keeps the SHA-pinned actions current: each update is a PR that bumps the
+# SHA and its version comment together, and runs CI like any other change.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/install-apk-tools
+      - /.github/actions/install-usign
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]

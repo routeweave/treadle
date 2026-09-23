@@ -1,0 +1,434 @@
+#!/usr/bin/env lua
+-- SPDX-License-Identifier: GPL-3.0-only
+-- Copyright (C) 2026 RouteWeave
+--
+-- Active-node watcher — long-running daemon that polls sing-box's clash API
+-- at /proxies every POLL_S seconds and logs to syslog whenever the currently
+-- active member (the `now` field) of any urltest group changes. Provides
+-- the diagnostic trail a user needs to decide whether their urltest
+-- `tolerance` / `interval` are tuned too aggressively for their network.
+--
+-- Lifecycle: a procd instance declared by /etc/init.d/treadle alongside the
+-- sing-box instance, gated on UCI treadle.global.clash_api_enabled. Stops and
+-- starts with the service; respawned by procd if it crashes.
+--
+-- Snapshot at /var/etc/treadle/.active-nodes.json (tmpfs — cleared on reboot,
+-- which is fine: the first tick after boot primes the snapshot without
+-- emitting a change line). The same file backs the Status page's Groups
+-- panel via the get_active_groups RPC, so the UI sees the same view this
+-- watcher logs against.
+
+local jsonc = require "luci.jsonc"
+local lib   = dofile("/usr/libexec/treadle/treadlelib.lua")
+local read_file = lib.read_file
+
+local CLASH_HOST   = "127.0.0.1:9090"
+local SNAPSHOT     = "/var/etc/treadle/.active-nodes.json"
+local STATS_SNAP   = "/var/etc/treadle/.clash-stats.json"
+local POLL_S       = 10
+
+-- Pending log lines accumulated during the current tick. Flushed at the
+-- end of each iteration via a single `logger` fork that reads them from
+-- stdin — important because a WAN flap can fan into dozens of group-flip
+-- events in one tick, and serial fork-per-line of busybox logger costs
+-- ~200ms each on MIPS, easily pushing the 10s poll cadence over the edge.
+local pending_log = {}
+
+local function logmsg(level, msg)
+	-- Tag names ultimately come from URL-decoded subscription content, so a
+	-- node tag may legitimately contain any byte including newlines, NULs
+	-- and other control chars (an attacker subscription could also craft
+	-- one deliberately). Scrub control chars to spaces so a literal `\n`
+	-- in the message can't fan one queued entry into multiple syslog lines.
+	-- Normalise the colloquial 'warn' to POSIX 'warning' so the get_logs
+	-- filter (which keys SEV by the canonical name) classifies the line
+	-- correctly. busybox logger accepts both spellings.
+	if level == "warn" then level = "warning" end
+	local safe = msg:gsub("[%c]", " ")
+	pending_log[#pending_log + 1] = { level = level, msg = safe }
+end
+
+-- Flush queued log lines: group by level (logger uses one priority per
+-- invocation) and pipe each group's messages via stdin. Worst case is
+-- 4-5 forks per tick regardless of how many flips happened.
+local function flush_log()
+	if #pending_log == 0 then return end
+	local by_level = {}
+	for _, e in ipairs(pending_log) do
+		local b = by_level[e.level]
+		if not b then b = {}; by_level[e.level] = b end
+		b[#b + 1] = e.msg
+	end
+	pending_log = {}
+	for level, msgs in pairs(by_level) do
+		-- Single-quoted heredoc: literal-quoted body so the messages
+		-- need no further shell escaping. Use a sentinel unlikely to
+		-- appear in any message (control chars already stripped above
+		-- guarantee no embedded newline can break out).
+		local f = io.popen("logger -p daemon." .. level
+			.. " -t treadle 2>/dev/null", "w")
+		if f then
+			for _, m in ipairs(msgs) do f:write(m, "\n") end
+			f:close()
+		end
+	end
+end
+
+-- One GET to a loopback clash API path ("/proxies", "/connections").
+-- Returns the parsed response object, or nil on any failure (port not
+-- listening yet, malformed body, etc.). Transient failures are silent:
+-- the daemon retries on the next tick.
+local function fetch_json(api_path)
+	local f = io.popen("uclient-fetch --timeout=5 -qO- 'http://"
+		.. CLASH_HOST .. api_path .. "' 2>/dev/null")
+	if not f then return nil end
+	local body = f:read("*a") or ""
+	f:close()
+	if body == "" then return nil end
+	local ok, parsed = pcall(jsonc.parse, body)
+	if not ok or type(parsed) ~= "table" then return nil end
+	return parsed
+end
+
+-- Atomically write one JSON snapshot (0600, tmp + rename). The consumers
+-- (the get_active_groups / get_clash_stats RPCs) tolerate a missing file,
+-- so a write skip on failure is fine. The containing /var/etc/treadle is
+-- created 0700 once at startup below — no per-tick mkdir/chmod forks; at
+-- ~200ms per busybox fork on MIPS they add up fast at a 10s cadence.
+local function save_json(path, tbl)
+	local tmp = path .. ".tmp"
+	local f = io.open(tmp, "w")
+	if not f then return end
+	f:write(jsonc.stringify(tbl))
+	f:close()
+	os.execute("chmod 0600 '" .. tmp .. "' 2>/dev/null")
+	os.rename(tmp, path)
+end
+
+-- Ask procd for sing-box's current pid. Returns the pid (a positive
+-- number) on success, or nil when procd reports the instance as
+-- stopped / missing / unparseable. Pid changes are our authoritative
+-- signal that sing-box restarted between ticks — a /proxies fetch gap
+-- only catches restarts slow enough to fail at least one 10s poll, and
+-- a config-save-driven restart commonly completes inside that window.
+local function singbox_pid()
+	local inst = lib.singbox_instance(jsonc)
+	return inst and tonumber(inst.pid) or nil
+end
+
+-- Extract the relevant slice of the /proxies response: one entry per
+-- urltest group, carrying the active member tag and (when available) its
+-- most recent latency. Internal helper groups (tag starts with "_") are
+-- filtered out here: the underscore-prefix check excludes them, and the
+-- type filter below excludes any Selector that might appear (Treadle no
+-- longer creates selector nodes, but a clash-format subscription could in
+-- theory ship one — those are dropped at sanitisation time today, but the
+-- defensive filter costs nothing).
+local function group_state(parsed)
+	local out = {}
+	if type(parsed.proxies) ~= "table" then return out end
+	for tag, p in pairs(parsed.proxies) do
+		if type(p) == "table"
+			and p.type == "URLTest"
+			and type(p.now) == "string" and p.now ~= ""
+			and tag:sub(1, 1) ~= "_"
+		then
+			local entry = { now = p.now, type = p.type }
+			-- Latency lives on the member proxy's history, not the group's.
+			local member = parsed.proxies[p.now]
+			if type(member) == "table" and type(member.history) == "table" then
+				local last = member.history[#member.history]
+				if last and type(last.delay) == "number" and last.delay > 0 then
+					entry.delay_ms = last.delay
+				end
+			end
+			out[tag] = entry
+		end
+	end
+	return out
+end
+
+local function save_snapshot(state)
+	save_json(SNAPSHOT, { groups = state, updated_at = os.time() })
+end
+
+local function load_snapshot()
+	local raw = read_file(SNAPSHOT)
+	if not raw or raw == "" then return {} end
+	local ok, parsed = pcall(jsonc.parse, raw)
+	if not ok or type(parsed) ~= "table" then return {} end
+	return (type(parsed.groups) == "table") and parsed.groups or {}
+end
+
+-- previous: the last tick's state, used to detect changes.
+-- primed:  true once we've seen at least one successful poll. On a fresh
+-- boot (snapshot empty) we still take a poll and stash it, but we don't
+-- emit "changed" / "added" lines for groups going from nothing to their
+-- first reading — that isn't a flip, it's the initial inventory.
+-- fail_streak: count of consecutive fetch failures, so we can surface a
+-- single warning after a meaningful run of failures (sing-box restart,
+-- crash, clash port wedged) instead of silently going stale. Resets on
+-- the next success, logging a recovery line so the gap is bracketed in
+-- the syslog timeline.
+local FAIL_WARN_AFTER = 6  -- ~one minute of failures at 10s ticks
+local POST_EVENT_WINDOW_S = 60  -- relabel-late-arrivals horizon, see below
+
+-- Create the snapshot directory once, 0700 (it cannot vanish on tmpfs
+-- while the daemon runs) — save_json relies on it existing so the write
+-- path stays fork-light at the 10s tick cadence.
+lib.secure_mkdir("/var/etc/treadle")
+
+local previous = load_snapshot()
+local primed   = next(previous) ~= nil
+local fail_streak = 0
+-- Captured at daemon start so the first iteration doesn't mis-detect a
+-- restart against nil. If procd is briefly unreachable, last_pid stays
+-- at its last known value through the gap — we only treat a true
+-- transition (last and new are both numbers and they differ) as a
+-- restart, so a pid lookup failure can't synthesise a fake one.
+local last_pid = singbox_pid()
+
+-- Post-event relabel window. When an event (prime / sing-box restart /
+-- outage recovery) fires, sing-box's urltest hasn't necessarily settled
+-- the first probe of every member yet — groups with no `now` are
+-- filtered out by group_state() and arrive in /proxies one or two ticks
+-- later. Without this, those late arrivals get logged as `now tracked`
+-- (the "brand new group" branch in the diff loop), which is misleading:
+-- the group existed before the restart, it was just slow to probe. We
+-- snapshot the known tag set at each event and, for POST_EVENT_WINDOW_S
+-- afterwards, relabel any late-arriving pre-event tag with the same
+-- event context so the syslog reads consistently.
+local known_pre_event   = {}
+local event_context     = "starting"
+local post_event_until  = 0
+
+-- Throughput state. /connections returns monotonic counters since
+-- sing-box started; we diff against the previous tick to get bytes/sec.
+-- Reset semantics: if the new total is *lower* than the previous one,
+-- sing-box restarted between ticks (the pid_changed branch covers the
+-- visible case, but we also defend against any unobserved restart). Set
+-- bps to 0 for that tick and re-baseline.
+local prev_total_up   = nil
+local prev_total_down = nil
+local prev_stats_ts   = nil
+
+-- Emit one "active node is X" line per group. Used in two situations
+-- that both mean "the user just lost track of the live selection":
+--   - prime: daemon's first successful poll — they need to know what
+--     state we're attaching to, not just future flips.
+--   - recovery: clash API was unreachable for >=1 tick (sing-box
+--     likely restarted; procd needs a beat to stop the old process
+--     and start the new one, which fails at least one 10s poll).
+--     The selections may have changed across the restart; announce
+--     the current ones so the syslog has them on the record without
+--     the user having to dig into the Status page.
+-- Sorted by tag for stable output across runs.
+local function log_initial(current, context)
+	local tags = {}
+	for tag in pairs(current) do tags[#tags + 1] = tag end
+	table.sort(tags)
+	for _, tag in ipairs(tags) do
+		local entry = current[tag]
+		local msg = string.format(
+			"group '%s': %s with active node %s",
+			tag, context, entry.now)
+		if entry.delay_ms then
+			msg = msg .. string.format(" (%dms)", entry.delay_ms)
+		end
+		logmsg("info", msg)
+	end
+end
+
+-- Lightweight UCI peek so the daemon notices a clash_api_enabled flip
+-- between procd reconciliations. Without it the loop keeps polling 9090
+-- after the user disables clash, eventually logging 'clash API
+-- unreachable for N polls' for a feature they explicitly turned off.
+-- Read via the libuci binding — fork-free, unlike `uci -q get` — with a
+-- fresh cursor per tick so a committed flip is seen immediately.
+local function clash_enabled()
+	local ok, enabled = pcall(function()
+		local c = require("uci").cursor()
+		local v = c:get("treadle", "global", "clash_api_enabled")
+		c:close()
+		return v == "1"
+	end)
+	if not ok then return true end  -- can't tell → keep polling
+	return enabled
+end
+
+while true do
+	if not clash_enabled() then
+		-- Reset transient state so a re-enable doesn't surface a stale
+		-- 'reachable again' on the first successful fetch.
+		fail_streak = 0
+		primed      = false
+		last_pid    = nil
+		flush_log()
+		os.execute("sleep " .. tostring(POLL_S))
+	else
+	local parsed = fetch_json("/proxies")
+	if parsed then
+		if fail_streak >= FAIL_WARN_AFTER then
+			logmsg("info", string.format(
+				"clash API reachable again after %d failed polls",
+				fail_streak))
+		end
+		local had_outage = (fail_streak > 0)
+		fail_streak = 0
+
+		-- pid check after a successful fetch so we don't burn an ubus
+		-- call when we already know things are degraded. A pid change
+		-- here means: between our last successful tick and this one,
+		-- procd restarted sing-box — which is the primary case we want
+		-- to catch even when the restart is faster than our 10s poll.
+		local pid = singbox_pid()
+		local pid_changed = (last_pid and pid and pid ~= last_pid)
+		if pid then last_pid = pid end
+
+		local current = group_state(parsed)
+
+		if (not primed) or had_outage or pid_changed then
+			-- Cold prime, post-outage recovery, or sing-box pid changed
+			-- under us — in each case the previous snapshot is either
+			-- empty or no longer authoritative about the new sing-box's
+			-- selections. Re-announce every group so the user sees which
+			-- node each urltest landed on after the event, not just
+			-- future flips. Diff loop skipped this tick; next
+			-- tick's diff runs against the snapshot we save below.
+			event_context = (not primed) and "starting"
+				or pid_changed and "after sing-box restart"
+				or "resuming"
+			-- Snapshot the union of last-known and currently-visible
+			-- tags for late-arrival relabeling. Two cases this covers:
+			-- (a) tags in `previous` not in `current` — group existed
+			--     before the event but its post-event probe hasn't
+			--     settled yet (sing-box's `now` is empty, filtered out);
+			-- (b) tags in `current` not in `previous` — group was
+			--     announced THIS tick, so future ticks shouldn't treat
+			--     it as a brand-new arrival either.
+			known_pre_event = {}
+			for tag in pairs(previous) do known_pre_event[tag] = true end
+			for tag in pairs(current)  do known_pre_event[tag] = true end
+			post_event_until = os.time() + POST_EVENT_WINDOW_S
+			log_initial(current, event_context)
+		else
+			local in_window = (os.time() < post_event_until)
+			-- Member changed within a still-existing group: the central
+			-- diagnostic — this is the "is my urltest flipping too
+			-- often" signal the user is hunting.
+			for tag, entry in pairs(current) do
+				local old = previous[tag]
+				if old and old.now and old.now ~= entry.now then
+					local msg = string.format(
+						"group '%s': active node %s -> %s",
+						tag, old.now, entry.now)
+					if entry.delay_ms then
+						msg = msg .. string.format(" (%dms)", entry.delay_ms)
+					end
+					logmsg("info", msg)
+				elseif not old then
+					-- Tag not in last tick's snapshot. Two cases that
+					-- need distinct labels:
+					if in_window and known_pre_event[tag] then
+						-- (1) The group existed before the most recent
+						-- event but its probe is only now reporting a
+						-- `now`. Relabel with the same context the
+						-- event was logged under so the syslog reads
+						-- consistently — the user sees one event line
+						-- per group regardless of whether sing-box's
+						-- internal probe order put it on tick N or N+1.
+						local msg = string.format(
+							"group '%s': %s with active node %s",
+							tag, event_context, entry.now)
+						if entry.delay_ms then
+							msg = msg .. string.format(" (%dms)", entry.delay_ms)
+						end
+						logmsg("info", msg)
+					else
+						-- (2) Genuinely new group: appeared in /proxies
+						-- since the last event (user added it, or a
+						-- reload pulled it into the running config).
+						logmsg("info", string.format(
+							"group '%s': now tracked, active node %s",
+							tag, entry.now))
+					end
+				end
+			end
+			-- Group disappeared between ticks. Suppress the line during
+			-- the post-event window for tags that were in the pre-event
+			-- set — they're more likely still mid-probe than truly gone,
+			-- and a transient "no longer present" / "now tracked" pair
+			-- on every restart would be pure noise. Genuine removals
+			-- (tag wasn't in pre-event set) and removals that persist
+			-- past the window are still logged.
+			for tag, _ in pairs(previous) do
+				if not current[tag] then
+					if not (in_window and known_pre_event[tag]) then
+						logmsg("info", string.format(
+							"group '%s': no longer present", tag))
+					end
+				end
+			end
+		end
+
+		save_snapshot(current)
+		previous = current
+		primed   = true
+
+		-- ── Throughput / connections snapshot ─────────────────────────
+		-- Same tick, second cheap HTTP call. Failure is non-fatal: we
+		-- skip the stats write rather than dropping the proxies work
+		-- we just did. A pid change in this tick or a counter regression
+		-- both mean "the previous baseline is invalid"; zero the rate
+		-- and re-baseline so the next tick's diff is honest.
+		local conns = fetch_json("/connections")
+		if conns then
+			local total_up   = tonumber(conns.uploadTotal)   or 0
+			local total_down = tonumber(conns.downloadTotal) or 0
+			local cs = (type(conns.connections) == "table") and #conns.connections or 0
+			local mem = tonumber(conns.memory)
+			local now_ts = os.time()
+			local up_bps, down_bps = 0, 0
+			if prev_total_up and prev_total_down and prev_stats_ts
+				and not pid_changed
+				and total_up >= prev_total_up
+				and total_down >= prev_total_down
+			then
+				local dt = now_ts - prev_stats_ts
+				if dt > 0 then
+					up_bps   = math.floor((total_up   - prev_total_up)   / dt)
+					down_bps = math.floor((total_down - prev_total_down) / dt)
+				end
+			end
+			save_json(STATS_SNAP, {
+				up_bps     = up_bps,
+				down_bps   = down_bps,
+				total_up   = total_up,
+				total_down = total_down,
+				conn_count = cs,
+				mem_inuse  = mem,
+				updated_at = now_ts
+			})
+			prev_total_up   = total_up
+			prev_total_down = total_down
+			prev_stats_ts   = now_ts
+		end
+	else
+		fail_streak = fail_streak + 1
+		-- One warning at the threshold, not one per failed tick — the
+		-- syslog tail on the Status page is finite and the user needs
+		-- one clear signal, not a flood. Subsequent failures stay
+		-- silent until the streak breaks (which logs the recovery).
+		if fail_streak == FAIL_WARN_AFTER then
+			logmsg("warning", string.format(
+				"clash API unreachable for %d consecutive polls (~%ds) — sing-box may be down or the clash listener not bound",
+				fail_streak, fail_streak * POLL_S))
+		end
+	end
+	-- Drain queued log lines before sleeping. One logger fork per
+	-- severity level instead of one per line — a flip burst over many
+	-- groups stays well inside the POLL_S budget.
+	flush_log()
+	os.execute("sleep " .. tostring(POLL_S))
+	end  -- else (clash_enabled)
+end
