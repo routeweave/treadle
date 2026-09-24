@@ -1311,9 +1311,15 @@ end
 -- write_secure: nodes file contains every subscription node's payload,
 -- which in turn carries uuid/password/uri for each proxy. Default umask
 -- 0022 would let any local non-root daemon read them.
+-- Skips the write when the file already holds exactly this content: most
+-- auto-update syncs return an unchanged subscription, and rewriting the
+-- file each time is the bulk of the flash writes syncing causes.
 local function write_nodes_file(uid, nodes)
 	if not _jsonc_ok then return false end
-	return lib.write_secure(nodes_file(uid), _jsonc.stringify(nodes))
+	local path = nodes_file(uid)
+	local body = _jsonc.stringify(nodes)
+	if read_file(path) == body then return true end
+	return lib.write_secure(path, body)
 end
 
 -- Fix up subscription bookkeeping left stale by a reinstall. `/etc/config/treadle`

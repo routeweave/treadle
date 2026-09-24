@@ -127,6 +127,16 @@ done <<EOF
 $SUBS
 EOF
 
+# Re-syncing an unchanged subscription must not rewrite its node file.
+nf=/etc/treadle/nodes/0123456789abcd01.json
+before=$(date -r "$nf" +%s)
+sleep 2
+printf '{"id":"0123456789abcd01"}' | "$HANDLER" call sync_subscription > "$OUT/resync.json"
+after=$(date -r "$nf" +%s)
+[ "$(jsonfilter -i "$OUT/resync.json" -e '@.status')" = "ok" ] && [ "$before" = "$after" ] \
+	&& ok "unchanged re-sync left the node file untouched" \
+	|| bad "re-sync: status=$(jsonfilter -i "$OUT/resync.json" -e '@.status') mtime $before -> $after"
+
 # --- routing fixture ---------------------------------------------------------
 
 # A regex urltest group over every imported node as the final outbound,
