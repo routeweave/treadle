@@ -200,7 +200,8 @@ conffile, so the package only writes it back when it is absent).
 ## Contributing
 
 Build instructions, CI layout, and developer conventions live in
-[`CONTRIBUTING.md`](CONTRIBUTING.md).
+[`CONTRIBUTING.md`](CONTRIBUTING.md); how Treadle works and why is in
+[`docs/design.md`](docs/design.md).
 
 ## License
 

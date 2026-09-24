@@ -1,9 +1,8 @@
 # Contributing to Treadle
 
-Thanks for poking at the code. This file covers building and the
-repository layout. The project's own conventions, style guide, and design
-rationale live in a private companion document set, not in this repo —
-ask a maintainer if you need access.
+Thanks for poking at the code. This file covers building, testing, the
+repository layout and the coding conventions. How the pieces fit together
+and why is in [docs/design.md](docs/design.md).
 
 ## Building from source
 
@@ -177,6 +176,100 @@ root/
         └── rpcd/acl.d/luci-app-treadle.json
 po/templates/luci-app-treadle.pot  # Gettext translation template
 ```
+
+## Conventions
+
+Treadle runs on routers with little memory and slow CPUs, so resource
+limits are hard requirements, not preferences.
+
+### Resources
+
+- No JavaScript frameworks; LuCI's own JS API only. No bundled fonts or
+  icon sets.
+- Fetch data over RPC after the page loads; never inline large JSON in
+  rendered HTML.
+- rpcd starts a new process for every call. A view that refreshes should
+  get everything it needs from one call, and keep expensive work (reading
+  the whole syslog, building a config) off its fast path.
+- Repeated refreshes use one `setTimeout` rescheduled after each response,
+  never `setInterval`, and stop when the view is torn down.
+- Do not write files on every request. Keep runtime state on tmpfs
+  (`/var/etc/treadle/`) and write to flash only what must survive a reboot.
+
+### LuCI views
+
+- Views are LuCI JS modules: `'use strict';`, `'require …'` lines, then
+  `return view.extend({…})` (or `baseclass.extend` for a panel). Tabs,
+  single-quoted strings (as LuCI itself), `E()` for DOM — never
+  `innerHTML`.
+- Every user-visible string goes through `_()`.
+- Talk to the router only through `rpc.declare()`; raw `fetch` / XHR
+  bypass LuCI's session and CSRF handling.
+- Settings pages use `form.Map` and its sections and options; build rows
+  by hand only for genuinely custom UI, and then use LuCI's classes
+  (`cbi-section`, `cbi-value`, `table cbi-section-table`, `btn cbi-button
+  cbi-button-*`) so every theme styles them. `cbi-page-actions` sits
+  directly inside `cbi-map`.
+- Small inline `style=` is fine where LuCI has no class for it; do not
+  restyle what a LuCI class already styles.
+- Status badges: `label success` / `label warning` work on every theme.
+  There is no portable red label class; set the background inline from
+  the theme's danger/error variable with a literal fallback.
+
+`scripts/lint.sh` enforces the mechanical parts of this (eslint forbids
+`innerHTML`, `setInterval`, raw `fetch` and `XMLHttpRequest`).
+
+### UCI sections
+
+Every section except the fixed ones (`global`, `basic`, `inbounds`, `dns`,
+`routing`) is a named section whose name is a random 16-hex id — the only
+id, used by every cross-reference (see docs/design.md). When creating one:
+
+- **JS:** `'require view.treadle.uid as uid';` and
+  `uci.add('treadle', '<type>', uid.generate())`. Grid sections override
+  `handleAdd` so the id exists before the edit modal opens.
+- **Lua:** `c:set("treadle", uid, "<type>")`.
+
+Never add a separate id option, and never persist libuci's `cfgXXXX`
+names.
+
+### Shell (router side)
+
+- POSIX sh for busybox ash: `#!/bin/sh` (init scripts
+  `#!/bin/sh /etc/rc.common`), no bash-isms, no `local` with assignment.
+- Quote every expansion. When a value from UCI or the network reaches a
+  command line, validate it first and single-quote it.
+- Anything that can interrupt connectivity (firewall, DNS, service
+  restarts) must never tear down before the replacement is ready.
+
+### Lua
+
+- Lua 5.1 exactly: no `goto`, integer division, bitwise operators,
+  `<close>`, `table.move` or `string.pack`. A newer local Lua is not a
+  valid syntax check; `lint.sh` runs luacheck in 5.1 mode.
+- UCI through the raw binding, `require("uci").cursor()`, and close every
+  cursor explicitly.
+- `require` modules inside the function that needs them when they are not
+  always needed.
+- rpcd methods always exit 0 and report failure in their JSON reply; a
+  non-zero exit reaches LuCI as "Object not found".
+
+### Files and packaging
+
+- Every source file starts with `SPDX-License-Identifier: GPL-3.0-only`
+  and a `Copyright` line in its comment syntax; `package.sh` strips other
+  comment-only lines from the installed copy and keeps these.
+- Package metadata, dependencies, conffiles and the install scripts live
+  only in the `Makefile`.
+- Executables under `root/` keep mode `100755` in git.
+
+### Commits
+
+- One logical change per commit, with a message that explains why.
+- Test fixtures and examples use placeholder values only: `example.com`,
+  RFC 5737 addresses (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`),
+  the all-zero UUID, `<password>`. Never paste a real subscription, node,
+  or router log or config.
 
 ## Branch naming
 
