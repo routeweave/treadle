@@ -100,7 +100,8 @@ sleep 1
 SUBS="0123456789abcd01 uri.txt 9
 0123456789abcd02 uri-base64.txt 9
 0123456789abcd03 clash.yaml 7
-0123456789abcd04 sing-box.json 4"
+0123456789abcd04 sing-box.json 4
+0123456789abcd05 sing-box-banner.json 2"
 
 # Loops read from here-documents, not a pipe, so they run in this shell and
 # the pass/fail counters survive them.
@@ -235,7 +236,7 @@ grep -q '"tag": "HK-01"' "$OUT/advanced___tproxy.json" \
 # Every imported node must reach sing-box, not just a config that passes
 # check: the regex group expands to all of them, and the probe config
 # carries each one (plus its own direct outbound).
-NODES=29
+NODES=31
 members=$(jsonfilter -i "$OUT/advanced___tproxy.json" \
 	-e '@.outbounds[@.tag="ALL"].outbounds[*]' | wc -l)
 [ "$members" -eq "$NODES" ] && ok "regex group ALL has all $NODES nodes" \

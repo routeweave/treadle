@@ -1,0 +1,12 @@
+// traffic used: 1.5 GB / 100 GB, expires: 2099-01-01
+/* a provider banner can also be a block comment */
+{
+  "outbounds": [
+    { "type": "anytls", "tag": "ASIA-Singapore-01", "server": "example.net", "server_port": 443, "password": "<password>",
+      "tls": { "enabled": true, "server_name": "example.net" } },
+    { "type": "vless", "tag": "ASIA-Singapore-02", "server": "203.0.113.40", "server_port": 443, "uuid": "00000000-0000-0000-0000-000000000000",
+      "tls": { "enabled": true, "server_name": "example.net" } },
+    { "type": "selector", "tag": "proxy", "outbounds": ["ASIA-Singapore-01", "ASIA-Singapore-02"] },
+    { "type": "direct", "tag": "direct" }
+  ]
+}

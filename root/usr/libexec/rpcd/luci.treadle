@@ -1063,9 +1063,15 @@ local function parse_subscription(body)
 	local trimmed = body:match("^%s*(.-)%s*$")
 	if trimmed == "" then return "unknown", {} end
 
-	-- SingBox JSON: root object starts with {
-	if trimmed:sub(1, 1) == "{" then
-		return "singbox", extract_singbox(trimmed)
+	-- SingBox JSON: root object starts with {, possibly after leading
+	-- comments — some providers prepend a `// traffic / expiry` banner.
+	local head = trimmed
+	repeat
+		local prev = head
+		head = head:gsub("^//[^\n]*%s*", "", 1):gsub("^/%*.-%*/%s*", "", 1)
+	until head == prev
+	if head:sub(1, 1) == "{" then
+		return "singbox", extract_singbox(head)
 	end
 
 	-- Clash YAML: proxies: appears as an unindented top-level key
