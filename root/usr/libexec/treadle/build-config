@@ -57,6 +57,19 @@ local write_atomic = lib.write_secure
 -- per build; every cross-version difference in the output branches on it.
 local SB = lib.singbox_caps(lib.singbox_version_line())
 
+-- Set by the watchdog after a rule-set download failed at startup: for a
+-- while, download rule-sets by the other route than configured. A restart on
+-- the same route would repeat the failure, because a urltest default starts
+-- on its untested first member again (see lib.ruleset_flip_active).
+local RS_FLIP = lib.ruleset_flip_active()
+
+-- An empty rule-set that every remote rule-set starts from when nothing is
+-- cached (initial_path, 1.14+). sing-box then never blocks startup on a first
+-- download, which would otherwise FATAL the whole service. The rules match
+-- nothing until the real download lands. Compiled by the installed sing-box,
+-- so its format always suits that binary; on tmpfs, recreated after a boot.
+local EMPTY_RULE_SET = "/var/etc/treadle/empty.srs"
+
 -- How a remote rule-set is downloaded. `via` is "direct" (out the WAN) or nil
 -- (through the default outbound). Before 1.14 that is `download_detour =
 -- "direct"` or no field at all. From 1.14 both become an explicit
@@ -65,6 +78,9 @@ local SB = lib.singbox_caps(lib.singbox_version_line())
 -- is only known once build_config has validated it, so the rule-set is
 -- marked here and resolved there (resolve_ruleset_downloads).
 local function set_ruleset_download(rs, via)
+	if RS_FLIP then
+		via = (via == "direct") and nil or "direct"
+	end
 	if SB.http_client then
 		if via == "direct" then
 			rs.http_client = { detour = "direct" }
@@ -75,17 +91,6 @@ local function set_ruleset_download(rs, via)
 		rs.download_detour = "direct"
 	end
 	return rs
-end
-
-local function resolve_ruleset_downloads(route)
-	local fin = route["final"]
-	if fin == nil or fin == "" or fin == "block" then fin = "direct" end
-	for _, rs in ipairs(route.rule_set or {}) do
-		if rs._via_default then
-			rs._via_default = nil
-			rs.http_client  = { detour = fin }
-		end
-	end
 end
 
 -- ─── mode ────────────────────────────────────────────────────────────────
@@ -2039,6 +2044,47 @@ local function build_log(c)
 end
 
 
+-- Create EMPTY_RULE_SET if it is missing. False when it cannot be made, and
+-- in preview mode, which must not write (an existing file is still used).
+local function ensure_empty_rule_set()
+	if lib.file_exists(EMPTY_RULE_SET) then return true end
+	if PREVIEW_MODE then return false end
+	local src = EMPTY_RULE_SET .. ".json"
+	local f = io.open(src, "w")
+	if not f then return false end
+	f:write('{"version":1,"rules":[]}\n')
+	f:close()
+	local ok = os.execute("/usr/bin/sing-box rule-set compile -o '" .. EMPTY_RULE_SET ..
+		".tmp' '" .. src .. "' >/dev/null 2>&1 && mv -f '" .. EMPTY_RULE_SET ..
+		".tmp' '" .. EMPTY_RULE_SET .. "'")
+	os.remove(src)
+	return (ok == 0 or ok == true) and lib.file_exists(EMPTY_RULE_SET)
+end
+
+-- Finish every remote rule-set once route.final is validated: resolve a
+-- via-default download to that outbound, and point initial_path at the empty
+-- rule-set where sing-box supports it.
+local function finish_rule_sets(route)
+	local rule_sets = route.rule_set or {}
+	if #rule_sets == 0 then return end
+	local fin = route["final"]
+	if fin == nil or fin == "" or fin == "block" then fin = "direct" end
+	local initial = SB.initial_path and ensure_empty_rule_set()
+	for _, rs in ipairs(rule_sets) do
+		if rs._via_default then
+			rs._via_default = nil
+			rs.http_client  = { detour = fin }
+		end
+		if initial and rs.type == "remote" then
+			rs.initial_path = EMPTY_RULE_SET
+		end
+	end
+	if RS_FLIP then
+		io.stderr:write("treadle build-config: info: rule-set downloads use the "
+			.. "other route than configured, after a failed download at startup\n")
+	end
+end
+
 -- Drop a dangling outbound reference (deleted manual node, renamed subscription
 -- tag) to "direct" with a warning to stderr. sing-box rejects the whole config
 -- on a route.final or dns.servers[].detour pointing at a missing outbound, and
@@ -2098,7 +2144,7 @@ local function build_config(c)
 		if ob.tag then tagset[ob.tag] = true; originset[ob.tag] = classify(ob) end
 	end
 	route["final"] = validate_tag("route.final", route["final"], tagset, originset)
-	resolve_ruleset_downloads(route)
+	finish_rule_sets(route)
 	if type(dns.servers) == "table" then
 		for _, s in ipairs(dns.servers) do
 			if s.detour then

@@ -49,7 +49,80 @@ if [ -n "$ubus_out" ]; then
 		json_get_var running running
 	fi
 fi
-[ "$running" = "1" ] && exit 0
+# ── Rule-set downloads that failed at startup ─────────────────────────────
+#
+# A remote rule-set that is not cached yet is downloaded when sing-box starts.
+# If that download fails, sing-box 1.12/1.13 exit (FATAL), and procd gives up
+# after a few respawns. From 1.14 it starts on an empty placeholder
+# (build-config's initial_path), but the rules match nothing, and sing-box
+# does not retry for a whole update_interval (1 d). A plain restart would
+# repeat the same failure, because a urltest default starts on its untested
+# first member again. So retry once by the other download route (the flag
+# build-config reads), then alternate, backing off 5 → 10 → 20 → 40 → 60 min.
+# A run that got through its first minutes without such a failure resets the
+# backoff. Only failures within that window count, so a failed daily refresh
+# (the cached copy still works) never triggers a restart.
+config_get cfg global config_path /var/etc/treadle/sing-box.json
+FLIP=/var/run/treadle.ruleset-flip
+RETRY=/var/run/treadle.ruleset-retry
+WINDOW=900
+FLIP_TTL=3600
+
+# rs_retry <reason>: flip or restore the download route and start again, or
+# return 1 while the backoff says not yet.
+rs_retry() {
+	now=$(cut -d. -f1 /proc/uptime)
+	attempt=0
+	next=0
+	[ -f "$RETRY" ] && read -r attempt next < "$RETRY"
+	[ "$now" -lt "${next:-0}" ] && return 1
+	attempt=$((attempt + 1))
+	wait=300
+	i=1
+	while [ "$i" -lt "$attempt" ] && [ "$wait" -lt 3600 ]; do
+		wait=$((wait * 2))
+		i=$((i + 1))
+	done
+	[ "$wait" -gt 3600 ] && wait=3600
+	echo "$attempt $((now + wait))" > "$RETRY"
+	if [ $((attempt % 2)) -eq 1 ]; then
+		echo "$((now + FLIP_TTL))" > "$FLIP"
+		route="the other route than configured"
+	else
+		rm -f "$FLIP"
+		route="the configured route"
+	fi
+	logger -p daemon.warn -t treadle \
+		"watchdog: $1; retrying rule-set downloads via $route (attempt $attempt)"
+	/etc/init.d/treadle start >/dev/null 2>&1
+	return 0
+}
+
+if [ "$running" = "1" ]; then
+	# shellcheck disable=SC2154  # set by config_get
+	pid=$(pgrep -f "^/usr/bin/sing-box run -c $cfg" | head -n 1)
+	[ -n "$pid" ] || exit 0
+	start=$(date -r "/proc/$pid" +%s 2>/dev/null) || exit 0
+	# Failed downloads this run logged within WINDOW of its start. logread -t
+	# puts the epoch in the first [...] of each line.
+	early=$(logread -t 2>/dev/null | grep -F "sing-box[$pid]:" \
+		| grep -E "fetch rule-set|initial rule-set" \
+		| sed -n 's/^[^[]*\[\([0-9]*\)\..*/\1/p' \
+		| awk -v s="$start" -v w="$WINDOW" '$1 - s <= w { n++ } END { print n + 0 }')
+	if [ "$early" -gt 0 ]; then
+		rs_retry "a rule-set download failed after sing-box started"
+	elif [ $(( $(date +%s) - start )) -gt "$WINDOW" ]; then
+		rm -f "$RETRY"
+	fi
+	exit 0
+fi
+
+# Not running. When the last sing-box run died initialising a rule-set, retry
+# by the other route instead of re-arming on the one that just failed.
+last=$(logread 2>/dev/null | grep -oE "sing-box\[[0-9]+\]:" | tail -n 1)
+if [ -n "$last" ] && logread 2>/dev/null | grep -F "$last" | grep -q "initialize rule-set"; then
+	rs_retry "sing-box failed to start on a rule-set download" && exit 0
+fi
 
 logger -p daemon.err -t treadle \
 	"watchdog: sing-box is enabled but not running — re-arming the service"

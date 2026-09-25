@@ -15,7 +15,7 @@ see [CONTRIBUTING.md](../CONTRIBUTING.md); for version numbers see
 | `sing-box` wrapper | `usr/libexec/treadle/` | What procd runs, named `sing-box` so its log lines keep that tag: rebuilds the config first if it was built for another sing-box version, then execs sing-box. |
 | Init script | `etc/init.d/treadle` | procd service: builds, validates and swaps the config, starts sing-box, applies the firewall and DNS handover. |
 | `firewall.sh` | `usr/libexec/treadle/` | The `inet treadle` nftables table and the policy rule for TPROXY. |
-| Cron jobs | `hourly`, `watchdog` | Subscription auto-update and scheduled latency tests; restart a service procd gave up on. |
+| Cron jobs | `hourly`, `watchdog` | Subscription auto-update and scheduled latency tests; restart a service procd gave up on, and retry rule-set downloads that failed at startup by the other route. |
 | `active-watch` | `usr/libexec/treadle/` | Daemon (only with the clash API on) that snapshots group state and traffic every 10 s for the Status page and logs group switches. |
 
 ## Where state lives

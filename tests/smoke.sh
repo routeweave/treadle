@@ -375,6 +375,42 @@ fi
 uci set treadle.basic.routing=all
 uci commit treadle
 
+# From 1.14 every remote rule-set starts from an empty placeholder when
+# nothing is cached, so startup never waits on (or dies of) a first download.
+EMPTY=/var/etc/treadle/empty.srs
+paths=$(jsonfilter -i "$adv" -e '@.route.rule_set[*].initial_path' | sort -u)
+if [ "$SB_HTTP_CLIENT" = "1" ]; then
+	[ "$paths" = "$EMPTY" ] && [ -s "$EMPTY" ] \
+		&& ok "rule-sets start from the empty placeholder, and it was compiled" \
+		|| bad "initial_path '$paths', placeholder $(ls -l "$EMPTY" 2>&1)"
+else
+	[ -z "$paths" ] && ok "no initial_path before sing-box 1.14" \
+		|| bad "initial_path '$paths' emitted for $SB_VERSION"
+fi
+
+# The watchdog's flag flips the download route until the uptime it holds.
+uci set treadle.global.mode=advanced
+uci commit treadle
+echo "$(( $(cut -d. -f1 /proc/uptime) + 600 ))" > /var/run/treadle.ruleset-flip
+build "advanced / flipped download route"
+echo 1 > /var/run/treadle.ruleset-flip
+build "advanced / expired flip"
+rm -f /var/run/treadle.ruleset-flip
+for case in "flipped_download_route direct" "expired_flip default"; do
+	f="$OUT/advanced___${case% *}.json"; want="${case#* }"
+	if [ "$SB_HTTP_CLIENT" = "1" ]; then
+		got=$(jsonfilter -i "$f" -e '@.route.rule_set[*].http_client.detour' | sort -u)
+		[ "$got" = "ALL" ] && got=default
+	else
+		got=$(jsonfilter -i "$f" -e '@.route.rule_set[*].download_detour' | sort -u)
+		[ -z "$got" ] && got=default
+	fi
+	[ "$got" = "$want" ] && ok "${case% *}: rule-sets download via $want" \
+		|| bad "${case% *}: rule-sets download via '$got', want $want"
+done
+uci set treadle.global.mode=basic
+uci commit treadle
+
 [ "$(cat "$bas.sbver" 2>/dev/null)" = "$SB_VERSION" ] \
 	&& ok "build-config stamps the config with the sing-box version" \
 	|| bad "stamp is '$(cat "$bas.sbver" 2>/dev/null)', want '$SB_VERSION'"

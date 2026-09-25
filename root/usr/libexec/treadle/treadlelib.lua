@@ -301,6 +301,9 @@ end
 --                client whose dial `detour` picks the outbound);
 --                `download_detour` and the implicit via-default-outbound
 --                client are deprecated in 1.14 and removed in 1.16.
+--   initial_path 1.14+: a remote rule-set can start from a local file when
+--                nothing is cached, so startup does not wait on (and die of)
+--                its first download.
 function M.singbox_caps(line)
 	local maj, min = (line or ""):match("(%d+)%.(%d+)")
 	maj, min = tonumber(maj), tonumber(min)
@@ -308,9 +311,23 @@ function M.singbox_caps(line)
 		return maj ~= nil and (maj > a or (maj == a and min >= b))
 	end
 	return {
-		version     = line,
-		http_client = at_least(1, 14)
+		version      = line,
+		http_client  = at_least(1, 14),
+		initial_path = at_least(1, 14)
 	}
+end
+
+-- The watchdog writes this after a rule-set download fails at startup: the
+-- file holds an uptime (seconds) until which build-config downloads
+-- rule-sets by the other route than configured (direct instead of through
+-- the default outbound, or the reverse). On tmpfs, so a reboot clears it.
+M.RULESET_FLIP_FLAG = "/var/run/treadle.ruleset-flip"
+
+function M.ruleset_flip_active()
+	local until_up = tonumber((M.read_file(M.RULESET_FLIP_FLAG) or ""):match("%d+"))
+	if not until_up then return false end
+	local up = tonumber((M.read_file("/proc/uptime") or ""):match("^(%d+)"))
+	return up ~= nil and up < until_up
 end
 
 -- Ask procd for the treadle service's `singbox` instance table, or nil when
