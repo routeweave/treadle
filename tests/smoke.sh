@@ -379,7 +379,15 @@ uci commit treadle
 	&& ok "build-config stamps the config with the sing-box version" \
 	|| bad "stamp is '$(cat "$bas.sbver" 2>/dev/null)', want '$SB_VERSION'"
 
-# run-singbox rebuilds a config whose stamp names another sing-box version
+# procd tags an instance's log lines with the basename of the command it
+# started, so the wrapper has to be called sing-box or every sing-box line
+# drops out of the Status log view and `logread -e sing-box`.
+run_sb=$(sed -n 's/^RUN_SINGBOX=//p' /etc/init.d/treadle)
+[ "$(basename "$run_sb")" = "sing-box" ] && [ -x "$run_sb" ] \
+	&& ok "procd starts sing-box through a wrapper named sing-box" \
+	|| bad "procd command is '$run_sb'; its basename must be sing-box"
+
+# The start wrapper rebuilds a config whose stamp names another sing-box version
 # before starting it. Mixed mode needs no tproxy privileges, so sing-box can
 # actually start here; it is stopped once the stamp has been checked.
 uci set treadle.inbounds.mode=mixed
@@ -387,7 +395,7 @@ uci commit treadle
 wrap="$OUT/wrap.json"
 "$BUILD" "$wrap" >/dev/null 2>&1
 echo "sing-box version 0.0.0" > "$wrap.sbver"
-/usr/libexec/treadle/run-singbox "$wrap" > "$OUT/wrap.log" 2>&1 &
+/usr/libexec/treadle/sing-box "$wrap" > "$OUT/wrap.log" 2>&1 &
 WRAP=$!
 i=0
 while [ "$i" -lt 20 ] && [ "$(cat "$wrap.sbver" 2>/dev/null)" != "$SB_VERSION" ]; do
@@ -395,8 +403,8 @@ while [ "$i" -lt 20 ] && [ "$(cat "$wrap.sbver" 2>/dev/null)" != "$SB_VERSION" ]
 done
 kill "$WRAP" 2>/dev/null; wait "$WRAP" 2>/dev/null
 [ "$(cat "$wrap.sbver" 2>/dev/null)" = "$SB_VERSION" ] && [ ! -e "$wrap.next" ] \
-	&& ok "run-singbox rebuilds a config built for another sing-box version" \
-	|| { bad "run-singbox left stamp '$(cat "$wrap.sbver" 2>/dev/null)'"; sed 's/^/    /' "$OUT/wrap.log"; }
+	&& ok "the start wrapper rebuilds a config built for another sing-box version" \
+	|| { bad "the start wrapper left stamp '$(cat "$wrap.sbver" 2>/dev/null)'"; sed 's/^/    /' "$OUT/wrap.log"; }
 uci set treadle.inbounds.mode=tproxy
 uci commit treadle
 

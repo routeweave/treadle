@@ -2291,7 +2291,8 @@ if not ok then
 end
 
 -- Record the sing-box version this config was built for next to it, as
--- <out_path>.sbver. run-singbox compares it with the installed binary before
+-- <out_path>.sbver. The start wrapper
+-- (/usr/libexec/treadle/sing-box) compares it with the installed binary before
 -- every start and rebuilds on a mismatch, so a sing-box upgrade followed by
 -- a crash-respawn never runs the new binary on a config built for the old
 -- one. The init script moves it along with the config.

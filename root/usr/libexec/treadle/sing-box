@@ -2,7 +2,15 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (C) 2026 RouteWeave
 #
-# run-singbox <config> — the command procd runs for the managed sing-box.
+# /usr/libexec/treadle/sing-box <config> — the command procd runs for the
+# managed sing-box.
+#
+# The file is named `sing-box` on purpose. procd tags an instance's
+# stdout/stderr in syslog with the basename of the command it started, and
+# keeps that tag after the command execs something else. Under any other
+# name every sing-box log line would be tagged with the wrapper's name, and
+# everything that finds them by `sing-box` (the Status page log view,
+# `logread -e sing-box`) would lose them.
 #
 # build-config shapes its output for the sing-box version installed when it
 # ran and records that version in <config>.sbver. procd restarts sing-box on
@@ -23,7 +31,7 @@ BUILD_CONFIG=/usr/libexec/treadle/build-config
 LOCK=/var/lock/treadle-start.lock
 
 cfg="$1"
-[ -n "$cfg" ] || { echo "usage: run-singbox <config>" >&2; exit 2; }
+[ -n "$cfg" ] || { echo "usage: $0 <config>" >&2; exit 2; }
 
 log() { logger -p "daemon.$1" -t treadle "$2"; }
 

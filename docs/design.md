@@ -12,7 +12,7 @@ see [CONTRIBUTING.md](../CONTRIBUTING.md); for version numbers see
 | LuCI views | `htdocs/…/view/treadle/` | One menu entry (`main.js`) hosting a tab per panel. Reads and writes UCI through LuCI's form layer; everything else goes through the rpcd handler. |
 | rpcd handler | `usr/libexec/rpcd/luci.treadle` | The UI's backend: status, subscription sync, config preview, logs, latency tests. Runs as root, one process per call. |
 | `build-config` | `usr/libexec/treadle/` | Translates UCI plus subscription node files into a sing-box JSON config, shaped for the installed sing-box version. The only writer of that config. |
-| `run-singbox` | `usr/libexec/treadle/` | What procd runs: rebuilds the config first if it was built for another sing-box version, then execs sing-box. |
+| `sing-box` wrapper | `usr/libexec/treadle/` | What procd runs, named `sing-box` so its log lines keep that tag: rebuilds the config first if it was built for another sing-box version, then execs sing-box. |
 | Init script | `etc/init.d/treadle` | procd service: builds, validates and swaps the config, starts sing-box, applies the firewall and DNS handover. |
 | `firewall.sh` | `usr/libexec/treadle/` | The `inet treadle` nftables table and the policy rule for TPROXY. |
 | Cron jobs | `hourly`, `watchdog` | Subscription auto-update and scheduled latency tests; restart a service procd gave up on. |
@@ -60,7 +60,7 @@ The config is shaped for the sing-box version installed when it was built.
 A field the newer releases replace is emitted in the form that version
 expects, and the version is recorded beside the config. procd restarts
 sing-box on its own after a crash without rebuilding, so it starts it through
-`run-singbox`, which rebuilds first when the installed version no longer
+a wrapper, `usr/libexec/treadle/sing-box`, which rebuilds first when the installed version no longer
 matches. A sing-box upgrade therefore never starts on a config built for the
 old one. The running config lives on tmpfs, so a
 config that only breaks after a reboot cannot survive one.
