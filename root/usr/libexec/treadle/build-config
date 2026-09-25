@@ -1445,13 +1445,20 @@ local function build_dns(c, prepared)
 
 	-- ── remote: resolver for proxied traffic; blank user value falls back to
 	-- Cloudflare DoT. Detoured through the default outbound so the lookup
-	-- exits where the proxied traffic does.
+	-- exits where the proxied traffic does. With no proxy default (Basic
+	-- with no live server, or an Advanced final of direct / block) it goes
+	-- out `direct`, like `local`: a server with no detour and a hostname
+	-- address has no domain resolver, and sing-box rejects the whole config
+	-- ("missing domain resolver for domain server address"). Through
+	-- `direct` the hostname resolves via that outbound's domain_resolver.
 	local remote_addr = c:get("treadle", "dns", "remote_server") or ""
 	if remote_addr == "" then remote_addr = "tls://1.1.1.1" end
 	local remote_entry = parse_dns_url(remote_addr)
 	remote_entry.tag = "remote"
 	if default_is_proxy then
 		remote_entry.detour = default_outbound
+	else
+		remote_entry.detour = "direct"
 	end
 	servers[#servers + 1] = remote_entry
 

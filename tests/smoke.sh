@@ -254,6 +254,26 @@ uci set treadle.global.mode=basic
 uci commit treadle
 build "basic"
 
+# With no proxy default, a remote DNS server given by hostname must still
+# get a detour, or sing-box finds no resolver for its address and rejects
+# the config. Basic here has no server selected; Advanced is set to direct.
+remote_was=$(uci -q get treadle.dns.remote_server)
+uci set treadle.dns.remote_server=https://dns.example.com/dns-query
+uci commit treadle
+build "basic / remote DNS by hostname"
+uci set treadle.global.mode=advanced
+uci set treadle.routing.final_outbound=direct
+uci commit treadle
+build "advanced direct / remote DNS by hostname"
+detour=$(jsonfilter -i "$OUT/advanced_direct___remote_DNS_by_hostname.json" \
+	-e '@.dns.servers[@.tag="remote"].detour')
+[ "$detour" = "direct" ] && ok "remote DNS goes out direct with no proxy default" \
+	|| bad "remote DNS detour is '$detour', want direct"
+uci set treadle.global.mode=basic
+uci set treadle.routing.final_outbound=ALL
+uci set treadle.dns.remote_server="$remote_was"
+uci commit treadle
+
 # get_config builds a preview through the same generator; make sure the
 # read-side RPC path works end to end too.
 echo '{}' | "$HANDLER" call get_config > "$OUT/get_config.json"
