@@ -332,6 +332,50 @@ echo '{}' | "$HANDLER" call get_config > "$OUT/get_config.json"
 	&& ok "get_config returns a preview" \
 	|| bad "get_config: $(head -c 400 "$OUT/get_config.json")"
 
+# --- large subscription ------------------------------------------------------
+
+step "large subscription"
+
+# A regex group's candidate tags once reached grep on the command line, which
+# `sh -c` receives as a single argument capped at 128 KiB: past a few thousand
+# long tags popen failed and the group silently lost every member. 4000 tags
+# of 45 bytes are ~190 KB quoted. The node file is written the way a sync
+# stores it, for a subscription that is never actually fetched.
+LARGE_N=4000
+uci batch <<'EOF'
+set treadle.0123456789abcd50=subscription
+set treadle.0123456789abcd50.name=large fixture
+set treadle.0123456789abcd50.url=https://example.com/sub
+set treadle.0123456789abcd50.enabled=1
+set treadle.0123456789abcd51=node
+set treadle.0123456789abcd51.type=urltest
+set treadle.0123456789abcd51.tag=LARGE
+set treadle.0123456789abcd51.urltest_mode=regex
+set treadle.0123456789abcd51.urltest_regex=^LARGE-TEST-
+set treadle.global.mode=advanced
+set treadle.routing.final_outbound=LARGE
+commit treadle
+EOF
+awk -v n="$LARGE_N" 'BEGIN {
+	printf "["
+	for (i = 1; i <= n; i++)
+		printf "%s{\"type\":\"socks\",\"payload\":\"{\\\"type\\\":\\\"socks\\\",\\\"tag\\\":\\\"LARGE-TEST-NODE-EXAMPLE-PADDING-PADDING-%05d\\\",\\\"server\\\":\\\"192.0.2.1\\\",\\\"server_port\\\":1080}\"}", (i > 1 ? "," : ""), i
+	print "]"
+}' > /etc/treadle/nodes/0123456789abcd50.json
+build "advanced / large regex group"
+members=$(jsonfilter -i "$OUT/advanced___large_regex_group.json" \
+	-e '@.outbounds[@.tag="LARGE"].outbounds[*]' | wc -l)
+[ "$members" -eq "$LARGE_N" ] && ok "regex group over $LARGE_N long tags has every member" \
+	|| { bad "regex group LARGE has $members members, want $LARGE_N"; sed 's/^/    /' "$OUT/build.log"; }
+uci batch <<'EOF'
+delete treadle.0123456789abcd50
+delete treadle.0123456789abcd51
+set treadle.routing.final_outbound=ALL
+set treadle.global.mode=basic
+commit treadle
+EOF
+rm -f /etc/treadle/nodes/0123456789abcd50.json
+
 # --- sing-box version awareness ---------------------------------------------
 
 step "sing-box version"

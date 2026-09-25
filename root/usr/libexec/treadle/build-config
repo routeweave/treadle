@@ -1155,19 +1155,47 @@ local function build_outbounds(c)
 	local function shell_squote(s)
 		return "'" .. (s:gsub("'", "'\\''")) .. "'"
 	end
-	local function regex_match_set(pattern, tags)
+	--
+	-- The candidate tags go to grep in a private temp file (os.tmpname is
+	-- mkstemp: unique, 0600, on tmpfs), not on the command line. popen hands
+	-- the whole command to `sh -c` as one argument, which Linux caps at
+	-- 128 KiB: a few thousand long tags overflowed it, popen failed, and the
+	-- group silently lost every member. grep's own failure (exit 2, e.g. an
+	-- invalid ERE) used to be hidden the same way; both are now reported,
+	-- naming the group, and the group keeps no members as before.
+	local function regex_match_set(pattern, tags, group)
 		local set = {}
 		if pattern == "" or #tags == 0 then return set end
-		local args = {}
-		for i, t in ipairs(tags) do args[i] = shell_squote(t) end
-		local cmd = "printf '%s\\n' " .. table.concat(args, " ")
-			.. " | grep -E -- " .. shell_squote(pattern) .. " 2>/dev/null"
-		local h = io.popen(cmd, "r")
-		if not h then return set end
+		local function fail(why)
+			io.stderr:write("treadle build-config: urltest '" .. group
+				.. "': regex could not be evaluated (" .. why .. "); it gets no members\n")
+			return set
+		end
+		local path = os.tmpname()
+		local f = path and io.open(path, "w")
+		if not f then return fail("cannot write a temp file") end
+		for _, t in ipairs(tags) do f:write(t, "\n") end
+		f:close()
+		local h = io.popen("grep -E -- " .. shell_squote(pattern) .. " "
+			.. shell_squote(path) .. " 2>/dev/null; echo \"__RC__$?\"", "r")
+		if not h then
+			os.remove(path)
+			return fail("cannot run grep")
+		end
+		local rc
 		for line in h:lines() do
-			if line ~= "" then set[line] = true end
+			local code = line:match("^__RC__(%d+)$")
+			if code then
+				rc = tonumber(code)
+			elseif line ~= "" then
+				set[line] = true
+			end
 		end
 		h:close()
+		os.remove(path)
+		if rc == nil or rc > 1 then
+			return fail(rc and ("grep exit " .. rc .. ", check the pattern") or "no result from grep")
+		end
 		return set
 	end
 
@@ -1226,7 +1254,7 @@ local function build_outbounds(c)
 					-- matched only contains candidate tags, which were
 					-- already filtered by src_set above — no need to
 					-- re-apply the restriction here.
-					local matched = regex_match_set(pattern, candidates)
+					local matched = regex_match_set(pattern, candidates, ob.tag)
 					for _, other in ipairs(all_ordered) do
 						if other.type ~= "urltest" and matched[other.tag] then
 							ob.outbounds[#ob.outbounds + 1] = other.tag
