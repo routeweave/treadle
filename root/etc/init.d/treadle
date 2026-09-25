@@ -115,6 +115,32 @@ install_dns_dropin() {
 	# conf-dir is read only at process start, so a reload won't pick this up.
 	/etc/init.d/dnsmasq restart >/dev/null 2>&1
 	treadle_log info "dns: managed DNS drop-in installed in $confdir, dnsmasq routed through sing-box"
+	# Only the first dnsmasq instance is routed through sing-box. Clients of
+	# any other instance (a guest network, say) keep that instance's own
+	# resolvers, and the sweep above removes a treadle.conf copied into one.
+	# Whether they should be included is the user's call, so say it.
+	local instances
+	instances=$(uci -q show dhcp 2>/dev/null | grep -c '=dnsmasq$')
+	[ "$instances" -gt 1 ] && treadle_log notice \
+		"dns: managed DNS covers the first dnsmasq instance only; clients of the other $((instances - 1)) keep their own resolvers"
+}
+
+# The managed-DNS listener's port, which build-config's DNS_IN_PORT must match.
+# 5335 is also the port many guides give a local unbound. If anything else
+# holds it, sing-box cannot open dns-in and exits at start, which `sing-box
+# check` (it binds nothing) never catches. Say so plainly instead of leaving
+# only a crash loop.
+DNS_IN_PORT=5335
+
+treadle_check_dns_port() {
+	[ "$(uci -q get treadle.dns.managed_dns)" = "0" ] && return 0
+	local owner
+	owner=$(netstat -lnup 2>/dev/null \
+		| awk -v p=":$DNS_IN_PORT" 'substr($4, length($4) - length(p) + 1) == p { print $NF; exit }')
+	case "$owner" in
+		""|*/sing-box) return 0 ;;
+	esac
+	treadle_log err "dns: port $DNS_IN_PORT is already in use by ${owner#*/}, so sing-box cannot open its managed-DNS listener and will not start. Free the port, or turn managed DNS off"
 }
 
 remove_dns_dropin() {
@@ -398,6 +424,7 @@ start_service() {
 	mv "$tmp_cfg" "$config_path"
 	# The version stamp build-config wrote beside it (see /usr/libexec/treadle/sing-box).
 	mv -f "$tmp_cfg.sbver" "$config_path.sbver" 2>/dev/null
+	treadle_check_dns_port
 	treadle_declare_instance "$config_path"
 	treadle_declare_active_watch
 

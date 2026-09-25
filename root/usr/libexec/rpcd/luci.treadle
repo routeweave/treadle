@@ -15,16 +15,22 @@ local _jsonc_ok, _jsonc = pcall(require, "luci.jsonc")
 local lib = dofile("/usr/libexec/treadle/treadlelib.lua")
 local read_file = lib.read_file
 
--- Minimal JSON serialiser used when luci.jsonc is unavailable.
--- Only handles the flat tables produced by this handler.
+-- Minimal JSON serialiser. It always serves the `list` reply and all-empty
+-- replies (both must encode an empty table as {}; see json_stringify_reply),
+-- and everything else only when luci.jsonc is unavailable.
 local function _json_encode(v)
 	local t = type(v)
 	if t == "nil" then return "null"
 	elseif t == "boolean" then return v and "true" or "false"
 	elseif t == "number" then return tostring(v)
 	elseif t == "string" then
+		-- Every remaining control byte as \u00XX: sing-box log lines carry ANSI
+		-- escapes (0x1b), which JSON does not allow unescaped.
 		return '"' .. v:gsub('\\', '\\\\'):gsub('"', '\\"')
-		             :gsub('\n', '\\n'):gsub('\r', '\\r'):gsub('\t', '\\t') .. '"'
+		             :gsub('\n', '\\n'):gsub('\r', '\\r'):gsub('\t', '\\t')
+		             :gsub('[%z\1-\31\127]', function(ch)
+		                  return string.format('\\u%04x', ch:byte())
+		              end) .. '"'
 	elseif t == "table" then
 		if #v > 0 then
 			local parts = {}
@@ -1773,7 +1779,14 @@ local methods = {
 			local path = c:get("treadle", "global", "config_path") or "/var/etc/treadle/sing-box.json"
 			c:close()
 
-			local preview_path = "/var/etc/treadle/preview.json"
+			-- One file per call: two open config modals would otherwise
+			-- interleave their writes (build-config's fixed <path>.tmp too)
+			-- and one would read the other's half-written JSON. The mkstemp
+			-- name only lends a unique suffix; the file itself stays in the
+			-- 0700 treadle directory, since it holds every node's credentials.
+			local stamp = os.tmpname()
+			os.remove(stamp)
+			local preview_path = "/var/etc/treadle/preview." .. (stamp:match("([%w_]+)$") or "x") .. ".json"
 			-- --preview keeps build-config side-effect-free: no orphan node
 			-- file deletion, no dnsmasq drop-in rewrite. get_config is on
 			-- the read side of the ACL and must not mutate persistent state.
@@ -1792,6 +1805,7 @@ local methods = {
 				end
 				os.remove(preview_path)
 			else
+				os.remove(preview_path)
 				err = (output ~= "" and output) or "generator failed"
 			end
 

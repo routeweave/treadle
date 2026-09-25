@@ -266,7 +266,7 @@ build_nft() {
 }
 
 start() {
-	local mode port iface inet6 self fakeip fakeip_v4 fakeip_v6
+	local mode port iface inet6 self fakeip fakeip_v4 fakeip_v6 ui_mode
 
 	# start is idempotent without tearing down first: the ruleset is swapped
 	# in atomically (see build_nft) and the policy rule is only added when

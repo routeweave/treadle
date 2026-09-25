@@ -52,7 +52,9 @@ auto_latency_test() {
 	echo "$now" > "$marker"
 
 	# A full run must not inherit a stale tag-scoping file from an earlier
-	# aborted UI-triggered run.
+	# aborted UI-triggered run. If a UI-scoped run has written the file but
+	# not consumed it yet, this deletes it and that run tests every node
+	# instead of its selection: a tiny window with a harmless outcome.
 	rm -f /var/etc/treadle/.test-all-tags
 
 	logger -p daemon.info -t treadle "auto-test: probing all nodes (every ${hours}h)"

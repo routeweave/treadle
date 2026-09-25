@@ -40,7 +40,7 @@ local EXTRA_PATH     = "/etc/treadle/extra.json"
 local DNSMASQ_DROPIN = "/var/etc/treadle/dnsmasq-managed.conf"
 -- Loopback DNS listener port for managed DNS: build_inbounds opens the
 -- dns-in inbound here and build_dnsmasq_dropin points dnsmasq at it.
-local DNS_IN_PORT    = 5335
+local DNS_IN_PORT    = 5335  -- the init script checks this port too; keep them equal
 -- Ephemeral latency-test instance (--probe mode): clash API host:port and
 -- default output path — shared with test-all-runner via treadlelib.
 local PROBE_CLASH_HOST  = lib.PROBE_CLASH_HOST
@@ -2216,7 +2216,10 @@ local function build_config(c)
 	-- (127.0.0.1:9090); no secret because the API is bound to 127.0.0.1 and
 	-- our threat model has no scenario where dropping it loses ground: any
 	-- attacker on the router with the capability to reach port 9090 is
-	-- already root and can read UCI, restart sing-box, etc. directly. With
+	-- already root and can read UCI, restart sing-box, etc. directly. That
+	-- holds for the usual single-admin router; on a box with unprivileged
+	-- local users, any of them can reach the loopback port too, switch the
+	-- active proxy and read connection metadata. With
 	-- no `secret` field sing-box's auth middleware is a no-op, which lets
 	-- uclient-fetch reach the API without a custom Authorization header (a
 	-- flag uclient-fetch has no spelling for). The API is opt-in via
