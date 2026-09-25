@@ -4,11 +4,6 @@ A LuCI web UI for [sing-box](https://sing-box.sagernet.org/) on OpenWrt.
 Manage subscriptions, routing, rule-sets, and DNS from the router admin
 page — no JSON to hand-edit.
 
-<!--
-  TODO: drop a screenshot at docs/screenshot.png and uncomment:
-  ![Treadle dashboard](docs/screenshot.png)
--->
-
 ## Features
 
 - **One LuCI page** at *Services → Treadle*. A Basic/Advanced toggle in
