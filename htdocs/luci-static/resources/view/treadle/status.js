@@ -215,7 +215,9 @@ function formatActiveNode(tag, outbounds) {
 // the row that would display it (along with the sing-box/mode footer).
 function runtimeInfo(outbounds) {
 	var uiMode = uci.get('treadle', 'global', 'mode');
-	if (uiMode !== 'basic' && uiMode !== 'advanced') uiMode = 'advanced';
+	// Anything but the two known values reads as the shipped default,
+	// as in main.js and build-config.
+	if (uiMode !== 'basic' && uiMode !== 'advanced') uiMode = 'basic';
 
 	var tag;
 	if (uiMode === 'basic') {

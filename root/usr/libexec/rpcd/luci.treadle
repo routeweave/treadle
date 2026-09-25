@@ -2224,9 +2224,11 @@ local methods = {
 			-- Basic-mode urltest emitted by build-config when the user
 			-- picks more than one server; it carries fixed tuning, so
 			-- surface it with the same shape the urltest's UCI peers
-			-- would.
+			-- would. build-config omits its interval (sing-box's own
+			-- default applies), so it is blank here as for a UCI group
+			-- whose Interval field is empty.
 			local SYNTHESISED = {
-				["basic-auto"] = { interval = "5m", tolerance = "50" },
+				["basic-auto"] = { interval = "", tolerance = "50" },
 			}
 
 			local out = {}
