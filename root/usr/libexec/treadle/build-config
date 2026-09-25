@@ -1662,7 +1662,9 @@ local function build_basic_route(c)
 	if c:get("treadle", "dns", "managed_dns") ~= "0" then
 		route.rules[#route.rules + 1] = { inbound = "dns-in", action = "hijack-dns" }
 	end
+	-- Private and CGNAT destinations go direct; see build_route.
 	route.rules[#route.rules + 1] = { ip_is_private = true, outbound = "direct" }
+	route.rules[#route.rules + 1] = { ip_cidr = { "100.64.0.0/10" }, outbound = "direct" }
 
 	local basic        = c:get_all("treadle", "basic") or {}
 	local routing_mode = basic.routing or "all"
@@ -1819,16 +1821,21 @@ local function build_route(c, prepared)
 
 	-- Private destinations bypass the proxy. RFC1918, loopback, link-local,
 	-- multicast and IPv6 ULA all match ip_is_private (sing/common/network
-	-- IsPublicAddr); CGNAT (100.64/10) and the IPv4 fakeip default
-	-- (198.18/15) intentionally do not. In tproxy / tproxy_mixed mode this
-	-- is inert because firewall.sh already filters reserved ranges at
-	-- prerouting; in tun mode it is load-bearing — without it a Default
-	-- server pointing at a proxy would tunnel LAN-to-LAN traffic too.
-	-- Fakeip-mapped destinations are safe: sing-box demaps them to an FQDN
-	-- at the start of matchRule (route/route.go:434), before any rule
-	-- evaluates, so by the time this rule runs metadata.Destination.Addr
-	-- is invalid and ip_is_private short-circuits to false.
+	-- IsPublicAddr); CGNAT (100.64/10) does not, so it gets its own rule —
+	-- it carries Tailscale-style overlay addresses and ISP-internal hosts,
+	-- neither of which a remote proxy can reach. In tproxy / tproxy_mixed
+	-- mode both rules are inert because firewall.sh already bypasses these
+	-- ranges at prerouting; in tun mode they are load-bearing — without
+	-- them a Default server pointing at a proxy would tunnel LAN-to-LAN
+	-- and CGNAT traffic too. The other reserved ranges firewall.sh bypasses
+	-- (documentation, benchmarking, 6to4, Teredo) carry no real traffic and
+	-- are left out. Fakeip-mapped destinations are safe even when
+	-- fakeip_range_v4 is moved into 100.64/10: sing-box demaps them to an
+	-- FQDN at the start of matchRule (route/route.go:434), before any rule
+	-- evaluates, so by the time these rules run metadata.Destination.Addr
+	-- is invalid and neither matches.
 	route.rules[#route.rules + 1] = { ip_is_private = true, outbound = "direct" }
+	route.rules[#route.rules + 1] = { ip_cidr = { "100.64.0.0/10" }, outbound = "direct" }
 
 	-- Remote rule-set objects, deduplicated by tag across rules. sing-box
 	-- downloads and refreshes each one itself; download_detour decides

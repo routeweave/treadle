@@ -229,6 +229,13 @@ done
 uci set treadle.inbounds.mode=tproxy
 uci commit treadle
 
+# In tun mode nothing ahead of sing-box bypasses CGNAT the way firewall.sh
+# does for tproxy, so the route has to send it direct itself.
+cgnat=$(jsonfilter -i "$OUT/advanced___tun.json" \
+	-e '@.route.rules[@.ip_cidr[0]="100.64.0.0/10"].outbound')
+[ "$cgnat" = "direct" ] && ok "tun route sends CGNAT direct" \
+	|| bad "tun route CGNAT outbound is '$cgnat', want direct"
+
 grep -q '"tag": "HK-01"' "$OUT/advanced___tproxy.json" \
 	&& ok "rule outbound HK-01 is in the running config" \
 	|| bad "rule outbound HK-01 missing from the running config"
@@ -253,6 +260,10 @@ uci set treadle.global.clash_api_enabled=0
 uci set treadle.global.mode=basic
 uci commit treadle
 build "basic"
+cgnat=$(jsonfilter -i "$OUT/basic.json" \
+	-e '@.route.rules[@.ip_cidr[0]="100.64.0.0/10"].outbound')
+[ "$cgnat" = "direct" ] && ok "basic route sends CGNAT direct" \
+	|| bad "basic route CGNAT outbound is '$cgnat', want direct"
 
 # With no proxy default, a remote DNS server given by hostname must still
 # get a detour, or sing-box finds no resolver for its address and rejects
