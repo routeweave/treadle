@@ -1,9 +1,14 @@
 name: Feed
 
 # Publishes the Treadle package feed to GitHub Pages — an OpenWrt-style
-# repository routers can add and then install/upgrade from. Rebuilt from
-# scratch on every v* release so the feed always indexes the full set of
-# released versions. Manual re-run is available via workflow_dispatch.
+# repository routers can add and then install/upgrade from — together with
+# the rolling snapshot of main under snapshot/. Every run rebuilds the whole
+# site: the feed from every v* release, the snapshot from the newest main
+# build that passed CI. Manual re-run is available via workflow_dispatch.
+#
+# The snapshot lives here rather than on a GitHub release because releases
+# are immutable in this repository: a published release's files can never be
+# replaced, and a rolling snapshot is by definition a file that changes.
 #
 # One-time setup (see README "Install from the Treadle feed"):
 #   - run scripts/feed-keygen.sh, commit feed/keys/*.pub
@@ -15,11 +20,19 @@ name: Feed
 # the `release: published` event for token-created releases, so it would
 # never fire. workflow_run also guarantees the release assets are uploaded
 # before the feed is built (release.yml builds and uploads, then we run).
+#
+# It also runs after CI, so each push to main that passes refreshes the
+# snapshot (workflow_run always uses this file from the default branch).
 on:
   workflow_run:
-    workflows: ["Release"]
+    workflows: ["Release", "CI"]
     types: [completed]
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build the site and upload it as an artifact, without deploying"
+        type: boolean
+        default: false
 
 # One feed deploy at a time; let a newer run supersede an in-flight one.
 concurrency:
@@ -29,10 +42,17 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    # Skip if the Release run failed; always run on a manual dispatch.
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    # Always on a manual dispatch; after a successful Release; after CI only
+    # for a successful push to main (pull-request runs never publish).
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch'
+          || (github.event.workflow_run.conclusion == 'success'
+              && (github.event.workflow_run.name == 'Release'
+                  || (github.event.workflow_run.event == 'push'
+                      && github.event.workflow_run.head_branch == 'main'))) }}
     permissions:
       contents: read
+      actions: read   # download the snapshot build from a CI run
       pages: write
       id-token: write
     environment:
@@ -73,11 +93,32 @@ jobs:
           PAGES_URL: ${{ steps.pages.outputs.base_url }}
         run: scripts/feed.sh
 
+      # snapshot/: the build from the CI run that triggered this, or else the
+      # newest successful CI run on a push to main. CI keeps its package
+      # artifacts for 30 days; when none is left, keep what the live site
+      # serves now, so a quiet month never makes the snapshot disappear.
+      - name: Add the snapshot of main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FEED_OUT: ${{ github.workspace }}/public
+          PAGES_URL: ${{ steps.pages.outputs.base_url }}
+          TRIGGER_RUN: ${{ github.event.workflow_run.name == 'CI' && github.event.workflow_run.id || '' }}
+        run: scripts/pages-snapshot.sh
+
       - name: Upload Pages artifact
+        if: ${{ !inputs.dry_run }}
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: public
 
+      - name: Upload the site for inspection (dry run)
+        if: ${{ inputs.dry_run }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pages-dry-run
+          path: public
+
       - name: Deploy to GitHub Pages
+        if: ${{ !inputs.dry_run }}
         id: deploy
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

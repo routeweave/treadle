@@ -3,8 +3,9 @@ name: CI
 # Every pull request and every push to main runs the same checks: static
 # lint, a package build with a syntax check of what actually ships, and an
 # end-to-end smoke test on real OpenWrt userlands (one apk-era, one
-# opkg-era release). A push to main that passes all of them also publishes
-# the rolling snapshot, so the snapshot is always the latest tested main.
+# opkg-era release). A push to main that passes all of them triggers the
+# Feed workflow (pages.yml), which publishes that build as the rolling
+# snapshot, so the snapshot is always the latest tested main.
 #
 # Actions are pinned by commit SHA; the tag each SHA was taken from is in
 # the trailing comment. Dependabot keeps both in step.
@@ -141,61 +142,3 @@ jobs:
         run: >-
           docker run --rm -e SMOKE_SINGBOX=/work/upstream-sing-box
           -v "$PWD:/work" openwrt/rootfs:x86_64-25.12.4 /bin/sh /work/tests/smoke.sh
-
-  # The rolling snapshot: latest tested main, one stable URL. Only a push to
-  # main that passed every job above gets here.
-  snapshot:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [lint, build, smoke, smoke-upstream-singbox]
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write   # move the snapshot tag, update its pre-release
-    concurrency:
-      group: snapshot
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: packages-${{ github.sha }}
-          path: dist/
-
-      - name: Publish the rolling snapshot pre-release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BUILT_VERSION: ${{ needs.build.outputs.version }}
-        run: |
-          mkdir -p snapshot
-          for ext in apk ipk; do
-            src=$(ls dist/*."$ext" | head -n1)
-            cp "$src"        "snapshot/luci-app-treadle-snapshot.$ext"
-            cp "$src.sha256" "snapshot/luci-app-treadle-snapshot.$ext.sha256"
-          done
-
-          DL="https://github.com/${GITHUB_REPOSITORY}/releases/download/snapshot"
-          NOTES_FILE=$(mktemp)
-          sh scripts/release-notes.sh \
-            "${DL}/luci-app-treadle-snapshot.apk" \
-            "${DL}/luci-app-treadle-snapshot.ipk" \
-            > "$NOTES_FILE" <<EOF
-          Rolling snapshot of \`main\` — replaced by every merge that passes CI.
-
-          **Built version:** \`${BUILT_VERSION}\`
-          **Commit:** \`${GITHUB_SHA}\`
-          EOF
-
-          # The snapshot tag is not a version; it follows main.
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -f snapshot
-          git push origin snapshot --force
-
-          if gh release view snapshot >/dev/null 2>&1; then
-            gh release edit snapshot --title "Snapshot — ${BUILT_VERSION}" \
-              --notes-file "$NOTES_FILE" --prerelease --target "${GITHUB_SHA}"
-            gh release upload snapshot snapshot/* --clobber
-          else
-            gh release create snapshot snapshot/* --title "Snapshot — ${BUILT_VERSION}" \
-              --notes-file "$NOTES_FILE" --prerelease --target "${GITHUB_SHA}"
-          fi

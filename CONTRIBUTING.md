@@ -118,17 +118,19 @@ automatically.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| **CI**      | Pull request, push to `main` | Lint, package build and staged-tree check, smoke test on OpenWrt 25.12 (apk) and 24.10 (opkg). On a `main` push that passes, also publishes the rolling snapshot. |
+| **CI**      | Pull request, push to `main` | Lint, package build and staged-tree check, smoke test on OpenWrt 25.12 (apk) and 24.10 (opkg). |
 | **Release** | Push of a `v*` tag           | Builds, signs the `.apk` with the feed key, and creates an immutable GitHub release. |
-| **Feed**    | After a successful Release   | Rebuilds the signed GitHub Pages feed from every `v*` release. |
+| **Feed**    | After a successful Release, or CI on a `main` push | Rebuilds the GitHub Pages site: the signed feed from every `v*` release, and the rolling snapshot from the newest passing `main` build. |
 
 Every action is pinned to a commit SHA, with the tag in a trailing comment;
 Dependabot proposes updates monthly.
 
 ### What a snapshot is
 
-The latest `main` that passed CI, published as the rolling `snapshot`
-pre-release under a stable URL. Every merge that passes replaces it.
+The latest `main` that passed CI, published under a stable URL on the
+feed's GitHub Pages site (`snapshot/`). Every merge that passes replaces
+it. It is not a GitHub release: releases in this repository are
+immutable, so a published release's files can never be replaced.
 
 To try a branch before it merges, use that branch's own CI build: each
 run uploads its packages as a workflow artifact (kept 30 days), and
@@ -143,7 +145,7 @@ branch you have checked out.
 ├── actions/install-usign/       # CI: build OpenWrt's usign
 ├── dependabot.yml               # Keeps the pinned actions current
 └── workflows/
-    ├── ci.yml                   # Checks on every PR; snapshot from main
+    ├── ci.yml                   # Checks on every PR and main push
     ├── release.yml              # Release on v* tag push
     └── pages.yml                # Publish the feed to GitHub Pages
 scripts/
@@ -152,7 +154,8 @@ scripts/
 ├── lint.sh                      # shellcheck + luacheck + eslint
 ├── version-check.sh             # Version scheme asserted against apk's parser
 ├── feed.sh  feed-keygen.sh      # Signed apk + opkg feed assembly, key setup
-├── release-notes.sh             # Shared release/snapshot notes body
+├── pages-snapshot.sh            # Adds the rolling snapshot to the Pages site
+├── release-notes.sh             # Release notes body
 └── push-to-router.sh            # Install a branch's CI build on a router
 tests/
 ├── smoke.sh                     # End-to-end test in an OpenWrt container

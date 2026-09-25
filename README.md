@@ -97,17 +97,19 @@ Advanced mode).
 > tagged release.
 
 The snapshot URL is stable — the same one-liner installs and upgrades.
+It is served from the feed's site; `…/snapshot/VERSION` names the build
+and commit.
 
 **OpenWrt 25.12+** (APK):
 
 ```sh
-wget -O /tmp/treadle.apk https://github.com/routeweave/treadle/releases/download/snapshot/luci-app-treadle-snapshot.apk && apk add --allow-untrusted /tmp/treadle.apk && service rpcd reload
+wget -O /tmp/treadle.apk https://routeweave.github.io/treadle/snapshot/luci-app-treadle-snapshot.apk && apk add --allow-untrusted /tmp/treadle.apk && service rpcd reload
 ```
 
 **OpenWrt 24.10** (opkg):
 
 ```sh
-wget -O /tmp/treadle.ipk https://github.com/routeweave/treadle/releases/download/snapshot/luci-app-treadle-snapshot.ipk && opkg install /tmp/treadle.ipk && service rpcd reload
+wget -O /tmp/treadle.ipk https://routeweave.github.io/treadle/snapshot/luci-app-treadle-snapshot.ipk && opkg install /tmp/treadle.ipk && service rpcd reload
 ```
 
 ### On iStoreOS and other OpenWrt forks

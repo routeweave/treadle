@@ -66,8 +66,8 @@ if [ -n "${FEED_SRC_DIR:-}" ]; then
 	cp "$FEED_SRC_DIR"/*.ipk "$DL_DIR"/ 2>/dev/null || true
 else
 	require_cmd gh
-	# All release tags except the rolling "snapshot" pre-release — the
-	# v-prefix filter alone excludes it (its tag is literally "snapshot").
+	# All v* release tags. (The rolling snapshot is not a release; it is
+	# added to the site by pages-snapshot.sh.)
 	gh release list --limit 200 --json tagName \
 		--jq '.[].tagName | select(startswith("v"))' \
 		> "$DL_DIR/tags.txt" || die "gh release list failed"
