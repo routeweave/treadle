@@ -34,6 +34,12 @@ define Package/luci-app-treadle/postinst
 	grep -qsF "/etc/treadle/nodes/" /etc/sysupgrade.conf || echo "/etc/treadle/nodes/" >> /etc/sysupgrade.conf
 	/etc/init.d/treadle enable
 	service rpcd reload
+	# An upgrade swaps the files under a running service, and the old
+	# sing-box keeps its old command and config until something reloads it.
+	# Reload now so the new version takes effect. A fresh install, or a
+	# service the user stopped, is not running and is left alone.
+	/etc/init.d/treadle running >/dev/null 2>&1 && /etc/init.d/treadle reload >/dev/null 2>&1
+	true
 }
 endef
 
