@@ -69,7 +69,9 @@ command -v sing-box >/dev/null 2>&1 || die "sing-box was not pulled in as a depe
 # package's own dependency is installed. CI uses it to check every config shape
 # against an upstream release newer than the OpenWrt feed carries.
 if [ -n "${SMOKE_SINGBOX:-}" ]; then
-	install -m 0755 "$SMOKE_SINGBOX" /usr/bin/sing-box || die "could not install $SMOKE_SINGBOX"
+	# busybox in the OpenWrt rootfs has no `install` applet.
+	cp "$SMOKE_SINGBOX" /usr/bin/sing-box && chmod 0755 /usr/bin/sing-box \
+		|| die "could not install $SMOKE_SINGBOX"
 fi
 SB_VERSION=$(sing-box version | head -n1)
 ok "$SB_VERSION"
@@ -169,14 +171,14 @@ set treadle.0123456789abcd21=condition
 set treadle.0123456789abcd21.rule=0123456789abcd20
 set treadle.0123456789abcd21.kind=domain_suffix
 add_list treadle.0123456789abcd21.value=example.com
-set treadle.0123456789abcd30=rule
-set treadle.0123456789abcd30.enabled=1
-set treadle.0123456789abcd30.order=2
-set treadle.0123456789abcd30.outbound=direct
-set treadle.0123456789abcd31=condition
-set treadle.0123456789abcd31.rule=0123456789abcd30
-set treadle.0123456789abcd31.kind=ruleset
-add_list treadle.0123456789abcd31.value=sagernet/geosite-cn
+set treadle.0123456789abcd40=rule
+set treadle.0123456789abcd40.enabled=1
+set treadle.0123456789abcd40.order=2
+set treadle.0123456789abcd40.outbound=direct
+set treadle.0123456789abcd41=condition
+set treadle.0123456789abcd41.rule=0123456789abcd40
+set treadle.0123456789abcd41.kind=ruleset
+add_list treadle.0123456789abcd41.value=sagernet/geosite-cn
 set treadle.global.mode=advanced
 commit treadle
 EOF
