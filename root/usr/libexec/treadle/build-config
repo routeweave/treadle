@@ -1848,7 +1848,14 @@ local function build_route(c, prepared)
 	-- Treadle's sing-box floor is 1.12, so `download_detour` is still the only
 	-- form valid across the whole supported range. When that floor is raised
 	-- to 1.14, migrate this to `http_client`.
-	local detour    = c:get("treadle", "global", "ruleset_download_detour") or "direct"
+	--
+	-- An absent option means "default", as the shipped conffile and the
+	-- Settings dropdown do. Known weakness of that default: before its first
+	-- latency test a urltest uses its first member, so with a cold cache
+	-- (fresh install, wiped cache.db) and that member down, the fetch times
+	-- out and sing-box FATALs at start — the trap Basic sidesteps by always
+	-- fetching direct (see build_basic_route).
+	local detour    = c:get("treadle", "global", "ruleset_download_detour") or "default"
 	local seen_tags = {}
 	local rule_sets = {}
 	local function emit_remote_ruleset(tag, meta)
