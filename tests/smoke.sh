@@ -65,7 +65,18 @@ for f in "$HANDLER" "$BUILD" /etc/init.d/treadle /etc/config/treadle \
 done
 ok "package files present"
 command -v sing-box >/dev/null 2>&1 || die "sing-box was not pulled in as a dependency"
-ok "$(sing-box version | head -n1)"
+# SMOKE_SINGBOX (a path under /work) swaps in another sing-box build after the
+# package's own dependency is installed. CI uses it to check every config shape
+# against an upstream release newer than the OpenWrt feed carries.
+if [ -n "${SMOKE_SINGBOX:-}" ]; then
+	install -m 0755 "$SMOKE_SINGBOX" /usr/bin/sing-box || die "could not install $SMOKE_SINGBOX"
+fi
+SB_VERSION=$(sing-box version | head -n1)
+ok "$SB_VERSION"
+# Mirrors treadlelib.singbox_caps: http_client replaces download_detour at 1.14.
+SB_HTTP_CLIENT=0
+echo "$SB_VERSION" | awk '{ split($3, v, "."); exit !(v[1] > 1 || (v[1] == 1 && v[2] >= 14)) }' \
+	&& SB_HTTP_CLIENT=1
 
 # --- rpcd handler basics -----------------------------------------------------
 
@@ -158,6 +169,14 @@ set treadle.0123456789abcd21=condition
 set treadle.0123456789abcd21.rule=0123456789abcd20
 set treadle.0123456789abcd21.kind=domain_suffix
 add_list treadle.0123456789abcd21.value=example.com
+set treadle.0123456789abcd30=rule
+set treadle.0123456789abcd30.enabled=1
+set treadle.0123456789abcd30.order=2
+set treadle.0123456789abcd30.outbound=direct
+set treadle.0123456789abcd31=condition
+set treadle.0123456789abcd31.rule=0123456789abcd30
+set treadle.0123456789abcd31.kind=ruleset
+add_list treadle.0123456789abcd31.value=sagernet/geosite-cn
 set treadle.global.mode=advanced
 commit treadle
 EOF
@@ -310,6 +329,74 @@ echo '{}' | "$HANDLER" call get_config > "$OUT/get_config.json"
 	&& jsonfilter -i "$OUT/get_config.json" -e '@.json' | grep -q outbounds \
 	&& ok "get_config returns a preview" \
 	|| bad "get_config: $(head -c 400 "$OUT/get_config.json")"
+
+# --- sing-box version awareness ---------------------------------------------
+
+step "sing-box version"
+
+# How a remote rule-set's download is expressed depends on the installed
+# sing-box: download_detour before 1.14, http_client from 1.14. "Default"
+# (the shipped setting) goes through the default outbound, which from 1.14
+# is named explicitly as the http_client detour.
+rs_fields() {
+	jsonfilter -i "$1" -e '@.route.rule_set[@.type="remote"]' \
+		| sed -n 's/.*"\(download_detour\|http_client\)".*/\1/p' | sort -u | tr '\n' ' '
+}
+adv="$OUT/advanced___tproxy.json"
+if [ "$SB_HTTP_CLIENT" = "1" ]; then
+	d=$(jsonfilter -i "$adv" -e '@.route.rule_set[*].http_client.detour' | sort -u)
+	[ "$d" = "ALL" ] && [ -z "$(jsonfilter -i "$adv" -e '@.route.rule_set[*].download_detour')" ] \
+		&& ok "advanced rule-sets download via http_client through the default outbound" \
+		|| bad "advanced rule-set download: detour '$d', fields: $(rs_fields "$adv")"
+else
+	[ -z "$(jsonfilter -i "$adv" -e '@.route.rule_set[*].download_detour')" ] \
+		&& [ -z "$(jsonfilter -i "$adv" -e '@.route.rule_set[*].http_client')" ] \
+		&& ok "advanced rule-sets download through the default outbound" \
+		|| bad "advanced rule-set download fields: $(rs_fields "$adv")"
+fi
+[ -n "$(jsonfilter -i "$adv" -e '@.route.rule_set[*].tag')" ] \
+	&& ok "advanced config has a remote rule-set" || bad "advanced config has no rule-set"
+
+uci set treadle.global.mode=basic
+uci set treadle.basic.routing=bypass_country
+uci set treadle.basic.bypass_country=cn
+uci commit treadle
+build "basic / bypass country"
+bas="$OUT/basic___bypass_country.json"
+if [ "$SB_HTTP_CLIENT" = "1" ]; then
+	d=$(jsonfilter -i "$bas" -e '@.route.rule_set[*].http_client.detour' | sort -u)
+else
+	d=$(jsonfilter -i "$bas" -e '@.route.rule_set[*].download_detour' | sort -u)
+fi
+[ "$d" = "direct" ] && ok "basic rule-sets download direct" \
+	|| bad "basic rule-set download detour '$d', fields: $(rs_fields "$bas")"
+uci set treadle.basic.routing=all
+uci commit treadle
+
+[ "$(cat "$bas.sbver" 2>/dev/null)" = "$SB_VERSION" ] \
+	&& ok "build-config stamps the config with the sing-box version" \
+	|| bad "stamp is '$(cat "$bas.sbver" 2>/dev/null)', want '$SB_VERSION'"
+
+# run-singbox rebuilds a config whose stamp names another sing-box version
+# before starting it. Mixed mode needs no tproxy privileges, so sing-box can
+# actually start here; it is stopped once the stamp has been checked.
+uci set treadle.inbounds.mode=mixed
+uci commit treadle
+wrap="$OUT/wrap.json"
+"$BUILD" "$wrap" >/dev/null 2>&1
+echo "sing-box version 0.0.0" > "$wrap.sbver"
+/usr/libexec/treadle/run-singbox "$wrap" > "$OUT/wrap.log" 2>&1 &
+WRAP=$!
+i=0
+while [ "$i" -lt 20 ] && [ "$(cat "$wrap.sbver" 2>/dev/null)" != "$SB_VERSION" ]; do
+	sleep 1; i=$((i + 1))
+done
+kill "$WRAP" 2>/dev/null; wait "$WRAP" 2>/dev/null
+[ "$(cat "$wrap.sbver" 2>/dev/null)" = "$SB_VERSION" ] && [ ! -e "$wrap.next" ] \
+	&& ok "run-singbox rebuilds a config built for another sing-box version" \
+	|| { bad "run-singbox left stamp '$(cat "$wrap.sbver" 2>/dev/null)'"; sed 's/^/    /' "$OUT/wrap.log"; }
+uci set treadle.inbounds.mode=tproxy
+uci commit treadle
 
 # --- removal -----------------------------------------------------------------
 

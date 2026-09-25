@@ -1,0 +1,59 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 RouteWeave
+#
+# run-singbox <config> — the command procd runs for the managed sing-box.
+#
+# build-config shapes its output for the sing-box version installed when it
+# ran and records that version in <config>.sbver. procd restarts sing-box on
+# its own (respawn after a crash, the file watch on the binary), and none of
+# those paths rebuild the config. After a sing-box upgrade the new binary
+# could therefore start on a config built for the old one, which is at best
+# deprecated and, once a release removes a field Treadle still emits,
+# rejected: a crash loop with the firewall still steering the LAN into it.
+#
+# So before every start, compare the installed version with the stamp. On a
+# match, exec sing-box straight away. On a mismatch, rebuild the config the
+# way the init script does (build to a side path, `sing-box check`, atomic
+# rename) under the same start lock, then exec. A rebuild that fails keeps
+# the existing config: it may still run, and the watchdog covers it if not.
+
+SINGBOX=/usr/bin/sing-box
+BUILD_CONFIG=/usr/libexec/treadle/build-config
+LOCK=/var/lock/treadle-start.lock
+
+cfg="$1"
+[ -n "$cfg" ] || { echo "usage: run-singbox <config>" >&2; exit 2; }
+
+log() { logger -p "daemon.$1" -t treadle "$2"; }
+
+have=$("$SINGBOX" version 2>/dev/null | head -n 1)
+built=$(cat "$cfg.sbver" 2>/dev/null)
+
+if [ -n "$have" ] && [ "$have" != "$built" ]; then
+	log notice "config: built for '${built:-unknown}', installed is '$have'; rebuilding before start"
+	tries=0
+	mkdir -p /var/lock
+	while ! lock -n "$LOCK" 2>/dev/null; do
+		tries=$((tries + 1))
+		[ "$tries" -ge 30 ] && break
+		sleep 1
+	done
+	# The status-page footer caches the version; a new binary makes it stale.
+	rm -f /var/etc/treadle/.singbox-version
+	next="$cfg.next"
+	if err=$("$BUILD_CONFIG" "$next" 2>&1 >/dev/null) \
+		&& chk=$("$SINGBOX" check -c "$next" 2>&1); then
+		mv -f "$next" "$cfg"
+		mv -f "$next.sbver" "$cfg.sbver"
+		log notice "config: rebuilt for '$have'"
+	else
+		rm -f "$next" "$next.sbver"
+		[ -n "$err" ] && echo "$err" | logger -p daemon.err -t treadle
+		[ -n "$chk" ] && echo "$chk" | logger -p daemon.err -t treadle
+		log err "config: rebuild for '$have' failed, starting on the existing config"
+	fi
+	[ "$tries" -lt 30 ] && lock -u "$LOCK" 2>/dev/null
+fi
+
+exec "$SINGBOX" run -c "$cfg"

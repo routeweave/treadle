@@ -279,6 +279,40 @@ function M.detect_wan_dns(jsonc)
 	return servers[1]
 end
 
+-- First line of `sing-box version` ("sing-box version 1.14.2"), or nil when
+-- the binary is missing or prints nothing. Not cached: build-config needs
+-- the binary actually installed now, and the fork costs ~20 ms.
+function M.singbox_version_line()
+	local f = io.popen("/usr/bin/sing-box version 2>/dev/null")
+	if not f then return nil end
+	local line = f:read("*l")
+	f:close()
+	if not line or line == "" then return nil end
+	return line
+end
+
+-- What the installed sing-box supports, derived from its version line.
+-- build-config branches on these flags, never on version numbers, so each
+-- cross-version difference is decided in one place. An unreadable version
+-- reads as the 1.12 floor: that output is valid on every supported release
+-- (deprecated from 1.14, removed in 1.16), and the init script's
+-- `sing-box check` still gates it.
+--   http_client  1.14+: rule-set downloads take `http_client` (an inline
+--                client whose dial `detour` picks the outbound);
+--                `download_detour` and the implicit via-default-outbound
+--                client are deprecated in 1.14 and removed in 1.16.
+function M.singbox_caps(line)
+	local maj, min = (line or ""):match("(%d+)%.(%d+)")
+	maj, min = tonumber(maj), tonumber(min)
+	local function at_least(a, b)
+		return maj ~= nil and (maj > a or (maj == a and min >= b))
+	end
+	return {
+		version     = line,
+		http_client = at_least(1, 14)
+	}
+end
+
 -- Ask procd for the treadle service's `singbox` instance table, or nil when
 -- procd reports it stopped / missing / unparseable. Must walk the parsed
 -- JSON to that specific instance: the treadle service may also carry an

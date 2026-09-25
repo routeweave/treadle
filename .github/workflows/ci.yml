@@ -25,6 +25,13 @@ concurrency:
 env:
   SHELLCHECK_VERSION: v0.11.0
   SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+  # Upstream sing-box release the smoke test also runs against, ahead of what
+  # the OpenWrt feeds carry, so build-config's newer-version branches are
+  # checked before any router gets that version. Dependabot does not track
+  # this: bump the version and the linux-amd64-musl tarball's SHA-256 (from
+  # the release's asset digests) together.
+  SINGBOX_UPSTREAM_VERSION: 1.14.2
+  SINGBOX_UPSTREAM_SHA256: 8f6cb4bcf94d2b33c65d52e0d5b142db29a938336f1ff7267f397ac3758fc297
 
 jobs:
   lint:
@@ -108,11 +115,38 @@ jobs:
       - name: Smoke test on ${{ matrix.image }}
         run: docker run --rm -v "$PWD:/work" "${{ matrix.image }}" /bin/sh /work/tests/smoke.sh
 
+  # The same smoke test with the feed's sing-box swapped for a pinned upstream
+  # release, so config shapes keyed on a newer sing-box are checked too.
+  smoke-upstream-singbox:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: packages-${{ github.sha }}
+          path: dist/
+
+      - name: Fetch sing-box ${{ env.SINGBOX_UPSTREAM_VERSION }}
+        run: |
+          name="sing-box-${SINGBOX_UPSTREAM_VERSION}-linux-amd64-musl"
+          curl -fsSL -o /tmp/sing-box.tar.gz \
+            "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_UPSTREAM_VERSION}/${name}.tar.gz"
+          echo "${SINGBOX_UPSTREAM_SHA256}  /tmp/sing-box.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/sing-box.tar.gz -C /tmp
+          install -m 0755 "/tmp/${name}/sing-box" upstream-sing-box
+
+      - name: Smoke test with sing-box ${{ env.SINGBOX_UPSTREAM_VERSION }}
+        run: >-
+          docker run --rm -e SMOKE_SINGBOX=/work/upstream-sing-box
+          -v "$PWD:/work" openwrt/rootfs:x86_64-25.12.4 /bin/sh /work/tests/smoke.sh
+
   # The rolling snapshot: latest tested main, one stable URL. Only a push to
   # main that passed every job above gets here.
   snapshot:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [lint, build, smoke]
+    needs: [lint, build, smoke, smoke-upstream-singbox]
     runs-on: ubuntu-24.04
     permissions:
       contents: write   # move the snapshot tag, update its pre-release

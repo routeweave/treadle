@@ -53,6 +53,41 @@ local uci_list_or_string = lib.uci_list
 -- Atomic 0600 write; sing-box.json contains every node's credentials.
 local write_atomic = lib.write_secure
 
+-- What the installed sing-box supports (treadlelib.singbox_caps). Read once
+-- per build; every cross-version difference in the output branches on it.
+local SB = lib.singbox_caps(lib.singbox_version_line())
+
+-- How a remote rule-set is downloaded. `via` is "direct" (out the WAN) or nil
+-- (through the default outbound). Before 1.14 that is `download_detour =
+-- "direct"` or no field at all. From 1.14 both become an explicit
+-- `http_client`: the implicit via-default-outbound client is deprecated
+-- there too, so "default" names the outbound. That tag is route.final, which
+-- is only known once build_config has validated it, so the rule-set is
+-- marked here and resolved there (resolve_ruleset_downloads).
+local function set_ruleset_download(rs, via)
+	if SB.http_client then
+		if via == "direct" then
+			rs.http_client = { detour = "direct" }
+		else
+			rs._via_default = true
+		end
+	elseif via == "direct" then
+		rs.download_detour = "direct"
+	end
+	return rs
+end
+
+local function resolve_ruleset_downloads(route)
+	local fin = route["final"]
+	if fin == nil or fin == "" or fin == "block" then fin = "direct" end
+	for _, rs in ipairs(route.rule_set or {}) do
+		if rs._via_default then
+			rs._via_default = nil
+			rs.http_client  = { detour = fin }
+		end
+	end
+end
+
 -- ─── mode ────────────────────────────────────────────────────────────────
 --
 -- treadle.global.mode = "basic" | "advanced". "basic" hides Nodes / Routing /
@@ -1702,10 +1737,9 @@ local function build_basic_route(c)
 	-- subsequent boots load rule-sets from flash regardless of the network.
 	local rule_sets = {}
 	local function emit_rs(tag, url)
-		rule_sets[#rule_sets + 1] = {
-			type = "remote", tag = tag, format = "binary", url = url,
-			download_detour = "direct"
-		}
+		rule_sets[#rule_sets + 1] = set_ruleset_download({
+			type = "remote", tag = tag, format = "binary", url = url
+		}, "direct")
 	end
 
 	-- Country bypass — geoip catches direct-IP destinations, geosite catches
@@ -1863,11 +1897,10 @@ local function build_route(c, prepared)
 	-- the default outbound (the proxy). `update_interval` is omitted: sing-box
 	-- defaults it to "1d", which is exactly what Treadle wants.
 	--
-	-- NOTE: `download_detour` is deprecated in sing-box 1.14 and removed in
-	-- 1.16; its replacement is the `http_client` rule-set field (1.14+).
-	-- Treadle's sing-box floor is 1.12, so `download_detour` is still the only
-	-- form valid across the whole supported range. When that floor is raised
-	-- to 1.14, migrate this to `http_client`.
+	-- The field that carries it depends on the installed sing-box:
+	-- `download_detour` before 1.14, `http_client` from 1.14 (see
+	-- set_ruleset_download). When the floor reaches 1.14 the legacy branch
+	-- can go.
 	--
 	-- An absent option means "default", as the shipped conffile and the
 	-- Settings dropdown do. Known weakness of that default: before its first
@@ -1887,10 +1920,8 @@ local function build_route(c, prepared)
 			format = (meta and meta.format) or "binary",
 			url    = meta and meta.url
 		}
-		if detour == "direct" then
-			rs.download_detour = "direct"
-		end
-		rule_sets[#rule_sets + 1] = rs
+		rule_sets[#rule_sets + 1] = set_ruleset_download(rs,
+			(detour == "direct") and "direct" or nil)
 	end
 
 	for _, pr in ipairs(prepared) do
@@ -2067,6 +2098,7 @@ local function build_config(c)
 		if ob.tag then tagset[ob.tag] = true; originset[ob.tag] = classify(ob) end
 	end
 	route["final"] = validate_tag("route.final", route["final"], tagset, originset)
+	resolve_ruleset_downloads(route)
 	if type(dns.servers) == "table" then
 		for _, s in ipairs(dns.servers) do
 			if s.detour then
@@ -2256,6 +2288,15 @@ local ok, err = write_atomic(out_path, json)
 if not ok then
 	io.stderr:write("treadle build-config: " .. err .. "\n")
 	os.exit(1)
+end
+
+-- Record the sing-box version this config was built for next to it, as
+-- <out_path>.sbver. run-singbox compares it with the installed binary before
+-- every start and rebuilds on a mismatch, so a sing-box upgrade followed by
+-- a crash-respawn never runs the new binary on a config built for the old
+-- one. The init script moves it along with the config.
+if not PREVIEW_MODE then
+	write_atomic(out_path .. ".sbver", (SB.version or "") .. "\n")
 end
 
 -- (Re)generate the dnsmasq managed-DNS drop-in. The content is deterministic
