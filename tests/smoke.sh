@@ -285,6 +285,24 @@ uci set treadle.routing.final_outbound=ALL
 uci set treadle.dns.remote_server="$remote_was"
 uci commit treadle
 
+# A local DNS server given by hostname would resolve itself through itself
+# (its lookups go out direct, whose resolver is local), so it gets a
+# bootstrap resolver at a literal IP. The probe config shares the entry.
+local_was=$(uci -q get treadle.dns.local_server)
+uci set treadle.dns.local_server=https://dns.example.com/dns-query
+uci commit treadle
+build "local DNS by hostname"
+build "probe / local DNS by hostname" --probe
+for f in local_DNS_by_hostname probe___local_DNS_by_hostname; do
+	dr=$(jsonfilter -i "$OUT/$f.json" -e '@.dns.servers[@.tag="local"].domain_resolver')
+	bs=$(jsonfilter -i "$OUT/$f.json" -e '@.dns.servers[@.tag="local-bootstrap"].type')
+	[ "$dr" = "local-bootstrap" ] && [ "$bs" = "udp" ] \
+		&& ok "$f: local resolves its hostname via local-bootstrap" \
+		|| bad "$f: local domain_resolver '$dr', bootstrap type '$bs'"
+done
+uci set treadle.dns.local_server="$local_was"
+uci commit treadle
+
 # get_config builds a preview through the same generator; make sure the
 # read-side RPC path works end to end too.
 echo '{}' | "$HANDLER" call get_config > "$OUT/get_config.json"

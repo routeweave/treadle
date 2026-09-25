@@ -1408,7 +1408,19 @@ end
 -- recursion) is the fallback when WAN is down at boot; the iface hotplug
 -- regenerates the config once WAN comes up. Shared by build_dns and
 -- build_probe_config.
-local function build_local_dns_entry(c)
+--
+-- A local_server given by hostname cannot resolve itself: its lookups go
+-- out `direct`, whose domain_resolver is `local`, and sing-box fails every
+-- query with "DNS query loopback in transport[local]" (sing-box check does
+-- not catch it). Such a server gets a `local-bootstrap` resolver at a
+-- literal IP, used only to resolve its own hostname: the WAN-assigned
+-- resolver, else 1.1.1.1. Returns the list of servers to emit, `local`
+-- first.
+local function is_ip_literal(host)
+	return host:match("^%d+%.%d+%.%d+%.%d+$") ~= nil or host:find(":", 1, true) ~= nil
+end
+
+local function build_local_dns_servers(c)
 	local local_server_value = c:get("treadle", "dns", "local_server") or ""
 	local local_addr
 	if local_server_value == "" or local_server_value == "wan" then
@@ -1420,7 +1432,17 @@ local function build_local_dns_entry(c)
 	local entry  = parse_dns_url(local_addr)
 	entry.tag    = "local"
 	entry.detour = "direct"
-	return entry
+	if is_ip_literal(entry.server) then
+		return { entry }
+	end
+	local wan_dns = lib.detect_wan_dns(jsonc)
+	entry.domain_resolver = "local-bootstrap"
+	return { entry, {
+		type   = "udp",
+		tag    = "local-bootstrap",
+		server = (wan_dns and wan_dns ~= "") and wan_dns or "1.1.1.1",
+		detour = "direct"
+	} }
 end
 
 local function build_dns(c, prepared)
@@ -1438,10 +1460,8 @@ local function build_dns(c, prepared)
 	                          and default_outbound ~= "block")
 
 	-- ── local-net: the on-router resolver (dnsmasq), for local domains only ──
-	local servers = {
-		build_local_dns_entry(c),
-		{ type = "udp", tag = "local-net", server = "127.0.0.1", server_port = 53, detour = "direct" }
-	}
+	local servers = build_local_dns_servers(c)
+	servers[#servers + 1] = { type = "udp", tag = "local-net", server = "127.0.0.1", server_port = 53, detour = "direct" }
 
 	-- ── remote: resolver for proxied traffic; blank user value falls back to
 	-- Cloudflare DoT. Detoured through the default outbound so the lookup
@@ -2174,7 +2194,7 @@ local function build_probe_config(c)
 
 	local config = {
 		log       = { level = "warn", timestamp = false },
-		dns       = { servers = { build_local_dns_entry(c) }, final = "local" },
+		dns       = { servers = build_local_dns_servers(c), final = "local" },
 		outbounds = outbounds,
 		route     = route,
 		experimental = {
