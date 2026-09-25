@@ -239,6 +239,11 @@ start_service() {
 	done
 	trap 'lock -u /var/lock/treadle-start.lock 2>/dev/null' EXIT
 
+	# A start the watchdog did not make (a settings save, a manual restart,
+	# WAN coming up, a boot) ends any round of rule-set retries, including a
+	# round it gave up on, so the next failure starts from attempt 1.
+	[ -n "${TREADLE_WATCHDOG:-}" ] || rm -f /var/run/treadle.ruleset-retry
+
 	# Ensure the directories that hold sensitive files (proxy credentials in
 	# /etc/treadle/nodes/*.json and extra.json, runtime snapshots and the
 	# generated sing-box.json in /var/etc/treadle) are 0700-owned by root.

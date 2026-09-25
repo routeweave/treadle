@@ -65,15 +65,20 @@ if [ -n "$have" ] && [ "$have" != "$built" ]; then
 		# The status-page footer caches the version; a new binary makes it stale.
 		rm -f /var/etc/treadle/.singbox-version
 		next="$cfg.next"
-		if err=$("$BUILD_CONFIG" "$next" 2>&1 >/dev/null) \
-			&& chk=$("$SINGBOX" check -c "$next" 2>&1); then
+		built_ok=0
+		checked_ok=0
+		err=$("$BUILD_CONFIG" "$next" 2>&1 >/dev/null) && built_ok=1
+		[ "$built_ok" = 1 ] && chk=$("$SINGBOX" check -c "$next" 2>&1) && checked_ok=1
+		if [ "$checked_ok" = 1 ]; then
 			mv -f "$next" "$cfg"
 			mv -f "$next.sbver" "$cfg.sbver"
 			log_build_output warn
 			log notice "config: rebuilt for '$have'"
 		else
 			rm -f "$next" "$next.sbver"
-			log_build_output err
+			# As start_service does: the builder's own lines are warnings when
+			# it succeeded and only the check rejected its output.
+			if [ "$built_ok" = 1 ]; then log_build_output warn; else log_build_output err; fi
 			[ -n "$chk" ] && echo "$chk" | logger -p daemon.err -t treadle
 			log err "config: rebuild for '$have' failed, starting on the existing config"
 		fi

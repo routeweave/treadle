@@ -67,6 +67,12 @@ FLIP=/var/run/treadle.ruleset-flip
 RETRY=/var/run/treadle.ruleset-retry
 WINDOW=900
 FLIP_TTL=3600
+# A rule-set that can never be fetched (a mistyped custom URL, a host that is
+# gone) would otherwise restart sing-box every hour for good. After this many
+# attempts, stop and say so. Any start the watchdog did not make itself (a
+# settings save, a manual restart, WAN coming up, a boot) clears the state
+# and allows a fresh round, so fixing the URL is enough.
+MAX_ATTEMPTS=6
 
 # rs_retry <reason>: flip or restore the download route and start again, or
 # return 1 while the backoff says not yet.
@@ -74,7 +80,16 @@ rs_retry() {
 	now=$(cut -d. -f1 /proc/uptime)
 	attempt=0
 	next=0
-	[ -f "$RETRY" ] && read -r attempt next < "$RETRY"
+	gave_up=
+	[ -f "$RETRY" ] && read -r attempt next gave_up < "$RETRY"
+	if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
+		if [ -z "$gave_up" ]; then
+			echo "$attempt $next gave-up" > "$RETRY"
+			logger -p daemon.err -t treadle \
+				"watchdog: $1, still failing after $attempt attempts by both routes; giving up. Check the rule-set URLs, then save or restart to retry"
+		fi
+		return 1
+	fi
 	[ "$now" -lt "${next:-0}" ] && return 1
 	attempt=$((attempt + 1))
 	wait=300
@@ -93,8 +108,8 @@ rs_retry() {
 		route="the configured route"
 	fi
 	logger -p daemon.warn -t treadle \
-		"watchdog: $1; retrying rule-set downloads via $route (attempt $attempt)"
-	/etc/init.d/treadle start >/dev/null 2>&1
+		"watchdog: $1; retrying rule-set downloads via $route (attempt $attempt of $MAX_ATTEMPTS)"
+	TREADLE_WATCHDOG=1 /etc/init.d/treadle start >/dev/null 2>&1
 	return 0
 }
 
@@ -116,7 +131,7 @@ if [ "$running" = "1" ]; then
 	# logread -t puts the epoch in the first [...] of each line; one second
 	# of slack covers the rounding on both sides.
 	early=$(logread -t 2>/dev/null | grep -F "sing-box[$pid]:" \
-		| grep -E "fetch rule-set|initial rule-set" \
+		| grep -F "fetch rule-set" \
 		| sed -n 's/^[^[]*\[\([0-9]*\)\..*/\1/p' \
 		| awk -v s="$start" -v w="$WINDOW" '$1 >= s - 1 && $1 - s <= w { n++ } END { print n + 0 }')
 	if [ "$early" -gt 0 ]; then
@@ -136,4 +151,4 @@ fi
 
 logger -p daemon.err -t treadle \
 	"watchdog: sing-box is enabled but not running — re-arming the service"
-/etc/init.d/treadle start >/dev/null 2>&1
+TREADLE_WATCHDOG=1 /etc/init.d/treadle start >/dev/null 2>&1
