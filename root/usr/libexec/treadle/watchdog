@@ -102,16 +102,26 @@ if [ "$running" = "1" ]; then
 	# shellcheck disable=SC2154  # set by config_get
 	pid=$(pgrep -f "^/usr/bin/sing-box run -c $cfg" | head -n 1)
 	[ -n "$pid" ] || exit 0
-	start=$(date -r "/proc/$pid" +%s 2>/dev/null) || exit 0
-	# Failed downloads this run logged within WINDOW of its start. logread -t
-	# puts the epoch in the first [...] of each line.
+	# The run's start as an epoch. Not /proc/<pid>'s own timestamp: that is
+	# when the entry was first looked up, which can be long after the start.
+	# Field 22 of /proc/<pid>/stat is the start in clock ticks since boot
+	# (USER_HZ, 100 on every OpenWrt target); the ") " cut skips the command
+	# name, which may contain spaces.
+	ticks=$(sed 's/^.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d ' ' -f 20)
+	[ -n "$ticks" ] || exit 0
+	epoch=$(date +%s)
+	start=$(( epoch - $(cut -d. -f1 /proc/uptime) + ticks / 100 ))
+	# Failed downloads this run logged within WINDOW of its start. Lines from
+	# before the start belong to an earlier process that had the same pid.
+	# logread -t puts the epoch in the first [...] of each line; one second
+	# of slack covers the rounding on both sides.
 	early=$(logread -t 2>/dev/null | grep -F "sing-box[$pid]:" \
 		| grep -E "fetch rule-set|initial rule-set" \
 		| sed -n 's/^[^[]*\[\([0-9]*\)\..*/\1/p' \
-		| awk -v s="$start" -v w="$WINDOW" '$1 - s <= w { n++ } END { print n + 0 }')
+		| awk -v s="$start" -v w="$WINDOW" '$1 >= s - 1 && $1 - s <= w { n++ } END { print n + 0 }')
 	if [ "$early" -gt 0 ]; then
 		rs_retry "a rule-set download failed after sing-box started"
-	elif [ $(( $(date +%s) - start )) -gt "$WINDOW" ]; then
+	elif [ $(( epoch - start )) -gt "$WINDOW" ]; then
 		rm -f "$RETRY"
 	fi
 	exit 0

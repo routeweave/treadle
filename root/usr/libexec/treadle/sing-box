@@ -35,33 +35,52 @@ cfg="$1"
 
 log() { logger -p "daemon.$1" -t treadle "$2"; }
 
+# build-config's stderr, split as start_service splits it: `info:` lines at
+# daemon.info, the rest at the given level. busybox logger logs nothing on
+# empty input, so an absent stream needs no guard.
+log_build_output() {
+	echo "$err" | grep '^treadle build-config: info: ' \
+		| sed 's/^treadle build-config: info: /config: /' | logger -p daemon.info -t treadle
+	echo "$err" | grep -v '^treadle build-config: info: ' \
+		| sed 's/^treadle build-config: /config: /' | logger -p "daemon.$1" -t treadle
+}
+
 have=$("$SINGBOX" version 2>/dev/null | head -n 1)
 built=$(cat "$cfg.sbver" 2>/dev/null)
 
 if [ -n "$have" ] && [ "$have" != "$built" ]; then
-	log notice "config: built for '${built:-unknown}', installed is '$have'; rebuilding before start"
-	tries=0
+	log notice "config: built for '${built:-unknown}', installed is '$have'"
+	# Rebuild only while holding the start lock: the init script writes the
+	# same <cfg>.next and .next.sbver. After 30 s, give up as the init script
+	# does and start on the existing config rather than race whoever holds it.
 	mkdir -p /var/lock
-	while ! lock -n "$LOCK" 2>/dev/null; do
+	locked=0
+	tries=0
+	while [ "$tries" -lt 30 ]; do
+		lock -n "$LOCK" 2>/dev/null && { locked=1; break; }
 		tries=$((tries + 1))
-		[ "$tries" -ge 30 ] && break
 		sleep 1
 	done
-	# The status-page footer caches the version; a new binary makes it stale.
-	rm -f /var/etc/treadle/.singbox-version
-	next="$cfg.next"
-	if err=$("$BUILD_CONFIG" "$next" 2>&1 >/dev/null) \
-		&& chk=$("$SINGBOX" check -c "$next" 2>&1); then
-		mv -f "$next" "$cfg"
-		mv -f "$next.sbver" "$cfg.sbver"
-		log notice "config: rebuilt for '$have'"
+	if [ "$locked" = 1 ]; then
+		# The status-page footer caches the version; a new binary makes it stale.
+		rm -f /var/etc/treadle/.singbox-version
+		next="$cfg.next"
+		if err=$("$BUILD_CONFIG" "$next" 2>&1 >/dev/null) \
+			&& chk=$("$SINGBOX" check -c "$next" 2>&1); then
+			mv -f "$next" "$cfg"
+			mv -f "$next.sbver" "$cfg.sbver"
+			log_build_output warn
+			log notice "config: rebuilt for '$have'"
+		else
+			rm -f "$next" "$next.sbver"
+			log_build_output err
+			[ -n "$chk" ] && echo "$chk" | logger -p daemon.err -t treadle
+			log err "config: rebuild for '$have' failed, starting on the existing config"
+		fi
+		lock -u "$LOCK" 2>/dev/null
 	else
-		rm -f "$next" "$next.sbver"
-		[ -n "$err" ] && echo "$err" | logger -p daemon.err -t treadle
-		[ -n "$chk" ] && echo "$chk" | logger -p daemon.err -t treadle
-		log err "config: rebuild for '$have' failed, starting on the existing config"
+		log err "config: start lock held for 30 s, not rebuilding; starting on the existing config"
 	fi
-	[ "$tries" -lt 30 ] && lock -u "$LOCK" 2>/dev/null
 fi
 
 exec "$SINGBOX" run -c "$cfg"
