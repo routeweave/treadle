@@ -136,7 +136,7 @@ elif command -v git >/dev/null 2>&1 && git -C "$REPO_DIR" rev-parse --git-dir >/
 	# --abbrev=0`: that orders candidates by distance along the commit
 	# graph and has no tie-break when several tags share one commit (as
 	# they do after a history squash), so it can return an arbitrary one —
-	# picking v0.2.0 where v1.1.3 exists builds a snapshot that sorts BELOW
+	# picking v0.11.0 where v1.1.3 exists builds a snapshot that sorts BELOW
 	# the release it actually follows, and the feed then pulls the user
 	# back to an older release on the next upgrade.
 	#

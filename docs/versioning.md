@@ -73,7 +73,7 @@ git tag --list 'v[0-9]*' --merged HEAD --sort=-v:refname | head -1
 
 `git describe --abbrev=0` is wrong here. It orders candidates by distance
 along the commit graph and has no tie-break when several tags share one
-commit (as they do after a history squash), so it can return `v0.2.0` where
+commit (as they do after a history squash), so it can return `v0.11.0` where
 `v1.1.3` exists and send the version backwards.
 
 ## The snapshot suffix is a timestamp, never a commit count
@@ -234,18 +234,18 @@ git checkout main && git pull
 
 # Record the version being released. PKG_RELEASE resets to 1 whenever
 # PKG_VERSION changes; bump PKG_RELEASE alone for a packaging-only
-# re-release of the same source, and tag that v0.2.0-r2.
-$EDITOR Makefile          # PKG_VERSION:=0.2.0
-git commit -am "Release 0.2.0"
+# re-release of the same source, and tag that v0.11.0-r2.
+$EDITOR Makefile          # PKG_VERSION:=0.11.0
+git commit -am "Release 0.11.0"
 git push
 
-git tag -a v0.2.0 -m "Release 0.2.0"
-git push origin v0.2.0
+git tag -a v0.11.0 -m "Release 0.11.0"
+git push origin v0.11.0
 ```
 
 The Makefile edit is required and the tag must match it — `release.yml` fails
 the release otherwise rather than guessing which of the two is right.
-Snapshots from the next commit on are `0.2.0_git<TS>-r1` automatically.
+Snapshots from the next commit on are `0.11.0_git<TS>-r1` automatically.
 
 ## Enforcement
 

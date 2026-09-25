@@ -97,21 +97,21 @@ release decision. Merges to `main` do not trigger releases.
 ```sh
 # After merging the changes that constitute the release to main:
 git checkout main && git pull
-$EDITOR Makefile            # PKG_VERSION:=0.2.0
-git commit -am "Release 0.2.0"
+$EDITOR Makefile            # PKG_VERSION:=0.11.0
+git commit -am "Release 0.11.0"
 git push
 
-git tag -a v0.2.0 -m "Release 0.2.0"
-git push origin v0.2.0
+git tag -a v0.11.0 -m "Release 0.11.0"
+git push origin v0.11.0
 ```
 
 Record the version being released in the Makefile first — the tag must
 match it, or `release.yml` fails the release rather than guessing which
 of the two is right. `PKG_RELEASE` resets to `1` whenever `PKG_VERSION`
 changes; bump only `PKG_RELEASE` for a packaging-only re-release of the
-same source, and tag that `v0.2.0-r2`.
+same source, and tag that `v0.11.0-r2`.
 
-Snapshots from the next commit on are `0.2.0_git<timestamp>-r1`
+Snapshots from the next commit on are `0.11.0_git<timestamp>-r1`
 automatically.
 
 ## CI
@@ -267,7 +267,7 @@ names.
 
 - One logical change per commit, with a message that explains why.
 - Test fixtures and examples use placeholder values only: `example.com`,
-  RFC 5737 addresses (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`),
+  RFC 5737 addresses (`192.0.11.0/24`, `198.51.100.0/24`, `203.0.113.0/24`),
   the all-zero UUID, `<password>`. Never paste a real subscription, node,
   or router log or config.
 
