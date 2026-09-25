@@ -43,6 +43,25 @@ var COUNTRIES = [
 	['tr', 'Turkey'], ['gb', 'United Kingdom'], ['us', 'United States']
 ];
 
+// Saved Basic servers that are no longer among the listed nodes, and how
+// many saved ones still are. Nothing is reported when the node list could
+// not be fetched, since every saved server would then look missing.
+function staleServers(nodes) {
+	var saved = uci.get('treadle', 'basic', 'server');
+	if (!Array.isArray(saved))
+		saved = saved ? [ saved ] : [];
+	var result = { missing: [], live: 0 };
+	if (!nodes.listed)
+		return result;
+	var known = {};
+	nodes.forEach(function(n) { known[n.tag] = true; });
+	saved.forEach(function(t) {
+		if (known[t]) result.live++;
+		else if (result.missing.indexOf(t) < 0) result.missing.push(t);
+	});
+	return result;
+}
+
 return baseclass.extend({
 	load: function() {
 		// One UCI snapshot + one list_outbounds RPC covering every
@@ -60,8 +79,9 @@ return baseclass.extend({
 			}
 			// A failed RPC degrades to an empty picker (the Server field
 			// then shows its "No nodes yet" hint) rather than killing the
-			// tab.
-			return callListOutbounds().catch(function() { return {}; });
+			// tab. It resolves to null so render() can tell "no nodes" from
+			// "couldn't list them" and skip the stale-server warning.
+			return callListOutbounds().catch(function() { return null; });
 		}).then(function(res) {
 			// Keep subscription nodes only (manual nodes are an Advanced
 			// concept), and filter group types out: clash-format
@@ -86,6 +106,7 @@ return baseclass.extend({
 						sub_name: subName[ob.subscription] || ob.subscription
 					});
 			});
+			nodes.listed = (res != null);
 			return nodes;
 		});
 	},
@@ -159,6 +180,23 @@ return baseclass.extend({
 			_('Default server(s)'),
 			_('Pick one server, or several. With several, sing-box auto-routes through whichever has the lowest latency.'));
 		sServer.addremove = false;
+
+		// A saved server whose node a subscription refresh renamed or
+		// dropped is not a dropdown choice, so ui.Dropdown drops it without
+		// a trace and build-config skips it too — with none left, Basic has
+		// no proxy. Say so above the picker (declared first so it renders
+		// first) instead of leaving it empty.
+		var stale = staleServers(nodes);
+		if (stale.missing.length > 0) {
+			var oStale = sServer.option(form.DummyValue, '_stale_servers');
+			oStale.renderWidget = function() {
+				return E('div', { 'class': 'alert-message warning' }, [
+					stale.live === 0
+						? _('None of the saved servers is in a subscription any more, so traffic is not being proxied. Pick one or more again: %s').format(stale.missing.join(', '))
+						: _('%d saved server(s) are no longer in any subscription and are ignored: %s').format(stale.missing.length, stale.missing.join(', '))
+				]);
+			};
+		}
 
 		var oServer = sServer.option(form.MultiValue, 'server', _('Server'));
 		// 'select' renders LuCI's checkbox-multi-select dropdown — same widget
