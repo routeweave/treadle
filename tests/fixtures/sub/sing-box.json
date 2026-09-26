@@ -7,6 +7,7 @@
     { "type": "shadowsocks", "tag": "EU-France-03", "server": "203.0.113.30", "server_port": 8388,
       "method": "aes-128-gcm", "password": "<password>" },
     { "type": "hysteria2", "tag": "EU-France-04", "server": "203.0.113.31", "server_port": 443, "password": "<password>",
+      "server_ports": ["20000:30000", "443", "50000:40000"], "hop_interval": "30s",
       "tls": { "enabled": true, "server_name": "example.com" } },
     { "type": "urltest", "tag": "auto", "outbounds": ["EU-France-01", "EU-France-02"] },
     { "type": "direct", "tag": "direct" },

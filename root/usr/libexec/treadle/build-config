@@ -686,6 +686,21 @@ end
 -- all_map. Shared with luci.treadle's parse-time filter via treadlelib.
 local OUTBOUND_RESERVED_TAGS = lib.RESERVED_TAGS
 
+-- Go duration literal: one or more <number><unit> pairs ("5s", "1m30s").
+-- ASCII units only. sing-box also accepts "µs", but %a cannot match a
+-- multi-byte rune and nothing reaching this path has a use for it.
+local DURATION_UNITS = { ns = true, us = true, ms = true, s = true, m = true, h = true }
+local function valid_duration(v)
+	if type(v) ~= "string" or v == "" then return false end
+	local pos = 1
+	while pos <= #v do
+		local num, unit, nextpos = v:match("^(%d+%.?%d*)(%a+)()", pos)
+		if not num or not DURATION_UNITS[unit] then return false end
+		pos = nextpos
+	end
+	return true
+end
+
 -- ─── subscription payload sanitiser ─────────────────────────────────────
 --
 -- Subscription bodies are remote, untrusted JSON. The legacy path spliced
@@ -753,6 +768,34 @@ local SUB_TYPE_KEYS = {
 	wireguard   = { "tag", "type", "address", "private_key", "mtu", "system_interface", "workers" },
 }
 
+-- Hysteria2 port hopping: `server_ports` is a list (or a single string) of
+-- "lo:hi" ranges. sing-quic's ParsePorts rejects an entry without a colon,
+-- which fails the outbound and with it the whole config, and turns a reversed
+-- range into an empty port list; it also reads an empty bound as 0 or 65535.
+-- Keep only explicit, ordered ranges within 1..65535 and drop the rest, so a
+-- malformed entry costs the node its hopping rather than its place in the
+-- config. Returns nil when nothing usable remains.
+local function sanitize_server_ports(v, tag)
+	if type(v) == "string" then v = { v } end
+	if type(v) ~= "table" then return nil end
+	local out = {}
+	for _, r in ipairs(v) do
+		local lo, hi
+		if type(r) == "string" then
+			lo, hi = r:match("^(%d+):(%d+)$")
+			lo, hi = tonumber(lo), tonumber(hi)
+		end
+		if lo and hi and lo >= 1 and lo <= hi and hi <= 65535 then
+			out[#out + 1] = lo .. ":" .. hi
+		else
+			io.stderr:write("treadle build-config: subscription node '"
+				.. tostring(tag) .. "': ignoring server_ports entry '"
+				.. tostring(r) .. "' (want \"lo:hi\")\n")
+		end
+	end
+	return (#out > 0) and out or nil
+end
+
 local function sanitize_subscription_node(p)
 	if type(p) ~= "table" then return nil end
 	local t = p.type
@@ -800,6 +843,12 @@ local function sanitize_subscription_node(p)
 	end
 	if type(p.obfs) == "table" then
 		out.obfs = copy_subset(p.obfs, SUB_OBFS_KEYS)
+	end
+	if t == "hysteria2" and p.server_ports ~= nil then
+		out.server_ports = sanitize_server_ports(p.server_ports, p.tag)
+		if out.server_ports and valid_duration(p.hop_interval) then
+			out.hop_interval = p.hop_interval
+		end
 	end
 	-- WireGuard: peers carry the dialled endpoint, must be sanitised in turn.
 	if t == "wireguard" and type(p.peers) == "table" then
@@ -916,21 +965,6 @@ end
 -- assembly mutates outbound tables in place.
 local function direct_outbound()
 	return { type = "direct", tag = "direct", domain_resolver = "local" }
-end
-
--- Go duration literal: one or more <number><unit> pairs ("5s", "1m30s").
--- ASCII units only. sing-box also accepts "µs", but %a cannot match a
--- multi-byte rune and nothing reaching this path has a use for it.
-local DURATION_UNITS = { ns = true, us = true, ms = true, s = true, m = true, h = true }
-local function valid_duration(v)
-	if type(v) ~= "string" or v == "" then return false end
-	local pos = 1
-	while pos <= #v do
-		local num, unit, nextpos = v:match("^(%d+%.?%d*)(%a+)()", pos)
-		if not num or not DURATION_UNITS[unit] then return false end
-		pos = nextpos
-	end
-	return true
 end
 
 -- "0", "0s", "0m0s" — the explicit opt-out. Spelled as a value the user can

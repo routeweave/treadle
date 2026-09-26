@@ -40,6 +40,8 @@ proxies:
     port: 443
     password: "<password>"
     sni: example.com
+    ports: "443,20000-30000"
+    hop-interval: 30
   - name: SG-06
     type: tuic
     server: 203.0.113.22

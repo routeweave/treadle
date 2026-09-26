@@ -788,6 +788,25 @@ local function build_clash_outbound(fields)
 		end
 		if fields["up"]   then ob.up_mbps   = tonumber(fields["up"])   end
 		if fields["down"] then ob.down_mbps = tonumber(fields["down"]) end
+		-- Port hopping. Clash writes `ports: 443,20000-30000` and
+		-- `hop-interval` in whole seconds; sing-box wants "lo:hi" ranges and
+		-- a duration. Only the syntax is translated here: build-config's
+		-- sanitiser validates the ranges for every subscription format.
+		local ports = fields["ports"]
+		if ports and ports ~= "" then
+			local list = {}
+			for item in tostring(ports):gmatch("[^,/%s]+") do
+				local lo, hi = item:match("^(%d+)%-(%d+)$")
+				if lo then
+					list[#list + 1] = lo .. ":" .. hi
+				else
+					list[#list + 1] = item:match("^%d+$") and (item .. ":" .. item) or item
+				end
+			end
+			if #list > 0 then ob.server_ports = list end
+			local hop = tonumber(fields["hop-interval"])
+			if hop and hop > 0 then ob.hop_interval = math.floor(hop) .. "s" end
+		end
 	elseif typ == "tuic" then
 		ob.uuid     = fields["uuid"]     or ""
 		ob.password = fields["password"] or ""

@@ -261,6 +261,20 @@ grep -q '"tag": "HK-01"' "$OUT/advanced___tproxy.json" \
 	&& ok "rule outbound HK-01 is in the running config" \
 	|| bad "rule outbound HK-01 missing from the running config"
 
+# Hysteria2 port hopping survives the sanitiser: the sing-box fixture's valid
+# range is kept and its bare and reversed entries dropped; the Clash fixture's
+# `ports` / `hop-interval` are translated to sing-box's shape.
+hop() {
+	jsonfilter -i "$OUT/advanced___tproxy.json" \
+		-e "@.outbounds[@.tag=\"$1\"].$2" | tr '\n' ' '
+}
+got="$(hop EU-France-04 'server_ports[*]')/$(hop EU-France-04 hop_interval)"
+[ "$got" = "20000:30000 /30s " ] && ok "sing-box hysteria2 keeps valid server_ports" \
+	|| bad "EU-France-04 server_ports/hop_interval are '$got'"
+got="$(hop SG-05 'server_ports[*]')/$(hop SG-05 hop_interval)"
+[ "$got" = "443:443 20000:30000 /30s " ] && ok "clash hysteria2 ports map to server_ports" \
+	|| bad "SG-05 server_ports/hop_interval are '$got'"
+
 # Every imported node must reach sing-box, not just a config that passes
 # check: the regex group expands to all of them, and the probe config
 # carries each one (plus its own direct outbound).
