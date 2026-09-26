@@ -257,6 +257,25 @@ local function force_tls(q)
 	return out
 end
 
+-- Hysteria2 port hopping range, as Clash's `ports` and a link's `mport`
+-- write it ("443,20000-30000", comma- or slash-separated), in sing-box's
+-- `server_ports` shape (["443:443", "20000:30000"]). Only the syntax is
+-- translated: build-config's sanitiser validates the ranges for every
+-- subscription format. Returns nil for an empty value.
+local function hy2_server_ports(s)
+	if not s or s == "" then return nil end
+	local list = {}
+	for item in tostring(s):gmatch("[^,/%s]+") do
+		local lo, hi = item:match("^(%d+)%-(%d+)$")
+		if lo then
+			list[#list + 1] = lo .. ":" .. hi
+		else
+			list[#list + 1] = item:match("^%d+$") and (item .. ":" .. item) or item
+		end
+	end
+	return (#list > 0) and list or nil
+end
+
 local function parse_proxy_uri(line)
 	line = line:match("^%s*(.-)%s*$")
 	local scheme = line:match("^([a-z][a-z0-9+%-]*)://")
@@ -410,6 +429,9 @@ local function parse_proxy_uri(line)
 		end
 		if q.up   and q.up   ~= "" then ob.up_mbps   = tonumber(q.up)   end
 		if q.down and q.down ~= "" then ob.down_mbps = tonumber(q.down) end
+		-- A link carries the hopping range but no interval, so sing-box
+		-- hops at its own default (30s, sing-quic's defaultHopInterval).
+		ob.server_ports = hy2_server_ports(q.mport)
 		return ob
 	end
 
@@ -788,22 +810,9 @@ local function build_clash_outbound(fields)
 		end
 		if fields["up"]   then ob.up_mbps   = tonumber(fields["up"])   end
 		if fields["down"] then ob.down_mbps = tonumber(fields["down"]) end
-		-- Port hopping. Clash writes `ports: 443,20000-30000` and
-		-- `hop-interval` in whole seconds; sing-box wants "lo:hi" ranges and
-		-- a duration. Only the syntax is translated here: build-config's
-		-- sanitiser validates the ranges for every subscription format.
-		local ports = fields["ports"]
-		if ports and ports ~= "" then
-			local list = {}
-			for item in tostring(ports):gmatch("[^,/%s]+") do
-				local lo, hi = item:match("^(%d+)%-(%d+)$")
-				if lo then
-					list[#list + 1] = lo .. ":" .. hi
-				else
-					list[#list + 1] = item:match("^%d+$") and (item .. ":" .. item) or item
-				end
-			end
-			if #list > 0 then ob.server_ports = list end
+		-- Port hopping; Clash writes `hop-interval` in whole seconds.
+		ob.server_ports = hy2_server_ports(fields["ports"])
+		if ob.server_ports then
 			local hop = tonumber(fields["hop-interval"])
 			if hop and hop > 0 then ob.hop_interval = math.floor(hop) .. "s" end
 		end

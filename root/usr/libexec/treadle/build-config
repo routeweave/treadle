@@ -758,7 +758,7 @@ local SUB_TYPE_KEYS = {
 	trojan      = { "tag", "type", "server", "server_port", "password", "network" },
 	shadowsocks = { "tag", "type", "server", "server_port", "method", "password", "network", "udp_over_tcp" },
 	hysteria2   = { "tag", "type", "server", "server_port", "password", "network",
-	                "up_mbps", "down_mbps", "brutal" },
+	                "up_mbps", "down_mbps" },
 	tuic        = { "tag", "type", "server", "server_port", "uuid", "password",
 	                "congestion_control", "udp_relay_mode", "zero_rtt_handshake", "network" },
 	anytls      = { "tag", "type", "server", "server_port", "password", "network",

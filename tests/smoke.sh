@@ -274,6 +274,10 @@ got="$(hop EU-France-04 'server_ports[*]')/$(hop EU-France-04 hop_interval)"
 got="$(hop SG-05 'server_ports[*]')/$(hop SG-05 hop_interval)"
 [ "$got" = "443:443 20000:30000 /30s " ] && ok "clash hysteria2 ports map to server_ports" \
 	|| bad "SG-05 server_ports/hop_interval are '$got'"
+# A link's `mport` carries the range but no interval.
+got="$(hop HK-06 'server_ports[*]')/$(hop HK-06 hop_interval)"
+[ "$got" = "20000:30000 /" ] && ok "uri hysteria2 mport maps to server_ports" \
+	|| bad "HK-06 server_ports/hop_interval are '$got'"
 
 # Every imported node must reach sing-box, not just a config that passes
 # check: the regex group expands to all of them, and the probe config
