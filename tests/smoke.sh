@@ -350,6 +350,92 @@ echo '{}' | "$HANDLER" call get_config > "$OUT/get_config.json"
 	&& ok "get_config returns a preview" \
 	|| bad "get_config: $(head -c 400 "$OUT/get_config.json")"
 
+# --- urltest member order ----------------------------------------------------
+
+step "member order"
+SNAP=/var/etc/treadle/member-order.json
+LAT=/var/etc/treadle/latency.json
+now=$(date +%s)
+members() {
+	jsonfilter -i "$OUT/$1.json" -e '@.outbounds[@.tag="ALL"].outbounds[*]' | tr '\n' ' '
+}
+snapshot() {
+	cat > "$SNAP" <<EOF
+{ "version": 1, "seed": $1, "created_at": $now, "latency": {
+  "HK-05": { "delay_ms": 70, "tested_at": $((now - 60)) },
+  "SG-01": { "delay_ms": 80, "tested_at": $((now - 60)) },
+  "EU-France-03": { "delay_ms": 90, "tested_at": $((now - 60)) },
+  "HK-06": { "delay_ms": 260, "tested_at": $((now - 60)) },
+  "HK-07": { "failed": true, "tested_at": $((now - 60)) },
+  "SG-05": { "delay_ms": 60, "tested_at": $((now - 86400)) } } }
+EOF
+}
+uci set treadle.global.mode=advanced
+uci set treadle.0123456789abcd10.urltest_member_order=latency
+uci set treadle.0123456789abcd10.urltest_max_members=6
+uci commit treadle
+
+snapshot 12345
+build "order latency"
+build "order latency again"
+cmp -s "$OUT/order_latency.json" "$OUT/order_latency_again.json" \
+	&& ok "same snapshot builds a byte-identical config" \
+	|| bad "same snapshot built two different configs"
+# Word-split on purpose: one positional parameter per member tag.
+# shellcheck disable=SC2046
+set -- $(members order_latency)
+[ "$#" -eq 6 ] && ok "max_members keeps 6 members" || bad "ALL has $# members, want 6: $*"
+first3=$(printf '%s\n' "${1:-}" "${2:-}" "${3:-}" | sort | tr '\n' ' ')
+[ "$first3" = "EU-France-03 HK-05 SG-01 " ] && ok "fastest bucket leads the group" \
+	|| bad "first three members are '$first3'"
+[ "${4:-}" = "HK-06" ] && ok "slower result ranks after the fast bucket" \
+	|| bad "fourth member is '${4:-}', want HK-06"
+case " $* " in *" HK-07 "*) bad "fresh failure HK-07 kept despite the cap" ;;
+	*) ok "fresh failure is cut by the cap" ;; esac
+servers=$(for t in "$@"; do jsonfilter -i "$OUT/order_latency.json" \
+	-e "@.outbounds[@.tag=\"$t\"].server"; done | sort -u | wc -l)
+[ "$servers" -eq 6 ] && ok "cap prefers members on distinct servers" \
+	|| bad "6 members span only $servers servers"
+
+uci set treadle.0123456789abcd10.urltest_member_order=shuffle
+uci delete treadle.0123456789abcd10.urltest_max_members
+uci commit treadle
+snapshot 111
+build "order shuffle a"
+snapshot 222
+build "order shuffle b"
+a=$(members order_shuffle_a); b=$(members order_shuffle_b)
+[ "$(echo "$a" | wc -w)" -eq "$NODES" ] && [ "$a" != "$b" ] \
+	&& ok "a new seed reorders all $NODES members" \
+	|| bad "shuffle with two seeds: '$a' vs '$b'"
+
+rm -f "$SNAP"
+build "order without snapshot"
+[ "$(members order_without_snapshot | wc -w)" -eq "$NODES" ] \
+	&& ok "no snapshot still builds a full shuffled group" \
+	|| bad "no snapshot: ALL has '$(members order_without_snapshot)'"
+
+cat > "$LAT" <<EOF
+{ "results": { "HK-05": { "delay_ms": 70, "tested_at": $now },
+  "HK-07": { "error": "timeout", "tested_at": $now } } }
+EOF
+if "$BUILD" --order-snapshot; then
+	read -r seed d f <<EOF
+$(lua -e 'local t = require("luci.jsonc").parse(io.open(arg[1]):read("*a"))
+print(t.seed or 0, t.latency["HK-05"].delay_ms, tostring(t.latency["HK-07"].failed))' "$SNAP")
+EOF
+	[ "${seed:-0}" -gt 0 ] && [ "$d" = "70" ] && [ "$f" = "true" ] \
+		&& ok "--order-snapshot records a seed and the latency results" \
+		|| bad "--order-snapshot wrote seed='$seed' HK-05='$d' HK-07 failed='$f'"
+else
+	bad "--order-snapshot failed"
+fi
+
+rm -f "$SNAP" "$LAT"
+uci delete treadle.0123456789abcd10.urltest_member_order
+uci set treadle.global.mode=basic
+uci commit treadle
+
 # --- large subscription ------------------------------------------------------
 
 step "large subscription"

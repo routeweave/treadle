@@ -658,6 +658,15 @@ local function build_node_from_uci(s)
 		if s.urltest_interrupt_exist_connections == "1" then
 			ob.interrupt_exist_connections = true
 		end
+		-- Member order and cap (0131). Internal markers, applied and
+		-- stripped in build_outbounds step 3 like _outbound_regex.
+		if s.urltest_member_order == "shuffle" or s.urltest_member_order == "latency" then
+			ob._member_order = s.urltest_member_order
+		end
+		local max_members = tonumber(s.urltest_max_members)
+		if max_members and max_members >= 1 then
+			ob._max_members = math.floor(max_members)
+		end
 
 	end
 
@@ -1152,6 +1161,79 @@ local function load_all_nodes(c)
 	return all_ordered, all_map
 end
 
+-- ─── urltest member order (0131) ────────────────────────────────────────
+--
+-- A group's member order is built from a frozen snapshot — a seed plus a
+-- copy of the latency results — never from live data, so the same inputs
+-- always give a byte-identical config and the init script's "unchanged, no
+-- restart" path still holds. The init script takes a new snapshot only when
+-- sing-box is about to restart anyway (`build-config --order-snapshot`).
+local ORDER_SNAPSHOT = "/var/etc/treadle/member-order.json"
+local LATENCY_CACHE  = "/var/etc/treadle/latency.json"
+-- A latency result older than this, relative to the snapshot, counts as
+-- unknown rather than as evidence.
+local ORDER_FRESH_S  = 6 * 3600
+
+-- Park–Miller generator: every product stays below 2^46, exact in Lua's
+-- doubles, so the sequence is the same on every platform — unlike
+-- math.random, which wraps the C library's rand().
+local PM_M = 2147483647
+
+local function pm_hash(s)
+	local h = 5381
+	for i = 1, #s do h = (h * 33 + s:byte(i)) % PM_M end
+	return h
+end
+
+local function pm_rng(seed)
+	local x = seed % (PM_M - 1) + 1
+	local function nxt(n)
+		x = (x * 16807) % PM_M
+		return x % n + 1
+	end
+	for _ = 1, 8 do nxt(1) end
+	return nxt
+end
+
+local _order_snapshot
+local function order_snapshot()
+	if _order_snapshot == nil then
+		local ok, t = pcall(jsonc.parse, read_file(ORDER_SNAPSHOT) or "")
+		_order_snapshot = (ok and type(t) == "table") and t or false
+	end
+	return _order_snapshot or nil
+end
+
+-- --order-snapshot: record a fresh seed and the current latency results.
+local function write_order_snapshot()
+	local seed
+	local f = io.open("/dev/urandom", "rb")
+	if f then
+		local b = f:read(4)
+		f:close()
+		if b and #b == 4 then
+			seed = ((b:byte(1) * 256 + b:byte(2)) * 256 + b:byte(3)) * 256 + b:byte(4)
+		end
+	end
+	seed = (seed or os.time()) % (PM_M - 1) + 1
+	local latency = {}
+	local ok, t = pcall(jsonc.parse, read_file(LATENCY_CACHE) or "")
+	if ok and type(t) == "table" and type(t.results) == "table" then
+		for tag, r in pairs(t.results) do
+			if type(r) == "table" then
+				latency[tag] = {
+					delay_ms  = tonumber(r.delay_ms),
+					tested_at = tonumber(r.tested_at),
+					failed    = (type(r.error) == "string" and r.error ~= "") or nil
+				}
+			end
+		end
+	end
+	return write_atomic(ORDER_SNAPSHOT, jsonc.stringify({
+		version = 1, seed = seed, created_at = os.time(), latency = latency
+	}))
+end
+
 local function build_outbounds(c)
 	if read_mode(c) == "basic" then return build_basic_outbounds(c) end
 
@@ -1233,6 +1315,76 @@ local function build_outbounds(c)
 		return set
 	end
 
+	-- Reorder and cap a group's members (0131). `list` order is the input
+	-- order unchanged. `shuffle` and `latency` start from the members
+	-- sorted by tag and Fisher–Yates-shuffled with a generator seeded from
+	-- the snapshot and the group tag; `latency` then stably ranks fresh
+	-- successes (in tolerance-wide buckets) before unknown or stale
+	-- members, and fresh failures last. The cap keeps the first N of that
+	-- order, members on distinct servers first.
+	local function order_members(group, members, mode, cap)
+		local out = members
+		if mode then
+			local snap = order_snapshot()
+			out = {}
+			for k, t in ipairs(members) do out[k] = t end
+			table.sort(out)
+			local rng = pm_rng((snap and tonumber(snap.seed) or 0) + pm_hash(group.tag))
+			for k = #out, 2, -1 do
+				local j = rng(k)
+				out[k], out[j] = out[j], out[k]
+			end
+			local rank = {}
+			for k, t in ipairs(out) do rank[t] = k end
+			local lat = (mode == "latency" and snap and type(snap.latency) == "table")
+				and snap.latency or {}
+			local oldest = (snap and tonumber(snap.created_at) or 0) - ORDER_FRESH_S
+			local width = tonumber(group.tolerance) or 50
+			if width < 1 then width = 1 end
+			local class, bucket = {}, {}
+			for _, t in ipairs(out) do
+				local r = lat[t]
+				class[t], bucket[t] = 1, 0
+				if type(r) == "table" and (tonumber(r.tested_at) or -1) >= oldest then
+					local d = tonumber(r.delay_ms)
+					if not r.failed and d and d > 0 then
+						class[t], bucket[t] = 0, math.floor(d / width)
+					elseif r.failed then
+						class[t] = 2
+					end
+				end
+			end
+			table.sort(out, function(a, b)
+				if class[a] ~= class[b] then return class[a] < class[b] end
+				if bucket[a] ~= bucket[b] then return bucket[a] < bucket[b] end
+				return rank[a] < rank[b]
+			end)
+		end
+		if cap and #out > cap then
+			local keep, servers, n = {}, {}, 0
+			for _, t in ipairs(out) do
+				local srv = all_map[t] and all_map[t].server
+				if n < cap and not (srv and servers[srv]) then
+					keep[t], n = true, n + 1
+					if srv then servers[srv] = true end
+				end
+			end
+			for _, t in ipairs(out) do
+				if n >= cap then break end
+				if not keep[t] then keep[t], n = true, n + 1 end
+			end
+			local capped = {}
+			for _, t in ipairs(out) do
+				if keep[t] then capped[#capped + 1] = t end
+			end
+			io.stderr:write("treadle build-config: info: urltest '" .. group.tag
+				.. "' keeps " .. #capped .. " of " .. #out .. " member(s)"
+				.. (mode and (", ordered by " .. mode) or "") .. "\n")
+			out = capped
+		end
+		return out
+	end
+
 	local sub_names = sub_display_names(c)
 
 	local worklist = {}
@@ -1242,6 +1394,8 @@ local function build_outbounds(c)
 		local tag = worklist[i]; i = i + 1
 		local ob = all_map[tag]
 		if ob and ob.type == "urltest" then
+			local member_order, max_members = ob._member_order, ob._max_members
+			ob._member_order, ob._max_members = nil, nil
 			if ob._outbound_regex then
 				local pattern  = ob._outbound_regex
 				local src_list = ob._outbound_regex_sources
@@ -1320,14 +1474,19 @@ local function build_outbounds(c)
 				for _, member in ipairs(ob.outbounds) do
 					if all_map[member] or member == "direct" then
 						kept[#kept + 1] = member
-						if not referenced[member] then
-							referenced[member] = true
-							worklist[#worklist + 1] = member
-						end
 					else
 						io.stderr:write("treadle build-config: " .. ob.type ..
 							" '" .. ob.tag ..
 							"' drops missing member '" .. tostring(member) .. "'\n")
+					end
+				end
+				-- Order and cap before referencing, so members the cap
+				-- leaves out never reach the running config.
+				kept = order_members(ob, kept, member_order, max_members)
+				for _, member in ipairs(kept) do
+					if not referenced[member] then
+						referenced[member] = true
+						worklist[#worklist + 1] = member
 					end
 				end
 				ob.outbounds = kept
@@ -2362,6 +2521,9 @@ local c = uci_mod.cursor()
 -- --probe: build the ephemeral latency-test instance config instead
 -- (side-effect-free like --preview; out_path defaults to
 -- PROBE_CONFIG_PATH, never the live config_path).
+-- --order-snapshot: write a new urltest member-order snapshot and exit
+-- without building (0131; the init script calls it only when sing-box is
+-- about to restart anyway).
 local out_path
 local args = {}
 for _, a in ipairs(arg) do args[#args + 1] = a end
@@ -2372,6 +2534,14 @@ while i <= #args do
 	elseif args[i] == "--probe" then
 		PROBE_MODE   = true
 		PREVIEW_MODE = true
+	elseif args[i] == "--order-snapshot" then
+		c:close()
+		local ok, err = write_order_snapshot()
+		if not ok then
+			io.stderr:write("treadle build-config: " .. tostring(err) .. "\n")
+			os.exit(1)
+		end
+		os.exit(0)
 	elseif not out_path then
 		out_path = args[i]
 	end

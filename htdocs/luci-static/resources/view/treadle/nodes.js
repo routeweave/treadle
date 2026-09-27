@@ -658,6 +658,27 @@ return baseclass.extend({
 		o.placeholder = '50';
 		o.depends('type', 'urltest');
 
+		o = s.taboption('group', form.ListValue, 'urltest_member_order', _('Member order'),
+			_('sing-box prefers the first members of a group whenever their latencies ' +
+			  'are within the tolerance, so in list order a group keeps using its first ' +
+			  'few nodes. Random spreads that across the group; latency puts the fastest ' +
+			  'measured nodes first, in random order among near-equals. The order changes ' +
+			  'only when sing-box restarts for another reason, never on its own.'));
+		o.modalonly = true;
+		o.value('list',    _('List order'));
+		o.value('shuffle', _('Random'));
+		o.value('latency', _('Latency, then random'));
+		o.default = 'list';
+		o.depends('type', 'urltest');
+
+		o = s.taboption('group', form.Value, 'urltest_max_members', _('Maximum members'),
+			_('Keep only this many members, in the order above, preferring nodes on ' +
+			  'different servers. Each member costs one test per interval. Empty keeps all.'));
+		o.modalonly = true;
+		o.datatype = 'range(1,1000)';
+		o.placeholder = _('all');
+		o.depends('type', 'urltest');
+
 		o = s.taboption('group', form.Flag, 'urltest_interrupt_exist_connections',
 			_('Interrupt existing connections'),
 			_('Drop connections routed through this group when its active member ' +

@@ -214,6 +214,69 @@ treadle_declare_active_watch() {
 	procd_close_instance
 }
 
+# Build the sing-box config into $1 and validate it there. Returns non-zero
+# when build-config fails or `sing-box check` rejects the result; the
+# diagnostics go to syslog either way.
+treadle_build_checked() {
+	local out="$1" cfg_warn chk level ok=0
+	if [ -x "$BUILD_CONFIG" ]; then
+		# build-config's diagnostics go to stderr; route them into syslog so
+		# degraded states (invalid extra.json, dropped DNS rules, WAN-down
+		# DNS) stay visible.
+		#
+		# Severity is per-invocation (warn after a successful run, err after
+		# a failed one), which on its own would put routine audit output (the
+		# regex-group admit counts, one line per contributing source per
+		# group, on every apply) at the same level as "dropping its nodes".
+		# Lines build-config tags `info:` are split off and logged at
+		# daemon.info so what is left at warn/err is only what actually went
+		# wrong. Two grep/logger pipelines rather than a read loop: the cost stays
+		# constant instead of forking a logger per diagnostic line, and
+		# busybox logger on empty stdin logs nothing, so an absent stream
+		# needs no guard.
+		cfg_warn=$("$BUILD_CONFIG" "$out" 2>&1 >/dev/null) || ok=1
+		if [ -n "$cfg_warn" ]; then
+			if [ "$ok" = "0" ]; then level=warn; else level=err; fi
+			echo "$cfg_warn" | grep '^treadle build-config: info: ' \
+				| sed 's/^treadle build-config: info: /config: /' \
+				| logger -p daemon.info -t treadle
+			echo "$cfg_warn" | grep -v '^treadle build-config: info: ' \
+				| sed 's/^treadle build-config: /config: /' \
+				| logger -p "daemon.$level" -t treadle
+		fi
+	else
+		treadle_log err "config: build-config is missing, cannot generate sing-box config"
+		return 1
+	fi
+	[ "$ok" = "0" ] || return 1
+
+	# Validate the generated config before handing it to procd. sing-box runs
+	# under procd `respawn`, so a config it rejects (e.g. a malformed DNS
+	# server address) would otherwise crash-loop forever.
+	if [ -x "$SINGBOX" ]; then
+		chk=$("$SINGBOX" check -c "$out" 2>&1) || {
+			[ -n "$chk" ] && echo "$chk" | logger -p daemon.err -t treadle
+			return 1
+		}
+	fi
+	return 0
+}
+
+# True when some urltest group orders its members from the snapshot (0131),
+# i.e. when taking a new snapshot can change the config at all.
+treadle_order_rotates() {
+	uci -q show treadle | grep -qE "\.urltest_member_order='(shuffle|latency)'$"
+}
+
+# Take a new member-order snapshot; returns build-config's own status.
+treadle_order_snapshot() {
+	local out rc=0
+	out=$("$BUILD_CONFIG" --order-snapshot 2>&1) || rc=1
+	[ -n "$out" ] && echo "$out" | sed 's/^treadle build-config: /config: /' \
+		| logger -p daemon.warn -t treadle
+	return "$rc"
+}
+
 start_service() {
 	# Serialise concurrent invocations. set_enabled / start / restart /
 	# set_mode / set_extra_config all commit UCI and may also fork
@@ -267,7 +330,7 @@ start_service() {
 	# tab is honest even before the user re-enables/re-syncs anything.
 	ubus call luci.treadle reconcile_subscriptions '{}' >/dev/null 2>&1
 
-	local enabled config_path mode cfg_warn chk tmp_cfg config_ok level
+	local enabled config_path mode tmp_cfg config_ok rotates order_snap
 
 	config_load treadle
 	config_get_bool enabled global enabled 0
@@ -334,45 +397,42 @@ start_service() {
 	# below) rather than returning empty-handed and having procd stop a
 	# sing-box that is currently running fine.
 	tmp_cfg="${config_path}.next"
-	config_ok=1
-	if [ -x "$BUILD_CONFIG" ]; then
-		# build-config's diagnostics go to stderr; route them into syslog so
-		# degraded states (invalid extra.json, dropped DNS rules, WAN-down
-		# DNS) stay visible.
-		#
-		# Severity is per-invocation (warn after a successful run, err after
-		# a failed one), which on its own would put routine audit output (the
-		# regex-group admit counts, one line per contributing source per
-		# group, on every apply) at the same level as "dropping its nodes".
-		# Lines build-config tags `info:` are split off and logged at
-		# daemon.info so what is left at warn/err is only what actually went
-		# wrong. Two grep/logger pipelines rather than a read loop: the cost stays
-		# constant instead of forking a logger per diagnostic line, and
-		# busybox logger on empty stdin logs nothing, so an absent stream
-		# needs no guard.
-		cfg_warn=$("$BUILD_CONFIG" "$tmp_cfg" 2>&1 >/dev/null) || config_ok=0
-		if [ -n "$cfg_warn" ]; then
-			if [ "$config_ok" = "1" ]; then level=warn; else level=err; fi
-			echo "$cfg_warn" | grep '^treadle build-config: info: ' \
-				| sed 's/^treadle build-config: info: /config: /' \
-				| logger -p daemon.info -t treadle
-			echo "$cfg_warn" | grep -v '^treadle build-config: info: ' \
-				| sed 's/^treadle build-config: /config: /' \
-				| logger -p "daemon.$level" -t treadle
-		fi
-	else
-		config_ok=0
-		treadle_log err "config: build-config is missing, cannot generate sing-box config"
+
+	# urltest member order (0131) comes from a snapshot that only changes
+	# when sing-box starts or restarts anyway, so the order rotates without
+	# ever causing a restart of its own. An initial start takes a new one
+	# before building; a restart takes one once the first build shows the
+	# config is changing regardless.
+	rotates=0
+	treadle_order_rotates && rotates=1
+	if [ "$rotates" = "1" ] && [ ! -f "$config_path" ]; then
+		treadle_order_snapshot
 	fi
 
-	# Validate the generated config before handing it to procd. sing-box runs
-	# under procd `respawn`, so a config it rejects (e.g. a malformed DNS
-	# server address) would otherwise crash-loop forever.
-	if [ "$config_ok" = "1" ] && [ -x "$SINGBOX" ]; then
-		chk=$("$SINGBOX" check -c "$tmp_cfg" 2>&1) || {
-			config_ok=0
-			[ -n "$chk" ] && echo "$chk" | logger -p daemon.err -t treadle
-		}
+	config_ok=1
+	treadle_build_checked "$tmp_cfg" || config_ok=0
+
+	if [ "$config_ok" = "1" ] && [ "$rotates" = "1" ] && [ -f "$config_path" ] \
+	   && ! cmp -s "$tmp_cfg" "$config_path"; then
+		# sing-box restarts anyway: rebuild with a fresh snapshot. Keep the
+		# checked first build and the old snapshot, and fall back to both if
+		# the second build fails.
+		order_snap=/var/etc/treadle/member-order.json
+		mv -f "$tmp_cfg" "$tmp_cfg.first"
+		mv -f "$tmp_cfg.sbver" "$tmp_cfg.first.sbver" 2>/dev/null
+		[ -f "$order_snap" ] && cp -p "$order_snap" "$order_snap.prev"
+		if treadle_order_snapshot && treadle_build_checked "$tmp_cfg"; then
+			rm -f "$tmp_cfg.first" "$tmp_cfg.first.sbver" "$order_snap.prev"
+		else
+			treadle_log warn "config: rebuild with a new member order failed, keeping the previous order"
+			mv -f "$tmp_cfg.first" "$tmp_cfg"
+			mv -f "$tmp_cfg.first.sbver" "$tmp_cfg.sbver" 2>/dev/null
+			if [ -f "$order_snap.prev" ]; then
+				mv -f "$order_snap.prev" "$order_snap"
+			else
+				rm -f "$order_snap"
+			fi
+		fi
 	fi
 
 	if [ "$config_ok" != "1" ]; then
