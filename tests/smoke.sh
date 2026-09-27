@@ -421,8 +421,8 @@ cat > "$LAT" <<EOF
 EOF
 if "$BUILD" --order-snapshot; then
 	read -r seed d f <<EOF
-$(lua -e 'local t = require("luci.jsonc").parse(io.open(arg[1]):read("*a"))
-print(t.seed or 0, t.latency["HK-05"].delay_ms, tostring(t.latency["HK-07"].failed))' "$SNAP")
+$(lua -e 'local t = require("luci.jsonc").parse(io.read("*a"))
+print(t.seed or 0, t.latency["HK-05"].delay_ms, tostring(t.latency["HK-07"].failed))' < "$SNAP")
 EOF
 	[ "${seed:-0}" -gt 0 ] && [ "$d" = "70" ] && [ "$f" = "true" ] \
 		&& ok "--order-snapshot records a seed and the latency results" \
