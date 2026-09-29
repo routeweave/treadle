@@ -4,7 +4,7 @@
 #
 # End-to-end smoke test, run as root inside an OpenWrt rootfs container:
 #
-#   docker run --rm -v "$PWD:/work" openwrt/rootfs:x86_64-25.12.4 \
+#   docker run --rm -v "$PWD:/work" openwrt/rootfs:x86_64-25.12.5 \
 #       /bin/sh /work/tests/smoke.sh
 #
 # Installs the package built into dist/ (apk or ipk, whichever the image's
