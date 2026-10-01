@@ -631,6 +631,11 @@ return baseclass.extend({
 		var oInsec = s.taboption('tls', form.Flag, 'tls_insecure', _('Allow insecure'));
 		oInsec.modalonly = true;
 
+		var oAlpn = s.taboption('tls', form.DynamicList, 'tls_alpn', _('ALPN'),
+			_('Leave empty unless the server requires specific protocols.'));
+		['h2','http/1.1','h3'].forEach(function(v) { oAlpn.value(v, v); });
+		oAlpn.modalonly = true;
+
 		var oFp = s.taboption('tls', form.ListValue, 'tls_fingerprint', _('uTLS fingerprint'));
 		oFp.value('', _('Default'));
 		['chrome','firefox','safari','ios','android','edge','360','qq','random','randomized'].forEach(function(v) {
@@ -651,7 +656,7 @@ return baseclass.extend({
 		// ("unsupported usage for uTLS" / "… for reality" on every dial), so
 		// they are not offered for them — build-config drops them for those
 		// types regardless.
-		[oSni, oInsec, oFp, oReality].forEach(function(opt) {
+		[oSni, oInsec, oAlpn, oFp, oReality].forEach(function(opt) {
 			var forcedTls = (opt === oFp || opt === oReality)
 				? ['trojan','anytls']
 				: ['trojan','hysteria2','tuic','anytls'];

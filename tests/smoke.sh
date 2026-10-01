@@ -457,11 +457,20 @@ set treadle.0123456789abcd60.tls_sni=example.com
 set treadle.0123456789abcd60.tls_reality=1
 set treadle.0123456789abcd60.tls_reality_public_key=$REALITY_PK
 set treadle.0123456789abcd60.tls_reality_short_id=0123abcd
+set treadle.0123456789abcd61=node
+set treadle.0123456789abcd61.type=trojan
+set treadle.0123456789abcd61.tag=MANUAL-TROJAN
+set treadle.0123456789abcd61.server=example.com
+set treadle.0123456789abcd61.server_port=443
+set treadle.0123456789abcd61.password=pw
+add_list treadle.0123456789abcd61.tls_alpn=h2
+add_list treadle.0123456789abcd61.tls_alpn=http/1.1
 set treadle.0123456789abcd6f=node
 set treadle.0123456789abcd6f.type=urltest
 set treadle.0123456789abcd6f.tag=MANUAL
 set treadle.0123456789abcd6f.urltest_mode=manual
 add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-REALITY
+add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-TROJAN
 set treadle.global.mode=advanced
 set treadle.routing.final_outbound=MANUAL
 commit treadle
@@ -474,6 +483,9 @@ mtls() { jsonfilter -i "$man" -e "@.outbounds[@.tag=\"$1\"].tls.$2"; }
 	&& [ "$(mtls MANUAL-REALITY utls.fingerprint)" = "chrome" ] \
 	&& ok "REALITY node carries its keys, with uTLS defaulted to chrome" \
 	|| bad "REALITY node tls: $(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-REALITY"].tls')"
+[ "$(mtls MANUAL-TROJAN 'alpn[*]' | tr '\n' ' ')" = "h2 http/1.1 " ] \
+	&& ok "ALPN list reaches the node's tls block" \
+	|| bad "ALPN: $(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-TROJAN"].tls')"
 
 # Share-link import: parse_node_link maps a link onto the editor's fields
 # and names whatever the editor cannot hold.
@@ -493,8 +505,8 @@ link "vless://00000000-0000-0000-0000-000000000000@example.com:443?security=real
 link "trojan://pw@example.com:443?type=ws&path=%2Fws&host=example.org&alpn=h2#EU-France-01"
 [ "$(lf transport_type)" = ws ] && [ "$(lf transport_ws_path)" = /ws ] \
 	&& [ "$(lf transport_ws_host)" = example.org ] \
-	&& [ "$(jsonfilter -i "$OUT/link.json" -e '@.dropped[*]')" = ALPN ] \
-	&& ok "link import: WebSocket link fills the transport, reports what it drops" \
+	&& [ "$(lf 'tls_alpn[0]')" = h2 ] \
+	&& ok "link import: WebSocket link fills the transport and ALPN" \
 	|| bad "link import (ws): $(cat "$OUT/link.json")"
 link "not a link"
 [ -n "$(jsonfilter -i "$OUT/link.json" -e '@.error')" ] \
@@ -502,6 +514,7 @@ link "not a link"
 
 uci batch <<'EOF'
 delete treadle.0123456789abcd60
+delete treadle.0123456789abcd61
 delete treadle.0123456789abcd6f
 set treadle.routing.final_outbound=ALL
 set treadle.global.mode=basic

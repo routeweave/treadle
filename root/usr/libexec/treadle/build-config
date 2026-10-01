@@ -458,6 +458,8 @@ local function build_tls_from_uci(s, always_on)
 	local tls = { enabled = true }
 	if s.tls_sni and s.tls_sni ~= "" then tls.server_name = s.tls_sni end
 	if s.tls_insecure == "1" then tls.insecure = true end
+	local alpn = lib.uci_list(s, "tls_alpn")
+	if #alpn > 0 then tls.alpn = alpn end
 	-- nodes.js hides the fingerprint picker for QUIC protocols; the guard
 	-- here also covers a value left behind by an earlier type change or set
 	-- over SSH.

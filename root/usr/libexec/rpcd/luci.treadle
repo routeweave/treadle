@@ -482,6 +482,7 @@ end
 -- the link's settings the editor has no field for, so the UI can say what
 -- did not carry over instead of dropping it silently.
 local function outbound_to_uci(ob)
+	-- A value is a string, or an array for a UCI list option (tls_alpn).
 	local f, dropped = {}, {}
 	local function put(k, v)
 		if v ~= nil and v ~= "" then f[k] = tostring(v) end
@@ -517,7 +518,7 @@ local function outbound_to_uci(ob)
 			put("tls_reality_public_key", tls.reality.public_key)
 			put("tls_reality_short_id", tls.reality.short_id)
 		end
-		if tls.alpn then drop("ALPN") end
+		if type(tls.alpn) == "table" and #tls.alpn > 0 then f.tls_alpn = tls.alpn end
 	end
 
 	local tr = ob.transport
