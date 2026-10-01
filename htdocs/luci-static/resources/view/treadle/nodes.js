@@ -641,6 +641,19 @@ return baseclass.extend({
 		o.modalonly = true;
 		depAny(o, 'type', TRANSPORT_TYPES, { transport_type: 'ws' });
 
+		o = s.taboption('transport', form.Value, 'transport_ws_max_early_data', _('WS early data'),
+			_('Bytes of the first payload sent with the handshake. Empty or 0 disables.'));
+		o.modalonly = true;
+		o.datatype = 'uinteger';
+		o.placeholder = '2048';
+		depAny(o, 'type', TRANSPORT_TYPES, { transport_type: 'ws' });
+
+		o = s.taboption('transport', form.Value, 'transport_ws_early_data_header', _('WS early data header'),
+			_('Empty sends early data in the path; Xray servers expect Sec-WebSocket-Protocol.'));
+		o.modalonly = true;
+		o.placeholder = 'Sec-WebSocket-Protocol';
+		depAny(o, 'type', TRANSPORT_TYPES, { transport_type: 'ws' });
+
 		o = s.taboption('transport', form.Value, 'transport_grpc_service', _('gRPC service'));
 		o.modalonly = true;
 		depAny(o, 'type', TRANSPORT_TYPES, { transport_type: 'grpc' });

@@ -539,6 +539,13 @@ local function build_transport_from_uci(s)
 		if s.transport_ws_host and s.transport_ws_host ~= "" then
 			tr.headers = { Host = s.transport_ws_host }
 		end
+		local med = tonumber(s.transport_ws_max_early_data)
+		if med and med > 0 then
+			tr.max_early_data = med
+			if s.transport_ws_early_data_header and s.transport_ws_early_data_header ~= "" then
+				tr.early_data_header_name = s.transport_ws_early_data_header
+			end
+		end
 		return tr
 	end
 	if t == "grpc" then

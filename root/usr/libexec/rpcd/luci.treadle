@@ -535,7 +535,8 @@ local function outbound_to_uci(ob)
 			f.transport_type = "ws"
 			put("transport_ws_path", tr.path)
 			put("transport_ws_host", type(tr.headers) == "table" and tr.headers.Host or nil)
-			if tr.max_early_data then drop("WebSocket early data") end
+			put("transport_ws_max_early_data", tr.max_early_data)
+			put("transport_ws_early_data_header", tr.early_data_header_name)
 		elseif tr.type == "grpc" then
 			f.transport_type = "grpc"
 			put("transport_grpc_service", tr.service_name)

@@ -496,6 +496,16 @@ add_list treadle.0123456789abcd64.hy2_server_ports=40000:39000
 set treadle.0123456789abcd64.hy2_hop_interval=1m
 set treadle.0123456789abcd64.hy2_up_mbps=50
 set treadle.0123456789abcd64.hy2_down_mbps=200
+set treadle.0123456789abcd65=node
+set treadle.0123456789abcd65.type=vmess
+set treadle.0123456789abcd65.tag=MANUAL-WS
+set treadle.0123456789abcd65.server=example.com
+set treadle.0123456789abcd65.server_port=443
+set treadle.0123456789abcd65.uuid=00000000-0000-0000-0000-000000000000
+set treadle.0123456789abcd65.transport_type=ws
+set treadle.0123456789abcd65.transport_ws_path=/ws
+set treadle.0123456789abcd65.transport_ws_max_early_data=2048
+set treadle.0123456789abcd65.transport_ws_early_data_header=Sec-WebSocket-Protocol
 set treadle.0123456789abcd6f=node
 set treadle.0123456789abcd6f.type=urltest
 set treadle.0123456789abcd6f.tag=MANUAL
@@ -505,6 +515,7 @@ add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-TROJAN
 add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-XHTTP
 add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-ANYTLS
 add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-HY2
+add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-WS
 set treadle.global.mode=advanced
 set treadle.routing.final_outbound=MANUAL
 commit treadle
@@ -544,6 +555,10 @@ mob() { jsonfilter -i "$man" -e "@.outbounds[@.tag=\"$1\"].$2"; }
 	&& [ "$(mob MANUAL-HY2 up_mbps)" = 50 ] && [ "$(mob MANUAL-HY2 down_mbps)" = 200 ] \
 	&& ok "Hysteria2 port hopping and bandwidth reach the node, the reversed range dropped" \
 	|| bad "Hysteria2: $(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-HY2"]')"
+[ "$(mtr MANUAL-WS max_early_data)" = 2048 ] \
+	&& [ "$(mtr MANUAL-WS early_data_header_name)" = Sec-WebSocket-Protocol ] \
+	&& ok "WebSocket early data reaches the transport" \
+	|| bad "WS early data: $(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-WS"].transport')"
 
 link() {
 	printf '{"link":"%s"}' "$1" | "$HANDLER" call parse_node_link > "$OUT/link.json"
@@ -589,6 +604,7 @@ delete treadle.0123456789abcd61
 delete treadle.0123456789abcd62
 delete treadle.0123456789abcd63
 delete treadle.0123456789abcd64
+delete treadle.0123456789abcd65
 delete treadle.0123456789abcd6f
 set treadle.routing.final_outbound=ALL
 set treadle.global.mode=basic
