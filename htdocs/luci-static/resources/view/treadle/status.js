@@ -42,6 +42,7 @@
 'require baseclass';
 'require rpc';
 'require ui';
+'require dom';
 'require uci';
 'require view.treadle.lib.subs as subs';
 'require view.treadle.lib.badges as badges';
@@ -253,6 +254,23 @@ function runtimeInfo(outbounds) {
 // Trigger a browser download of the given JSON text as sing-box.json. Uses a
 // Blob URL rather than a data: URL — large configs would otherwise blow past
 // the data-URL length limit some browsers still enforce.
+// Warning for what the last build left out because the installed sing-box
+// cannot run it (get_status `compat`, from build-config). Each feature key
+// names what to upgrade; an unknown key still gets a generic line.
+function renderCompat(compat) {
+	if (!Array.isArray(compat) || !compat.length)
+		return [];
+	var msgs = {
+		ech: _('ECH needs a sing-box built with Go 1.24 or later, as in OpenWrt 25.12. The installed one is older, so these nodes are left out: %s')
+	};
+	return [ E('div', { 'class': 'alert-message warning' }, compat.map(function(c) {
+		var items = Array.isArray(c.items) ? c.items.join(', ') : '';
+		return E('p', {}, [ msgs[c.key]
+			? msgs[c.key].format(items)
+			: _('The installed sing-box cannot run %s, so these are left out: %s').format(c.key, items) ]);
+	})) ];
+}
+
 function downloadConfig(json) {
 	var blob = new Blob([ json ], { type: 'application/json' });
 	var url  = URL.createObjectURL(blob);
@@ -326,6 +344,11 @@ return baseclass.extend({
 					'style': 'display:flex; align-items:center; gap:0.6em;'
 				}, this._renderEnable(status.enabled))
 			]),
+
+			// ── Version warning ────────────────────────────────────────
+			// Shown only while the config leaves something out for the
+			// installed sing-box; refreshed by _updateStatus.
+			E('div', { 'id': 'treadle-compat' }, renderCompat(status.compat)),
 
 			// ── Get started ────────────────────────────────────────────
 			// First-run checklist, shown only while nothing at all is
@@ -984,6 +1007,10 @@ return baseclass.extend({
 		// handler — that would loop back into set_enabled.
 		var cb = document.getElementById('treadle-enable-checkbox');
 		if (cb) cb.checked = !!status.enabled;
+
+		var compatBox = document.getElementById('treadle-compat');
+		if (compatBox)
+			dom.content(compatBox, renderCompat(status.compat));
 
 		// Show/hide the runtime section as a whole. When flipping from
 		// disabled→enabled, the section was previously hidden but its

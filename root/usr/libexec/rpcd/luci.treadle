@@ -1837,12 +1837,22 @@ local methods = {
 			local pf = io.open("/var/run/treadle.paused", "r")
 			if pf then paused = true; pf:close() end
 
+			-- What the last build left out because this sing-box cannot run
+			-- it (build-config writes it; absent when nothing was).
+			local compat
+			local raw = lib.read_file(lib.COMPAT_PATH)
+			if raw and _jsonc_ok then
+				local ok, v = pcall(_jsonc.parse, raw)
+				if ok and type(v) == "table" and #v > 0 then compat = v end
+			end
+
 			return {
 				enabled = enabled,
 				running = running,
 				paused = paused,
 				version = version,
-				mode    = mode
+				mode    = mode,
+				compat  = compat
 			}
 		end
 	},

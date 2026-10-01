@@ -163,6 +163,13 @@ end
 -- the subscription's UCI section name.
 M.NODES_DIR = "/etc/treadle/nodes"
 
+-- What the last build left out because the installed sing-box cannot run
+-- it: a JSON array of { key = <feature>, items = { <node tag>, … } },
+-- absent when nothing was. Written by build-config, read by luci.treadle's
+-- get_status for the Status page's version warning. On tmpfs with the
+-- config it describes.
+M.COMPAT_PATH = "/var/etc/treadle/compat.json"
+
 -- Ephemeral latency-test instance (--probe mode): clash API host:port and
 -- config path. 9091 so the probe instance can run alongside the live
 -- instance's API on 9090. Shared by build-config (emits the config) and

@@ -593,6 +593,16 @@ else
 		&& ok "ECH nodes are skipped on a sing-box built without ECH" \
 		|| { bad "ECH nodes on a build without ECH"; sed 's/^/    /' "$OUT/build.log"; }
 fi
+echo '{}' | "$HANDLER" call get_status > "$OUT/status-compat.json"
+compat_n=$(jsonfilter -i "$OUT/status-compat.json" -e '@.compat[@.key="ech"].items[*]' | wc -l)
+if [ "$SB_ECH" = 1 ]; then
+	[ -z "$(jsonfilter -i "$OUT/status-compat.json" -e '@.compat')" ] \
+		&& ok "get_status reports nothing left out for this sing-box" \
+		|| bad "get_status compat: $(cat "$OUT/status-compat.json")"
+else
+	[ "$compat_n" -eq 3 ] && ok "get_status reports the 3 ECH nodes left out, for the Status warning" \
+		|| bad "get_status compat: $(cat "$OUT/status-compat.json")"
+fi
 mtr() { jsonfilter -i "$man" -e "@.outbounds[@.tag=\"$1\"].transport.$2"; }
 [ "$(mtr MANUAL-TROJAN type)" = httpupgrade ] && [ "$(mtr MANUAL-TROJAN path)" = /up ] \
 	&& [ "$(mtr MANUAL-TROJAN host)" = example.org ] \

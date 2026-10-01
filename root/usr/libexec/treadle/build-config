@@ -494,6 +494,16 @@ local QUIC_PROTOCOLS = {
 	tuic      = true,
 }
 
+-- Items this build leaves out because the installed sing-box cannot run
+-- them, by feature key; written to lib.COMPAT_PATH at the end of a build so
+-- the Status page can say what to upgrade. A feature gated on a capability
+-- flag records what it skips here.
+local UNSUPPORTED = {}
+local function note_unsupported(key, item)
+	UNSUPPORTED[key] = UNSUPPORTED[key] or {}
+	table.insert(UNSUPPORTED[key], tostring(item))
+end
+
 -- True when a node asks for ECH that the installed sing-box cannot do
 -- (SB.ech: built with Go older than 1.24), which would fail the whole
 -- config. The caller skips the node: dropping only the ECH block would send
@@ -505,6 +515,7 @@ local function ech_unsupported(ob)
 	end
 	io.stderr:write("treadle build-config: node '" .. tostring(ob.tag)
 		.. "' uses ECH, which this sing-box build cannot (needs Go 1.24+); skipping\n")
+	note_unsupported("ech", ob.tag)
 	return true
 end
 
@@ -2671,6 +2682,21 @@ local ok, err = write_atomic(out_path, json)
 if not ok then
 	io.stderr:write("treadle build-config: " .. err .. "\n")
 	os.exit(1)
+end
+
+-- The probe instance's config is not what runs, so only a real build
+-- reports what it left out.
+if not PROBE_MODE then
+	local compat = {}
+	for key, items in pairs(UNSUPPORTED) do
+		compat[#compat + 1] = { key = key, items = items }
+	end
+	if #compat > 0 then
+		table.sort(compat, function(a, b) return a.key < b.key end)
+		write_atomic(lib.COMPAT_PATH, jsonc.stringify(compat))
+	else
+		os.remove(lib.COMPAT_PATH)
+	end
 end
 
 -- Record the sing-box version this config was built for next to it, as
