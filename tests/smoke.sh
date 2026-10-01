@@ -478,6 +478,13 @@ set treadle.0123456789abcd62.tls_enabled=1
 set treadle.0123456789abcd62.tls_sni=example.org
 set treadle.0123456789abcd62.transport_type=xhttp
 set treadle.0123456789abcd62.transport_xhttp_path=/x
+set treadle.0123456789abcd63=node
+set treadle.0123456789abcd63.type=anytls
+set treadle.0123456789abcd63.tag=MANUAL-ANYTLS
+set treadle.0123456789abcd63.server=example.com
+set treadle.0123456789abcd63.server_port=443
+set treadle.0123456789abcd63.password=pw
+set treadle.0123456789abcd63.transport_type=ws
 set treadle.0123456789abcd6f=node
 set treadle.0123456789abcd6f.type=urltest
 set treadle.0123456789abcd6f.tag=MANUAL
@@ -485,6 +492,7 @@ set treadle.0123456789abcd6f.urltest_mode=manual
 add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-REALITY
 add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-TROJAN
 add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-XHTTP
+add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-ANYTLS
 set treadle.global.mode=advanced
 set treadle.routing.final_outbound=MANUAL
 commit treadle
@@ -515,6 +523,11 @@ referer=$(mtr MANUAL-XHTTP 'headers.Referer[0]')
 
 # Share-link import: parse_node_link maps a link onto the editor's fields
 # and names whatever the editor cannot hold.
+[ -n "$(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-ANYTLS"].type')" ] \
+	&& [ -z "$(mtr MANUAL-ANYTLS type)" ] \
+	&& ok "AnyTLS node is built without the transport sing-box rejects on it" \
+	|| bad "AnyTLS: $(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-ANYTLS"]')"
+
 link() {
 	printf '{"link":"%s"}' "$1" | "$HANDLER" call parse_node_link > "$OUT/link.json"
 }
@@ -552,6 +565,7 @@ uci batch <<'EOF'
 delete treadle.0123456789abcd60
 delete treadle.0123456789abcd61
 delete treadle.0123456789abcd62
+delete treadle.0123456789abcd63
 delete treadle.0123456789abcd6f
 set treadle.routing.final_outbound=ALL
 set treadle.global.mode=basic

@@ -88,7 +88,8 @@ var formatLatency = badges.formatLatency;
 // Types with a server endpoint. `direct` is excluded — a direct outbound has
 // no server field (build-config drops it); it is just an optional override.
 var SERVER_TYPES    = ['vless','vmess','trojan','shadowsocks','hysteria2','tuic','anytls','wireguard','socks'];
-var TRANSPORT_TYPES = ['vless','vmess','trojan','anytls'];
+// AnyTLS is not here: sing-box's anytls outbound has no transport field.
+var TRANSPORT_TYPES = ['vless','vmess','trojan'];
 
 // Add one depends() clause per accepted value (LuCI ORs separate calls).
 // `extra` keys are ANDed into every clause.

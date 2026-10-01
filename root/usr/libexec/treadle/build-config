@@ -612,11 +612,12 @@ local function build_node_from_uci(s)
 		if tls then ob.tls = tls end
 
 	elseif typ == "anytls" then
+		-- No transport: sing-box's anytls outbound has no such field and
+		-- rejects the whole config over one ("unknown field"), so a
+		-- transport_* value left from an earlier type change is ignored.
 		ob.password = s.password or ""
 		local tls = build_tls_from_uci(s, true)
 		if tls then ob.tls = tls end
-		local tr = build_transport_from_uci(s)
-		if tr then ob.transport = tr end
 
 	elseif typ == "socks" then
 		ob.version = "5"
