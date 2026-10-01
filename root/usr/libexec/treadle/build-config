@@ -512,6 +512,18 @@ local function build_transport_from_uci(s)
 		end
 		return tr
 	end
+	-- Xray's XHTTP in stream-one mode, mapped onto sing-box's `http`
+	-- transport exactly as subscription nodes are (treadlelib's
+	-- map_xhttp_transport), with the x_padding header rolled per build. The
+	-- padding hangs off the host, so an empty host falls back to the SNI and
+	-- then the server address, as Xray's own client does.
+	if t == "xhttp" then
+		local host = s.transport_xhttp_host
+		if not host or host == "" then host = s.tls_sni end
+		if not host or host == "" then host = s.server end
+		local tr = lib.map_xhttp_transport(s.transport_xhttp_path, host, "stream-one")
+		return lib.apply_xhttp_padding(tr)
+	end
 	if t == "httpupgrade" then
 		local tr = { type = "httpupgrade" }
 		if s.transport_httpupgrade_path and s.transport_httpupgrade_path ~= "" then

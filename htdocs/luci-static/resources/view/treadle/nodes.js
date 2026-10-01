@@ -594,6 +594,7 @@ return baseclass.extend({
 		o.value('grpc', 'gRPC');
 		o.value('http', 'HTTP/2');
 		o.value('httpupgrade', 'HTTPUpgrade');
+		o.value('xhttp', _('XHTTP (stream-one)'));
 		o.modalonly = true;
 		o.optional = true;
 		depAny(o, 'type', TRANSPORT_TYPES);
@@ -628,6 +629,20 @@ return baseclass.extend({
 		o = s.taboption('transport', form.Value, 'transport_httpupgrade_host', _('HTTPUpgrade host'));
 		o.modalonly = true;
 		depAny(o, 'type', TRANSPORT_TYPES, { transport_type: 'httpupgrade' });
+
+		// XHTTP is Xray's transport; only its stream-one mode has the wire
+		// shape of sing-box's `http` transport, which build-config maps it
+		// onto. packet-up and stream-up servers cannot be reached.
+		o = s.taboption('transport', form.Value, 'transport_xhttp_path', _('XHTTP path'),
+			_('Only servers that accept stream-one mode work.'));
+		o.modalonly = true;
+		o.placeholder = '/';
+		depAny(o, 'type', TRANSPORT_TYPES, { transport_type: 'xhttp' });
+
+		o = s.taboption('transport', form.Value, 'transport_xhttp_host', _('XHTTP host'));
+		o.modalonly = true;
+		o.placeholder = _('SNI, or the server address');
+		depAny(o, 'type', TRANSPORT_TYPES, { transport_type: 'xhttp' });
 
 		// ── TLS ─────────────────────────────────────────────────────────
 		o = s.taboption('tls', form.Flag, 'tls_enabled', _('TLS'));

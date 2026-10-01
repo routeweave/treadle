@@ -524,7 +524,9 @@ local function outbound_to_uci(ob)
 	local tr = ob.transport
 	if type(tr) == "table" then
 		if tr._xhttp then
-			drop("XHTTP transport")
+			f.transport_type = "xhttp"
+			put("transport_xhttp_path", tr.path)
+			put("transport_xhttp_host", type(tr.host) == "table" and tr.host[1] or tr.host)
 		elseif tr.type == "ws" then
 			f.transport_type = "ws"
 			put("transport_ws_path", tr.path)

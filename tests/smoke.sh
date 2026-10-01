@@ -468,12 +468,23 @@ add_list treadle.0123456789abcd61.tls_alpn=http/1.1
 set treadle.0123456789abcd61.transport_type=httpupgrade
 set treadle.0123456789abcd61.transport_httpupgrade_path=/up
 set treadle.0123456789abcd61.transport_httpupgrade_host=example.org
+set treadle.0123456789abcd62=node
+set treadle.0123456789abcd62.type=vless
+set treadle.0123456789abcd62.tag=MANUAL-XHTTP
+set treadle.0123456789abcd62.server=192.0.2.1
+set treadle.0123456789abcd62.server_port=443
+set treadle.0123456789abcd62.uuid=00000000-0000-0000-0000-000000000000
+set treadle.0123456789abcd62.tls_enabled=1
+set treadle.0123456789abcd62.tls_sni=example.org
+set treadle.0123456789abcd62.transport_type=xhttp
+set treadle.0123456789abcd62.transport_xhttp_path=/x
 set treadle.0123456789abcd6f=node
 set treadle.0123456789abcd6f.type=urltest
 set treadle.0123456789abcd6f.tag=MANUAL
 set treadle.0123456789abcd6f.urltest_mode=manual
 add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-REALITY
 add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-TROJAN
+add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-XHTTP
 set treadle.global.mode=advanced
 set treadle.routing.final_outbound=MANUAL
 commit treadle
@@ -494,6 +505,13 @@ mtr() { jsonfilter -i "$man" -e "@.outbounds[@.tag=\"$1\"].transport.$2"; }
 	&& [ "$(mtr MANUAL-TROJAN host)" = example.org ] \
 	&& ok "HTTPUpgrade transport is built with its path and host" \
 	|| bad "HTTPUpgrade: $(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-TROJAN"].transport')"
+referer=$(mtr MANUAL-XHTTP 'headers.Referer[0]')
+[ "$(mtr MANUAL-XHTTP type)" = http ] && [ "$(mtr MANUAL-XHTTP method)" = POST ] \
+	&& [ "$(mtr MANUAL-XHTTP path)" = /x ] && [ "$(mtr MANUAL-XHTTP 'host[0]')" = example.org ] \
+	&& [ "${referer#https://example.org/?x_padding=x}" != "$referer" ] \
+	&& [ -z "$(mtr MANUAL-XHTTP _xhttp)" ] \
+	&& ok "XHTTP maps onto http with padding, host falling back to the SNI" \
+	|| bad "XHTTP: $(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-XHTTP"].transport')"
 
 # Share-link import: parse_node_link maps a link onto the editor's fields
 # and names whatever the editor cannot hold.
@@ -521,6 +539,11 @@ link "vless://00000000-0000-0000-0000-000000000000@example.com:443?security=tls&
 	&& [ "$(lf transport_httpupgrade_host)" = example.org ] \
 	&& ok "link import: HTTPUpgrade link fills the transport" \
 	|| bad "link import (httpupgrade): $(cat "$OUT/link.json")"
+link "vless://00000000-0000-0000-0000-000000000000@example.com:443?security=tls&type=xhttp&mode=stream-one&path=%2Fx&host=example.org#HK-01"
+[ "$(lf transport_type)" = xhttp ] && [ "$(lf transport_xhttp_path)" = /x ] \
+	&& [ "$(lf transport_xhttp_host)" = example.org ] \
+	&& ok "link import: XHTTP link fills the transport" \
+	|| bad "link import (xhttp): $(cat "$OUT/link.json")"
 link "not a link"
 [ -n "$(jsonfilter -i "$OUT/link.json" -e '@.error')" ] \
 	&& ok "link import: garbage is an error" || bad "link import (garbage): $(cat "$OUT/link.json")"
@@ -528,6 +551,7 @@ link "not a link"
 uci batch <<'EOF'
 delete treadle.0123456789abcd60
 delete treadle.0123456789abcd61
+delete treadle.0123456789abcd62
 delete treadle.0123456789abcd6f
 set treadle.routing.final_outbound=ALL
 set treadle.global.mode=basic
