@@ -537,6 +537,10 @@ local function outbound_to_uci(ob)
 			f.transport_type = "http"
 			put("transport_http_path", tr.path)
 			put("transport_http_host", type(tr.host) == "table" and tr.host[1] or tr.host)
+		elseif tr.type == "httpupgrade" then
+			f.transport_type = "httpupgrade"
+			put("transport_httpupgrade_path", tr.path)
+			put("transport_httpupgrade_host", tr.host)
 		else
 			drop(tostring(tr.type) .. " transport")
 		end

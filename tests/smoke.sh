@@ -465,6 +465,9 @@ set treadle.0123456789abcd61.server_port=443
 set treadle.0123456789abcd61.password=pw
 add_list treadle.0123456789abcd61.tls_alpn=h2
 add_list treadle.0123456789abcd61.tls_alpn=http/1.1
+set treadle.0123456789abcd61.transport_type=httpupgrade
+set treadle.0123456789abcd61.transport_httpupgrade_path=/up
+set treadle.0123456789abcd61.transport_httpupgrade_host=example.org
 set treadle.0123456789abcd6f=node
 set treadle.0123456789abcd6f.type=urltest
 set treadle.0123456789abcd6f.tag=MANUAL
@@ -486,6 +489,11 @@ mtls() { jsonfilter -i "$man" -e "@.outbounds[@.tag=\"$1\"].tls.$2"; }
 [ "$(mtls MANUAL-TROJAN 'alpn[*]' | tr '\n' ' ')" = "h2 http/1.1 " ] \
 	&& ok "ALPN list reaches the node's tls block" \
 	|| bad "ALPN: $(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-TROJAN"].tls')"
+mtr() { jsonfilter -i "$man" -e "@.outbounds[@.tag=\"$1\"].transport.$2"; }
+[ "$(mtr MANUAL-TROJAN type)" = httpupgrade ] && [ "$(mtr MANUAL-TROJAN path)" = /up ] \
+	&& [ "$(mtr MANUAL-TROJAN host)" = example.org ] \
+	&& ok "HTTPUpgrade transport is built with its path and host" \
+	|| bad "HTTPUpgrade: $(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-TROJAN"].transport')"
 
 # Share-link import: parse_node_link maps a link onto the editor's fields
 # and names whatever the editor cannot hold.
@@ -508,6 +516,11 @@ link "trojan://pw@example.com:443?type=ws&path=%2Fws&host=example.org&alpn=h2#EU
 	&& [ "$(lf 'tls_alpn[0]')" = h2 ] \
 	&& ok "link import: WebSocket link fills the transport and ALPN" \
 	|| bad "link import (ws): $(cat "$OUT/link.json")"
+link "vless://00000000-0000-0000-0000-000000000000@example.com:443?security=tls&type=httpupgrade&path=%2Fup&host=example.org#HK-01"
+[ "$(lf transport_type)" = httpupgrade ] && [ "$(lf transport_httpupgrade_path)" = /up ] \
+	&& [ "$(lf transport_httpupgrade_host)" = example.org ] \
+	&& ok "link import: HTTPUpgrade link fills the transport" \
+	|| bad "link import (httpupgrade): $(cat "$OUT/link.json")"
 link "not a link"
 [ -n "$(jsonfilter -i "$OUT/link.json" -e '@.error')" ] \
 	&& ok "link import: garbage is an error" || bad "link import (garbage): $(cat "$OUT/link.json")"

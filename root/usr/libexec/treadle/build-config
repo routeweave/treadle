@@ -512,6 +512,16 @@ local function build_transport_from_uci(s)
 		end
 		return tr
 	end
+	if t == "httpupgrade" then
+		local tr = { type = "httpupgrade" }
+		if s.transport_httpupgrade_path and s.transport_httpupgrade_path ~= "" then
+			tr.path = s.transport_httpupgrade_path
+		end
+		if s.transport_httpupgrade_host and s.transport_httpupgrade_host ~= "" then
+			tr.host = s.transport_httpupgrade_host
+		end
+		return tr
+	end
 	return nil
 end
 

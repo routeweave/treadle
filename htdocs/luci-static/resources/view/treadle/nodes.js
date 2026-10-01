@@ -593,6 +593,7 @@ return baseclass.extend({
 		o.value('ws',   'WebSocket');
 		o.value('grpc', 'gRPC');
 		o.value('http', 'HTTP/2');
+		o.value('httpupgrade', 'HTTPUpgrade');
 		o.modalonly = true;
 		o.optional = true;
 		depAny(o, 'type', TRANSPORT_TYPES);
@@ -618,6 +619,15 @@ return baseclass.extend({
 		o = s.taboption('transport', form.Value, 'transport_http_host', _('HTTP host'));
 		o.modalonly = true;
 		depAny(o, 'type', TRANSPORT_TYPES, { transport_type: 'http' });
+
+		o = s.taboption('transport', form.Value, 'transport_httpupgrade_path', _('HTTPUpgrade path'));
+		o.modalonly = true;
+		o.placeholder = '/';
+		depAny(o, 'type', TRANSPORT_TYPES, { transport_type: 'httpupgrade' });
+
+		o = s.taboption('transport', form.Value, 'transport_httpupgrade_host', _('HTTPUpgrade host'));
+		o.modalonly = true;
+		depAny(o, 'type', TRANSPORT_TYPES, { transport_type: 'httpupgrade' });
 
 		// ── TLS ─────────────────────────────────────────────────────────
 		o = s.taboption('tls', form.Flag, 'tls_enabled', _('TLS'));
