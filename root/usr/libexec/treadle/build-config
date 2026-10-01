@@ -614,6 +614,9 @@ local function build_node_from_uci(s)
 	if typ == "vless" then
 		ob.uuid = s.uuid or ""
 		if s.flow and s.flow ~= "" then ob.flow = s.flow end
+		if s.packet_encoding and s.packet_encoding ~= "" then
+			ob.packet_encoding = s.packet_encoding
+		end
 		local tls = build_tls_from_uci(s, false)
 		if tls then ob.tls = tls end
 		local tr = build_transport_from_uci(s)
@@ -623,6 +626,9 @@ local function build_node_from_uci(s)
 		ob.uuid     = s.uuid or ""
 		ob.security = s.security or "auto"
 		ob.alter_id = tonumber(s.alter_id) or 0
+		if s.packet_encoding and s.packet_encoding ~= "" then
+			ob.packet_encoding = s.packet_encoding
+		end
 		local tls = build_tls_from_uci(s, false)
 		if tls then ob.tls = tls end
 		local tr = build_transport_from_uci(s)
@@ -638,6 +644,7 @@ local function build_node_from_uci(s)
 	elseif typ == "shadowsocks" then
 		ob.method   = s.method or "aes-256-gcm"
 		ob.password = s.password or ""
+		if s.udp_over_tcp == "1" then ob.udp_over_tcp = true end
 
 	elseif typ == "hysteria2" then
 		ob.password = s.password or ""
@@ -684,6 +691,7 @@ local function build_node_from_uci(s)
 
 	elseif typ == "socks" then
 		ob.version = "5"
+		if s.udp_over_tcp == "1" then ob.udp_over_tcp = true end
 		if s.username and s.username ~= "" then ob.username = s.username end
 		if s.password and s.password ~= "" then ob.password = s.password end
 

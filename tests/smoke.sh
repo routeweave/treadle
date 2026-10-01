@@ -506,6 +506,15 @@ set treadle.0123456789abcd65.transport_type=ws
 set treadle.0123456789abcd65.transport_ws_path=/ws
 set treadle.0123456789abcd65.transport_ws_max_early_data=2048
 set treadle.0123456789abcd65.transport_ws_early_data_header=Sec-WebSocket-Protocol
+set treadle.0123456789abcd65.packet_encoding=packetaddr
+set treadle.0123456789abcd66=node
+set treadle.0123456789abcd66.type=shadowsocks
+set treadle.0123456789abcd66.tag=MANUAL-SS
+set treadle.0123456789abcd66.server=example.com
+set treadle.0123456789abcd66.server_port=8388
+set treadle.0123456789abcd66.method=aes-256-gcm
+set treadle.0123456789abcd66.password=pw
+set treadle.0123456789abcd66.udp_over_tcp=1
 set treadle.0123456789abcd6f=node
 set treadle.0123456789abcd6f.type=urltest
 set treadle.0123456789abcd6f.tag=MANUAL
@@ -516,6 +525,7 @@ add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-XHTTP
 add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-ANYTLS
 add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-HY2
 add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-WS
+add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-SS
 set treadle.global.mode=advanced
 set treadle.routing.final_outbound=MANUAL
 commit treadle
@@ -559,6 +569,9 @@ mob() { jsonfilter -i "$man" -e "@.outbounds[@.tag=\"$1\"].$2"; }
 	&& [ "$(mtr MANUAL-WS early_data_header_name)" = Sec-WebSocket-Protocol ] \
 	&& ok "WebSocket early data reaches the transport" \
 	|| bad "WS early data: $(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-WS"].transport')"
+[ "$(mob MANUAL-WS packet_encoding)" = packetaddr ] && [ "$(mob MANUAL-SS udp_over_tcp)" = true ] \
+	&& ok "packet encoding and UDP over TCP reach their nodes" \
+	|| bad "packet_encoding '$(mob MANUAL-WS packet_encoding)', udp_over_tcp '$(mob MANUAL-SS udp_over_tcp)'"
 
 link() {
 	printf '{"link":"%s"}' "$1" | "$HANDLER" call parse_node_link > "$OUT/link.json"
@@ -605,6 +618,7 @@ delete treadle.0123456789abcd62
 delete treadle.0123456789abcd63
 delete treadle.0123456789abcd64
 delete treadle.0123456789abcd65
+delete treadle.0123456789abcd66
 delete treadle.0123456789abcd6f
 set treadle.routing.final_outbound=ALL
 set treadle.global.mode=basic

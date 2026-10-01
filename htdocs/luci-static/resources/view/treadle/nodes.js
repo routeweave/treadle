@@ -528,6 +528,19 @@ return baseclass.extend({
 		o.modalonly = true;
 		o.depends('type', 'socks');
 
+		o = s.taboption('general', form.Flag, 'udp_over_tcp', _('UDP over TCP'),
+			_('Only for servers that support it, such as sing-box ones.'));
+		o.modalonly = true;
+		depAny(o, 'type', ['shadowsocks','socks']);
+
+		o = s.taboption('general', form.ListValue, 'packet_encoding', _('Packet encoding'));
+		o.value('', _('Default'));
+		o.value('xudp', 'xudp');
+		o.value('packetaddr', 'packetaddr');
+		o.modalonly = true;
+		o.optional = true;
+		depAny(o, 'type', ['vless','vmess']);
+
 		o = s.taboption('general', form.ListValue, 'obfs_type', _('Obfuscation'));
 		o.value('', _('None'));
 		o.value('salamander', 'salamander');

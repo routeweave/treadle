@@ -496,6 +496,10 @@ local function outbound_to_uci(ob)
 	put("uuid", ob.uuid);  put("password", ob.password)
 	put("flow", ob.flow);  put("method", ob.method)
 	put("username", ob.username)
+	put("packet_encoding", ob.packet_encoding)
+	if ob.udp_over_tcp == true or (type(ob.udp_over_tcp) == "table" and ob.udp_over_tcp.enabled) then
+		f.udp_over_tcp = "1"
+	end
 	if ob.type == "vmess" then
 		put("security", ob.security)
 		if (tonumber(ob.alter_id) or 0) > 0 then put("alter_id", ob.alter_id) end
