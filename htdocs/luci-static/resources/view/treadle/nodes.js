@@ -557,22 +557,52 @@ return baseclass.extend({
 		oFp.modalonly = true;
 		oFp.optional = true;
 
+		var oReality = s.taboption('tls', form.Flag, 'tls_reality', _('REALITY'),
+			_('Uses the chrome fingerprint when uTLS fingerprint is Default.'));
+		oReality.modalonly = true;
+
 		// TLS detail fields: always shown for forced-TLS protocols, opt-in
 		// (tls_enabled) for vless / vmess.
 		//
-		// uTLS is the exception: hysteria2 and tuic run over QUIC, whose
-		// handshake path in sing-box rejects a uTLS config outright
-		// ("unsupported usage for uTLS" on every dial), so the fingerprint
-		// picker is not offered for them — build-config drops the block for
-		// those types regardless.
-		[oSni, oInsec, oFp].forEach(function(opt) {
-			var forcedTls = (opt === oFp)
+		// uTLS and REALITY are the exceptions: hysteria2 and tuic run over
+		// QUIC, whose handshake path in sing-box rejects both outright
+		// ("unsupported usage for uTLS" / "… for reality" on every dial), so
+		// they are not offered for them — build-config drops them for those
+		// types regardless.
+		[oSni, oInsec, oFp, oReality].forEach(function(opt) {
+			var forcedTls = (opt === oFp || opt === oReality)
 				? ['trojan','anytls']
 				: ['trojan','hysteria2','tuic','anytls'];
 			depAny(opt, 'type', forcedTls);
 			opt.depends({ type: 'vless', tls_enabled: '1' });
 			opt.depends({ type: 'vmess', tls_enabled: '1' });
 		});
+
+		// REALITY's key fields: shown under the same conditions as the flag,
+		// and only while it is on.
+		function dependsOnReality(opt) {
+			depAny(opt, 'type', ['trojan','anytls'], { tls_reality: '1' });
+			opt.depends({ type: 'vless', tls_enabled: '1', tls_reality: '1' });
+			opt.depends({ type: 'vmess', tls_enabled: '1', tls_reality: '1' });
+		}
+
+		o = s.taboption('tls', form.Value, 'tls_reality_public_key', _('REALITY public key'));
+		o.modalonly = true;
+		o.rmempty = false;
+		// An X25519 public key: 32 bytes, unpadded base64url.
+		o.validate = function(section_id, value) {
+			return /^[A-Za-z0-9_-]{43}$/.test(value)
+				? true : _('Expecting a 43-character base64url key');
+		};
+		dependsOnReality(o);
+
+		o = s.taboption('tls', form.Value, 'tls_reality_short_id', _('REALITY short ID'));
+		o.modalonly = true;
+		o.validate = function(section_id, value) {
+			return /^([0-9A-Fa-f]{2}){0,8}$/.test(value)
+				? true : _('Expecting an even number of hex digits, at most 16');
+		};
+		dependsOnReality(o);
 
 		// ── URLTest group ───────────────────────────────────────────────
 		// Auto-rotation by latency. Members can be picked explicitly (manual

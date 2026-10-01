@@ -436,6 +436,52 @@ uci delete treadle.0123456789abcd10.urltest_member_order
 uci set treadle.global.mode=basic
 uci commit treadle
 
+# --- manual nodes ------------------------------------------------------------
+
+step "manual nodes"
+
+# One manual node per editor feature, gathered into a manual urltest group
+# set as the final outbound so every one of them reaches the built config
+# and `sing-box check`.
+REALITY_PK=$(sing-box generate reality-keypair | sed -n 's/^PublicKey: //p')
+uci batch <<EOF
+set treadle.0123456789abcd60=node
+set treadle.0123456789abcd60.type=vless
+set treadle.0123456789abcd60.tag=MANUAL-REALITY
+set treadle.0123456789abcd60.server=192.0.2.1
+set treadle.0123456789abcd60.server_port=443
+set treadle.0123456789abcd60.uuid=00000000-0000-0000-0000-000000000000
+set treadle.0123456789abcd60.flow=xtls-rprx-vision
+set treadle.0123456789abcd60.tls_enabled=1
+set treadle.0123456789abcd60.tls_sni=example.com
+set treadle.0123456789abcd60.tls_reality=1
+set treadle.0123456789abcd60.tls_reality_public_key=$REALITY_PK
+set treadle.0123456789abcd60.tls_reality_short_id=0123abcd
+set treadle.0123456789abcd6f=node
+set treadle.0123456789abcd6f.type=urltest
+set treadle.0123456789abcd6f.tag=MANUAL
+set treadle.0123456789abcd6f.urltest_mode=manual
+add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-REALITY
+set treadle.global.mode=advanced
+set treadle.routing.final_outbound=MANUAL
+commit treadle
+EOF
+build "advanced / manual nodes"
+man="$OUT/advanced___manual_nodes.json"
+mtls() { jsonfilter -i "$man" -e "@.outbounds[@.tag=\"$1\"].tls.$2"; }
+[ "$(mtls MANUAL-REALITY reality.public_key)" = "$REALITY_PK" ] \
+	&& [ "$(mtls MANUAL-REALITY reality.short_id)" = "0123abcd" ] \
+	&& [ "$(mtls MANUAL-REALITY utls.fingerprint)" = "chrome" ] \
+	&& ok "REALITY node carries its keys, with uTLS defaulted to chrome" \
+	|| bad "REALITY node tls: $(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-REALITY"].tls')"
+uci batch <<'EOF'
+delete treadle.0123456789abcd60
+delete treadle.0123456789abcd6f
+set treadle.routing.final_outbound=ALL
+set treadle.global.mode=basic
+commit treadle
+EOF
+
 # --- large subscription ------------------------------------------------------
 
 step "large subscription"

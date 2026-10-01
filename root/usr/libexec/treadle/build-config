@@ -465,6 +465,21 @@ local function build_tls_from_uci(s, always_on)
 	   and not QUIC_PROTOCOLS[s.type or ""] then
 		tls.utls = { enabled = true, fingerprint = s.tls_fingerprint }
 	end
+	-- REALITY rides on a TCP TLS handshake; over QUIC sing-box rejects it
+	-- on every dial, so nodes.js offers it only for the TCP types and the
+	-- guard covers a value left behind by a type change.
+	if s.tls_reality == "1" and not QUIC_PROTOCOLS[s.type or ""] then
+		tls.reality = { enabled = true, public_key = s.tls_reality_public_key or "" }
+		if s.tls_reality_short_id and s.tls_reality_short_id ~= "" then
+			tls.reality.short_id = s.tls_reality_short_id
+		end
+		-- sing-box refuses to start a REALITY client without uTLS ("uTLS is
+		-- required by reality client"). chrome is what Xray clients send
+		-- when a REALITY share link names no fingerprint.
+		if not tls.utls then
+			tls.utls = { enabled = true, fingerprint = "chrome" }
+		end
+	end
 	return tls
 end
 
