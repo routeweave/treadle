@@ -494,6 +494,20 @@ local QUIC_PROTOCOLS = {
 	tuic      = true,
 }
 
+-- True when a node asks for ECH that the installed sing-box cannot do
+-- (SB.ech: built with Go older than 1.24), which would fail the whole
+-- config. The caller skips the node: dropping only the ECH block would send
+-- the server name it was hiding in the clear.
+local function ech_unsupported(ob)
+	if SB.ech or type(ob.tls) ~= "table" or type(ob.tls.ech) ~= "table"
+	   or not ob.tls.ech.enabled then
+		return false
+	end
+	io.stderr:write("treadle build-config: node '" .. tostring(ob.tag)
+		.. "' uses ECH, which this sing-box build cannot (needs Go 1.24+); skipping\n")
+	return true
+end
+
 -- Build the sing-box tls block from individual UCI tls_* fields.
 -- always_on=true for protocols that are unconditionally TLS (trojan, hysteria2, tuic, anytls).
 local function build_tls_from_uci(s, always_on)
@@ -797,6 +811,7 @@ local function build_node_from_uci(s)
 
 	end
 
+	if ech_unsupported(ob) then return nil end
 	return ob
 end
 
@@ -915,6 +930,7 @@ local function sanitize_subscription_node(p)
 		-- — see QUIC_PROTOCOLS. Drop it so the node actually works instead
 		-- of silently poisoning whatever urltest group matches its tag.
 		if QUIC_PROTOCOLS[t] then out.tls.utls = nil end
+		if ech_unsupported(out) then return nil end
 	end
 	if type(p.transport) == "table" then
 		-- A transport sing-box has no dialer for (Xray's `xhttp`, chiefly)

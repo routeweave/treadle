@@ -76,6 +76,10 @@ fi
 SB_VERSION=$(sing-box version | head -n1)
 ok "$SB_VERSION"
 # Mirrors treadlelib.singbox_caps: http_client replaces download_detour at 1.14.
+# ECH needs a sing-box built with Go 1.24+ (24.10's package is not).
+SB_ECH=0
+sing-box version | sed -n 's/^Environment: go\([0-9]*\)\.\([0-9]*\).*/\1 \2/p' \
+	| awk '{ exit !($1 > 1 || ($1 == 1 && $2 >= 24)) }' && SB_ECH=1
 SB_HTTP_CLIENT=0
 echo "$SB_VERSION" | awk '{ split($3, v, "."); exit !(v[1] > 1 || (v[1] == 1 && v[2] >= 14)) }' \
 	&& SB_HTTP_CLIENT=1
@@ -467,7 +471,6 @@ add_list treadle.0123456789abcd61.tls_alpn=h2
 add_list treadle.0123456789abcd61.tls_alpn=http/1.1
 set treadle.0123456789abcd61.tls_min_version=1.2
 set treadle.0123456789abcd61.tls_max_version=1.3
-set treadle.0123456789abcd61.tls_ech=1
 set treadle.0123456789abcd61.transport_type=httpupgrade
 set treadle.0123456789abcd61.transport_httpupgrade_path=/up
 set treadle.0123456789abcd61.transport_httpupgrade_host=example.org
@@ -518,6 +521,20 @@ set treadle.0123456789abcd66.server_port=8388
 set treadle.0123456789abcd66.method=aes-256-gcm
 set treadle.0123456789abcd66.password=pw
 set treadle.0123456789abcd66.udp_over_tcp=1
+set treadle.0123456789abcd67=node
+set treadle.0123456789abcd67.type=trojan
+set treadle.0123456789abcd67.tag=MANUAL-ECH
+set treadle.0123456789abcd67.server=example.com
+set treadle.0123456789abcd67.server_port=443
+set treadle.0123456789abcd67.password=pw
+set treadle.0123456789abcd67.tls_ech=1
+set treadle.0123456789abcd68=node
+set treadle.0123456789abcd68.type=hysteria2
+set treadle.0123456789abcd68.tag=MANUAL-ECH-PEM
+set treadle.0123456789abcd68.server=example.com
+set treadle.0123456789abcd68.server_port=443
+set treadle.0123456789abcd68.password=pw
+set treadle.0123456789abcd68.tls_ech=1
 set treadle.0123456789abcd6f=node
 set treadle.0123456789abcd6f.type=urltest
 set treadle.0123456789abcd6f.tag=MANUAL
@@ -529,6 +546,8 @@ add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-ANYTLS
 add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-HY2
 add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-WS
 add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-SS
+add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-ECH
+add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-ECH-PEM
 set treadle.global.mode=advanced
 set treadle.routing.final_outbound=MANUAL
 commit treadle
@@ -536,9 +555,16 @@ EOF
 # A pasted ECH config is PEM text, newlines and all, as the editor's
 # textarea stores it.
 ECH_PEM=$(sing-box generate ech-keypair example.com | sed -n '/BEGIN ECH CONFIGS/,/END ECH CONFIGS/p')
-uci set treadle.0123456789abcd64.tls_ech=1
-uci set treadle.0123456789abcd64.tls_ech_config="$ECH_PEM"
+uci set treadle.0123456789abcd68.tls_ech_config="$ECH_PEM"
+# The same ECH node arriving through a subscription file.
+uci set treadle.0123456789abcd69=subscription
+uci set treadle.0123456789abcd69.name='ech fixture'
+uci set treadle.0123456789abcd69.url=https://example.com/sub
+uci set treadle.0123456789abcd69.enabled=1
+uci add_list treadle.0123456789abcd6f.urltest_outbounds=SUB-ECH
 uci commit treadle
+printf '%s\n' '[{"type":"trojan","payload":"{\"type\":\"trojan\",\"tag\":\"SUB-ECH\",\"server\":\"example.com\",\"server_port\":443,\"password\":\"pw\",\"tls\":{\"enabled\":true,\"ech\":{\"enabled\":true}}}"}]' \
+	> /etc/treadle/nodes/0123456789abcd69.json
 build "advanced / manual nodes"
 man="$OUT/advanced___manual_nodes.json"
 mtls() { jsonfilter -i "$man" -e "@.outbounds[@.tag=\"$1\"].tls.$2"; }
@@ -551,13 +577,22 @@ mtls() { jsonfilter -i "$man" -e "@.outbounds[@.tag=\"$1\"].tls.$2"; }
 	&& ok "ALPN list reaches the node's tls block" \
 	|| bad "ALPN: $(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-TROJAN"].tls')"
 [ "$(mtls MANUAL-TROJAN min_version)" = 1.2 ] && [ "$(mtls MANUAL-TROJAN max_version)" = 1.3 ] \
-	&& [ "$(mtls MANUAL-TROJAN ech.enabled)" = true ] && [ -z "$(mtls MANUAL-TROJAN ech.config)" ] \
-	&& ok "TLS version bounds and ECH (config from DNS) reach the tls block" \
-	|| bad "TLS versions / ECH: $(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-TROJAN"].tls')"
-[ "$(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-HY2"].tls.ech.config[*]' | wc -l)" \
-	-eq "$(printf '%s\n' "$ECH_PEM" | wc -l)" ] \
-	&& ok "a pasted ECH config reaches the tls block line by line" \
-	|| bad "ECH config: $(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-HY2"].tls.ech')"
+	&& ok "TLS version bounds reach the tls block" \
+	|| bad "TLS versions: $(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-TROJAN"].tls')"
+if [ "$SB_ECH" = 1 ]; then
+	[ "$(mtls MANUAL-ECH ech.enabled)" = true ] && [ -z "$(mtls MANUAL-ECH ech.config)" ] \
+		&& [ "$(mtls SUB-ECH ech.enabled)" = true ] \
+		&& ok "ECH (config from DNS) reaches manual and subscription nodes" \
+		|| bad "ECH: $(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-ECH"].tls')"
+	[ "$(mtls MANUAL-ECH-PEM 'ech.config[*]' | wc -l)" -eq "$(printf '%s\n' "$ECH_PEM" | wc -l)" ] \
+		&& ok "a pasted ECH config reaches the tls block line by line" \
+		|| bad "ECH config: $(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-ECH-PEM"].tls.ech')"
+else
+	[ -z "$(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-ECH"].type')$(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-ECH-PEM"].type')$(jsonfilter -i "$man" -e '@.outbounds[@.tag="SUB-ECH"].type')" ] \
+		&& [ "$(grep -c "uses ECH, which this sing-box build cannot" "$OUT/build.log")" -eq 3 ] \
+		&& ok "ECH nodes are skipped on a sing-box built without ECH" \
+		|| { bad "ECH nodes on a build without ECH"; sed 's/^/    /' "$OUT/build.log"; }
+fi
 mtr() { jsonfilter -i "$man" -e "@.outbounds[@.tag=\"$1\"].transport.$2"; }
 [ "$(mtr MANUAL-TROJAN type)" = httpupgrade ] && [ "$(mtr MANUAL-TROJAN path)" = /up ] \
 	&& [ "$(mtr MANUAL-TROJAN host)" = example.org ] \
@@ -636,11 +671,15 @@ delete treadle.0123456789abcd63
 delete treadle.0123456789abcd64
 delete treadle.0123456789abcd65
 delete treadle.0123456789abcd66
+delete treadle.0123456789abcd67
+delete treadle.0123456789abcd68
+delete treadle.0123456789abcd69
 delete treadle.0123456789abcd6f
 set treadle.routing.final_outbound=ALL
 set treadle.global.mode=basic
 commit treadle
 EOF
+rm -f /etc/treadle/nodes/0123456789abcd69.json
 
 # --- large subscription ------------------------------------------------------
 

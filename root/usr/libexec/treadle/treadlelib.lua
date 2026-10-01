@@ -280,15 +280,17 @@ function M.detect_wan_dns(jsonc)
 end
 
 -- First line of `sing-box version` ("sing-box version 1.14.2"), or nil when
--- the binary is missing or prints nothing. Not cached: build-config needs
+-- the binary is missing or prints nothing, plus the Go release it was built
+-- with ("1.23") when the output names one. Not cached: build-config needs
 -- the binary actually installed now, and the fork costs ~20 ms.
 function M.singbox_version_line()
 	local f = io.popen("/usr/bin/sing-box version 2>/dev/null")
 	if not f then return nil end
-	local line = f:read("*l")
+	local out = f:read("*a") or ""
 	f:close()
-	if not line or line == "" then return nil end
-	return line
+	local line = out:match("^([^\n]+)")
+	if not line then return nil end
+	return line, out:match("Environment: go(%d+%.%d+)")
 end
 
 -- What the installed sing-box supports, derived from its version line.
@@ -304,16 +306,24 @@ end
 --   initial_path 1.14+: a remote rule-set can start from a local file when
 --                nothing is cached, so startup does not wait on (and die of)
 --                its first download.
-function M.singbox_caps(line)
+--   ech          built with Go 1.24+, whatever the sing-box version: older
+--                builds (24.10's 1.12 package is Go 1.23) refuse the whole
+--                config over one ECH outbound ("ECH requires go1.24"). An
+--                unreadable Go version reads as unsupported, so ECH nodes
+--                are skipped rather than taking the config down.
+function M.singbox_caps(line, go)
 	local maj, min = (line or ""):match("(%d+)%.(%d+)")
 	maj, min = tonumber(maj), tonumber(min)
 	local function at_least(a, b)
 		return maj ~= nil and (maj > a or (maj == a and min >= b))
 	end
+	local gmaj, gmin = (go or ""):match("^(%d+)%.(%d+)")
+	gmaj, gmin = tonumber(gmaj), tonumber(gmin)
 	return {
 		version      = line,
 		http_client  = at_least(1, 14),
-		initial_path = at_least(1, 14)
+		initial_path = at_least(1, 14),
+		ech          = gmaj ~= nil and (gmaj > 1 or (gmaj == 1 and gmin >= 24))
 	}
 end
 
