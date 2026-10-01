@@ -477,6 +477,72 @@ local function parse_proxy_uri(line)
 	return nil
 end
 
+-- Map a parsed outbound onto the node editor's UCI fields — the inverse of
+-- build-config's build_node_from_uci. Returns the fields plus the names of
+-- the link's settings the editor has no field for, so the UI can say what
+-- did not carry over instead of dropping it silently.
+local function outbound_to_uci(ob)
+	local f, dropped = {}, {}
+	local function put(k, v)
+		if v ~= nil and v ~= "" then f[k] = tostring(v) end
+	end
+	local function drop(name) dropped[#dropped + 1] = name end
+
+	put("type", ob.type);  put("tag", ob.tag)
+	put("server", ob.server)
+	if (tonumber(ob.server_port) or 0) > 0 then put("server_port", ob.server_port) end
+	put("uuid", ob.uuid);  put("password", ob.password)
+	put("flow", ob.flow);  put("method", ob.method)
+	put("username", ob.username)
+	if ob.type == "vmess" then
+		put("security", ob.security)
+		if (tonumber(ob.alter_id) or 0) > 0 then put("alter_id", ob.alter_id) end
+	end
+	put("congestion_control", ob.congestion_control)
+	put("udp_relay_mode", ob.udp_relay_mode)
+	if type(ob.obfs) == "table" then
+		put("obfs_type", ob.obfs.type);  put("obfs_password", ob.obfs.password)
+	end
+	if ob.server_ports then drop("port hopping") end
+	if ob.up_mbps or ob.down_mbps then drop("bandwidth") end
+
+	local tls = ob.tls
+	if type(tls) == "table" and tls.enabled then
+		if ob.type == "vless" or ob.type == "vmess" then f.tls_enabled = "1" end
+		put("tls_sni", tls.server_name)
+		if tls.insecure then f.tls_insecure = "1" end
+		if type(tls.utls) == "table" then put("tls_fingerprint", tls.utls.fingerprint) end
+		if type(tls.reality) == "table" and tls.reality.enabled then
+			f.tls_reality = "1"
+			put("tls_reality_public_key", tls.reality.public_key)
+			put("tls_reality_short_id", tls.reality.short_id)
+		end
+		if tls.alpn then drop("ALPN") end
+	end
+
+	local tr = ob.transport
+	if type(tr) == "table" then
+		if tr._xhttp then
+			drop("XHTTP transport")
+		elseif tr.type == "ws" then
+			f.transport_type = "ws"
+			put("transport_ws_path", tr.path)
+			put("transport_ws_host", type(tr.headers) == "table" and tr.headers.Host or nil)
+			if tr.max_early_data then drop("WebSocket early data") end
+		elseif tr.type == "grpc" then
+			f.transport_type = "grpc"
+			put("transport_grpc_service", tr.service_name)
+		elseif tr.type == "http" then
+			f.transport_type = "http"
+			put("transport_http_path", tr.path)
+			put("transport_http_host", type(tr.host) == "table" and tr.host[1] or tr.host)
+		else
+			drop(tostring(tr.type) .. " transport")
+		end
+	end
+	return f, dropped
+end
+
 -- ─── Clash YAML helpers ──────────────────────────────────────────────────────
 -- Clash subscriptions list each proxy either as an inline flow mapping —
 --   - { name: 'X Y', type: anytls, alpn: [h2, http/1.1], password: '...', ... }
@@ -2184,6 +2250,24 @@ local methods = {
 	get_wan_dns = {
 		call = function()
 			return { wan_dns = lib.detect_wan_dns(_jsonc_ok and _jsonc or nil) }
+		end
+	},
+
+	-- Parse one share link (vless://, vmess://, trojan://, ss://,
+	-- hysteria2://, tuic://, anytls://, socks://) into the node editor's
+	-- UCI fields. Writes nothing: the Nodes tab stages the fields as a new
+	-- node and opens it in the editor, so the user saves it like any other.
+	parse_node_link = {
+		args = { link = "" },
+		call = function(args)
+			local link = args.link or ""
+			if #link > 8192 then return { error = "link too long" } end
+			local ob, reason = parse_proxy_uri(link)
+			if not ob then
+				return { error = reason or "not a recognised share link" }
+			end
+			local fields, dropped = outbound_to_uci(ob)
+			return { fields = fields, dropped = dropped }
 		end
 	},
 

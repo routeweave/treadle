@@ -17,6 +17,7 @@
 'require ui';
 'require uci';
 'require rpc';
+'require dom';
 'require view.treadle.lib.ordersave as ordersave';
 'require view.treadle.lib.formpanel as formpanel';
 'require view.treadle.lib.subs as subs';
@@ -40,6 +41,13 @@ var callListSubscriptionNodes = rpc.declare({
 var callListOutbounds = rpc.declare({
 	object: 'luci.treadle',
 	method: 'list_outbounds',
+	expect: { '': {} }
+});
+
+var callParseNodeLink = rpc.declare({
+	object: 'luci.treadle',
+	method: 'parse_node_link',
+	params: ['link'],
 	expect: { '': {} }
 });
 
@@ -157,6 +165,13 @@ return baseclass.extend({
 			var nodeSection = node.querySelector('#cbi-treadle-node');
 			if (nodeSection)
 				nodeSection.style.marginTop = '2em';
+			var nodesCreate = nodeSection && nodeSection.querySelector('.cbi-section-create');
+			if (nodesCreate)
+				nodesCreate.appendChild(E('button', {
+					'class': 'btn cbi-button cbi-button-neutral',
+					'style': 'margin-left:0.4em',
+					'click': ui.createHandlerFn(self, '_addFromLink')
+				}, [ _('Add from link…') ]));
 			// A runner may already be in flight when this tab renders —
 			// the post-first-sync test forked by sync_subscription, or a
 			// Test all surviving the tab reload a sync triggers. Resume
@@ -241,6 +256,72 @@ return baseclass.extend({
 		};
 	},
 
+	// Ask for one share link, parse it on the router, and open the node
+	// editor on a new node pre-filled from it. Nothing is written until the
+	// user saves the editor, and Dismiss removes the staged node again —
+	// the same lifecycle as the Add button's.
+	_addFromLink: function() {
+		var self = this;
+		var input = E('textarea', {
+			'class': 'cbi-input-textarea',
+			'rows': 4,
+			'style': 'width:100%; font-family:monospace; word-break:break-all;',
+			'placeholder': 'vless://…'
+		});
+		var err = E('div');
+		ui.showModal(_('Add node from link'), [
+			E('p', {}, [ _('Paste one share link: vless, vmess, trojan, ss, hysteria2, tuic, anytls or socks.') ]),
+			input,
+			err,
+			E('div', { 'class': 'right' }, [
+				E('button', { 'class': 'btn cbi-button cbi-button-neutral', 'click': ui.hideModal },
+					[ _('Cancel') ]),
+				' ',
+				E('button', {
+					'class': 'btn cbi-button cbi-button-apply',
+					'click': ui.createHandlerFn(self, function(ev) {
+						var link = input.value.trim();
+						if (!link)
+							return;
+						return callParseNodeLink(link).then(function(r) {
+							if (!r || r.error || !r.fields) {
+								dom.content(err, E('div', { 'class': 'alert-message warning' },
+									[ (r && r.error) || _('Not a recognised share link.') ]));
+								return;
+							}
+							return self._openImported(ev, r.fields,
+								Array.isArray(r.dropped) ? r.dropped : []);
+						});
+					})
+				}, [ _('Continue') ])
+			])
+		]);
+		input.focus();
+	},
+
+	_openImported: function(ev, fields, dropped) {
+		var s = this._nodeSection;
+		var sid = uid.generate();
+		// handleAdd stages the section synchronously and reads its values
+		// only once the modal map renders, so fields set straight after it
+		// returns are what the editor opens with.
+		var opened = s.handleAdd(ev, sid);
+		for (var k in fields)
+			uci.set('treadle', sid, k, fields[k]);
+		return Promise.resolve(opened).then(function() {
+			if (!dropped.length)
+				return;
+			var modal = document.querySelector('#modal_overlay .modal');
+			var note = E('div', { 'class': 'alert-message warning' }, [
+				_('Not carried over from the link: %s').format(dropped.join(', '))
+			]);
+			if (modal && modal.firstChild)
+				modal.insertBefore(note, modal.firstChild.nextSibling);
+			else
+				ui.addNotification(null, note, 'warning');
+		});
+	},
+
 	_renderNodes: function(m, data) {
 		var self = this;
 		var outbounds = (data && data[1] && Array.isArray(data[1].outbounds))
@@ -310,6 +391,7 @@ return baseclass.extend({
 		// anonymous type and forecloses any future code that might reach
 		// for the section id as a cross-reference.
 		uid.installGridAdd(s);
+		this._nodeSection = s;
 
 		s.tab('general',   _('General'));
 		s.tab('transport', _('Transport'));
@@ -551,7 +633,7 @@ return baseclass.extend({
 
 		var oFp = s.taboption('tls', form.ListValue, 'tls_fingerprint', _('uTLS fingerprint'));
 		oFp.value('', _('Default'));
-		['chrome','firefox','safari','ios','edge','random'].forEach(function(v) {
+		['chrome','firefox','safari','ios','android','edge','360','qq','random','randomized'].forEach(function(v) {
 			oFp.value(v, v);
 		});
 		oFp.modalonly = true;

@@ -474,6 +474,32 @@ mtls() { jsonfilter -i "$man" -e "@.outbounds[@.tag=\"$1\"].tls.$2"; }
 	&& [ "$(mtls MANUAL-REALITY utls.fingerprint)" = "chrome" ] \
 	&& ok "REALITY node carries its keys, with uTLS defaulted to chrome" \
 	|| bad "REALITY node tls: $(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-REALITY"].tls')"
+
+# Share-link import: parse_node_link maps a link onto the editor's fields
+# and names whatever the editor cannot hold.
+link() {
+	printf '{"link":"%s"}' "$1" | "$HANDLER" call parse_node_link > "$OUT/link.json"
+}
+lf() { jsonfilter -i "$OUT/link.json" -e "@.fields.$1"; }
+link "vless://00000000-0000-0000-0000-000000000000@example.com:443?security=reality&sni=example.org&fp=firefox&pbk=$REALITY_PK&sid=0123abcd&flow=xtls-rprx-vision&type=tcp#HK-01"
+[ "$(lf type)" = vless ] && [ "$(lf tag)" = HK-01 ] && [ "$(lf server_port)" = 443 ] \
+	&& [ "$(lf flow)" = xtls-rprx-vision ] && [ "$(lf tls_enabled)" = 1 ] \
+	&& [ "$(lf tls_sni)" = example.org ] && [ "$(lf tls_fingerprint)" = firefox ] \
+	&& [ "$(lf tls_reality)" = 1 ] && [ "$(lf tls_reality_public_key)" = "$REALITY_PK" ] \
+	&& [ "$(lf tls_reality_short_id)" = 0123abcd ] \
+	&& [ -z "$(jsonfilter -i "$OUT/link.json" -e '@.dropped[*]')" ] \
+	&& ok "link import: VLESS REALITY link fills the editor fields" \
+	|| bad "link import (REALITY): $(cat "$OUT/link.json")"
+link "trojan://pw@example.com:443?type=ws&path=%2Fws&host=example.org&alpn=h2#EU-France-01"
+[ "$(lf transport_type)" = ws ] && [ "$(lf transport_ws_path)" = /ws ] \
+	&& [ "$(lf transport_ws_host)" = example.org ] \
+	&& [ "$(jsonfilter -i "$OUT/link.json" -e '@.dropped[*]')" = ALPN ] \
+	&& ok "link import: WebSocket link fills the transport, reports what it drops" \
+	|| bad "link import (ws): $(cat "$OUT/link.json")"
+link "not a link"
+[ -n "$(jsonfilter -i "$OUT/link.json" -e '@.error')" ] \
+	&& ok "link import: garbage is an error" || bad "link import (garbage): $(cat "$OUT/link.json")"
+
 uci batch <<'EOF'
 delete treadle.0123456789abcd60
 delete treadle.0123456789abcd6f
