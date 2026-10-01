@@ -504,6 +504,22 @@ local function build_tls_from_uci(s, always_on)
 	if s.tls_insecure == "1" then tls.insecure = true end
 	local alpn = lib.uci_list(s, "tls_alpn")
 	if #alpn > 0 then tls.alpn = alpn end
+	-- QUIC is TLS 1.3 only, so a version bound is a TCP-only setting.
+	if not QUIC_PROTOCOLS[s.type or ""] then
+		if s.tls_min_version and s.tls_min_version ~= "" then tls.min_version = s.tls_min_version end
+		if s.tls_max_version and s.tls_max_version ~= "" then tls.max_version = s.tls_max_version end
+	end
+	-- ECH: with no config pasted, sing-box looks it up in the server
+	-- name's DNS HTTPS record.
+	if s.tls_ech == "1" then
+		tls.ech = { enabled = true }
+		local pem = {}
+		for line in (s.tls_ech_config or ""):gmatch("[^\r\n]+") do
+			line = line:match("^%s*(.-)%s*$")
+			if line ~= "" then pem[#pem + 1] = line end
+		end
+		if #pem > 0 then tls.ech.config = pem end
+	end
 	-- nodes.js hides the fingerprint picker for QUIC protocols; the guard
 	-- here also covers a value left behind by an earlier type change or set
 	-- over SSH.

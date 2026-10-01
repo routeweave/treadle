@@ -527,6 +527,13 @@ local function outbound_to_uci(ob)
 			put("tls_reality_short_id", tls.reality.short_id)
 		end
 		if type(tls.alpn) == "table" and #tls.alpn > 0 then f.tls_alpn = tls.alpn end
+		put("tls_min_version", tls.min_version);  put("tls_max_version", tls.max_version)
+		if type(tls.ech) == "table" and tls.ech.enabled then
+			f.tls_ech = "1"
+			if type(tls.ech.config) == "table" then
+				put("tls_ech_config", table.concat(tls.ech.config, "\n"))
+			end
+		end
 	end
 
 	local tr = ob.transport

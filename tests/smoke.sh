@@ -465,6 +465,9 @@ set treadle.0123456789abcd61.server_port=443
 set treadle.0123456789abcd61.password=pw
 add_list treadle.0123456789abcd61.tls_alpn=h2
 add_list treadle.0123456789abcd61.tls_alpn=http/1.1
+set treadle.0123456789abcd61.tls_min_version=1.2
+set treadle.0123456789abcd61.tls_max_version=1.3
+set treadle.0123456789abcd61.tls_ech=1
 set treadle.0123456789abcd61.transport_type=httpupgrade
 set treadle.0123456789abcd61.transport_httpupgrade_path=/up
 set treadle.0123456789abcd61.transport_httpupgrade_host=example.org
@@ -530,6 +533,12 @@ set treadle.global.mode=advanced
 set treadle.routing.final_outbound=MANUAL
 commit treadle
 EOF
+# A pasted ECH config is PEM text, newlines and all, as the editor's
+# textarea stores it.
+ECH_PEM=$(sing-box generate ech-keypair example.com | sed -n '/BEGIN ECH CONFIGS/,/END ECH CONFIGS/p')
+uci set treadle.0123456789abcd64.tls_ech=1
+uci set treadle.0123456789abcd64.tls_ech_config="$ECH_PEM"
+uci commit treadle
 build "advanced / manual nodes"
 man="$OUT/advanced___manual_nodes.json"
 mtls() { jsonfilter -i "$man" -e "@.outbounds[@.tag=\"$1\"].tls.$2"; }
@@ -541,6 +550,14 @@ mtls() { jsonfilter -i "$man" -e "@.outbounds[@.tag=\"$1\"].tls.$2"; }
 [ "$(mtls MANUAL-TROJAN 'alpn[*]' | tr '\n' ' ')" = "h2 http/1.1 " ] \
 	&& ok "ALPN list reaches the node's tls block" \
 	|| bad "ALPN: $(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-TROJAN"].tls')"
+[ "$(mtls MANUAL-TROJAN min_version)" = 1.2 ] && [ "$(mtls MANUAL-TROJAN max_version)" = 1.3 ] \
+	&& [ "$(mtls MANUAL-TROJAN ech.enabled)" = true ] && [ -z "$(mtls MANUAL-TROJAN ech.config)" ] \
+	&& ok "TLS version bounds and ECH (config from DNS) reach the tls block" \
+	|| bad "TLS versions / ECH: $(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-TROJAN"].tls')"
+[ "$(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-HY2"].tls.ech.config[*]' | wc -l)" \
+	-eq "$(printf '%s\n' "$ECH_PEM" | wc -l)" ] \
+	&& ok "a pasted ECH config reaches the tls block line by line" \
+	|| bad "ECH config: $(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-HY2"].tls.ech')"
 mtr() { jsonfilter -i "$man" -e "@.outbounds[@.tag=\"$1\"].transport.$2"; }
 [ "$(mtr MANUAL-TROJAN type)" = httpupgrade ] && [ "$(mtr MANUAL-TROJAN path)" = /up ] \
 	&& [ "$(mtr MANUAL-TROJAN host)" = example.org ] \

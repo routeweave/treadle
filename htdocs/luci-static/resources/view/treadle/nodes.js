@@ -728,6 +728,28 @@ return baseclass.extend({
 		oFp.modalonly = true;
 		oFp.optional = true;
 
+		var TLS_VERSIONS = ['1.0','1.1','1.2','1.3'];
+		var oMinVer = s.taboption('tls', form.ListValue, 'tls_min_version', _('Minimum TLS version'));
+		oMinVer.value('', _('Default'));
+		TLS_VERSIONS.forEach(function(v) { oMinVer.value(v, v); });
+		oMinVer.modalonly = true;
+		oMinVer.optional = true;
+
+		var oMaxVer = s.taboption('tls', form.ListValue, 'tls_max_version', _('Maximum TLS version'));
+		oMaxVer.value('', _('Default'));
+		TLS_VERSIONS.forEach(function(v) { oMaxVer.value(v, v); });
+		oMaxVer.modalonly = true;
+		oMaxVer.optional = true;
+		oMaxVer.validate = function(section_id, value) {
+			var min = this.section.formvalue(section_id, 'tls_min_version');
+			return (!value || !min || TLS_VERSIONS.indexOf(min) <= TLS_VERSIONS.indexOf(value))
+				? true : _('Lower than the minimum version');
+		};
+
+		var oEch = s.taboption('tls', form.Flag, 'tls_ech', _('ECH'),
+			_('Encrypted Client Hello. Without a config below, sing-box looks it up in the DNS HTTPS record of the SNI.'));
+		oEch.modalonly = true;
+
 		var oReality = s.taboption('tls', form.Flag, 'tls_reality', _('REALITY'),
 			_('Uses the chrome fingerprint when uTLS fingerprint is Default.'));
 		oReality.modalonly = true;
@@ -740,14 +762,24 @@ return baseclass.extend({
 		// ("unsupported usage for uTLS" / "… for reality" on every dial), so
 		// they are not offered for them — build-config drops them for those
 		// types regardless.
-		[oSni, oInsec, oAlpn, oFp, oReality].forEach(function(opt) {
-			var forcedTls = (opt === oFp || opt === oReality)
+		[oSni, oInsec, oAlpn, oMinVer, oMaxVer, oEch, oFp, oReality].forEach(function(opt) {
+			var forcedTls = (opt === oFp || opt === oReality || opt === oMinVer || opt === oMaxVer)
 				? ['trojan','anytls']
 				: ['trojan','hysteria2','tuic','anytls'];
 			depAny(opt, 'type', forcedTls);
 			opt.depends({ type: 'vless', tls_enabled: '1' });
 			opt.depends({ type: 'vmess', tls_enabled: '1' });
 		});
+
+		// The ECH config: shown wherever the ECH flag is, while it is on.
+		o = s.taboption('tls', form.TextValue, 'tls_ech_config', _('ECH config'),
+			_('PEM, including the BEGIN / END lines. Optional.'));
+		o.modalonly = true;
+		o.rows = 4;
+		o.monospace = true;
+		depAny(o, 'type', ['trojan','hysteria2','tuic','anytls'], { tls_ech: '1' });
+		o.depends({ type: 'vless', tls_enabled: '1', tls_ech: '1' });
+		o.depends({ type: 'vmess', tls_enabled: '1', tls_ech: '1' });
 
 		// REALITY's key fields: shown under the same conditions as the flag,
 		// and only while it is on.
