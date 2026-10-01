@@ -482,7 +482,8 @@ end
 -- the link's settings the editor has no field for, so the UI can say what
 -- did not carry over instead of dropping it silently.
 local function outbound_to_uci(ob)
-	-- A value is a string, or an array for a UCI list option (tls_alpn).
+	-- A value is a string, or an array for a UCI list option (tls_alpn,
+	-- hy2_server_ports).
 	local f, dropped = {}, {}
 	local function put(k, v)
 		if v ~= nil and v ~= "" then f[k] = tostring(v) end
@@ -504,8 +505,11 @@ local function outbound_to_uci(ob)
 	if type(ob.obfs) == "table" then
 		put("obfs_type", ob.obfs.type);  put("obfs_password", ob.obfs.password)
 	end
-	if ob.server_ports then drop("port hopping") end
-	if ob.up_mbps or ob.down_mbps then drop("bandwidth") end
+	if type(ob.server_ports) == "table" and #ob.server_ports > 0 then
+		f.hy2_server_ports = ob.server_ports
+		put("hy2_hop_interval", ob.hop_interval)
+	end
+	put("hy2_up_mbps", ob.up_mbps);  put("hy2_down_mbps", ob.down_mbps)
 
 	local tls = ob.tls
 	if type(tls) == "table" and tls.enabled then

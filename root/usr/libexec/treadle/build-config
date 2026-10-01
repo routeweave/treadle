@@ -426,6 +426,50 @@ end
 
 -- ─── outbounds (UCI manual nodes + /etc/treadle/nodes/*.json subs) ─────────
 
+-- Go duration literal: one or more <number><unit> pairs ("5s", "1m30s").
+-- ASCII units only. sing-box also accepts "µs", but %a cannot match a
+-- multi-byte rune and nothing reaching this path has a use for it.
+local DURATION_UNITS = { ns = true, us = true, ms = true, s = true, m = true, h = true }
+local function valid_duration(v)
+	if type(v) ~= "string" or v == "" then return false end
+	local pos = 1
+	while pos <= #v do
+		local num, unit, nextpos = v:match("^(%d+%.?%d*)(%a+)()", pos)
+		if not num or not DURATION_UNITS[unit] then return false end
+		pos = nextpos
+	end
+	return true
+end
+
+-- Hysteria2 port hopping: `server_ports` is a list (or a single string) of
+-- "lo:hi" ranges. sing-quic's ParsePorts rejects an entry without a colon,
+-- which fails the outbound and with it the whole config, and turns a reversed
+-- range into an empty port list; it also reads an empty bound as 0 or 65535.
+-- Keep only explicit, ordered ranges within 1..65535 and drop the rest, so a
+-- malformed entry costs the node its hopping rather than its place in the
+-- config. Returns nil when nothing usable remains.
+local function sanitize_server_ports(v, tag)
+	if type(v) == "string" then v = { v } end
+	if type(v) ~= "table" then return nil end
+	local out = {}
+	for _, r in ipairs(v) do
+		local lo, hi
+		if type(r) == "string" then
+			lo, hi = r:match("^(%d+):(%d+)$")
+			lo, hi = tonumber(lo), tonumber(hi)
+		end
+		if lo and hi and lo >= 1 and lo <= hi and hi <= 65535 then
+			out[#out + 1] = lo .. ":" .. hi
+		else
+			io.stderr:write("treadle build-config: node '"
+				.. tostring(tag) .. "': ignoring server_ports entry '"
+				.. tostring(r) .. "' (want \"lo:hi\")\n")
+		end
+	end
+	return (#out > 0) and out or nil
+end
+
+
 -- Protocols sing-box carries over QUIC. Their TLS handshake is driven by
 -- sing-quic, which needs a real *crypto/tls.Config and gets it by calling
 -- Config.STDConfig(). The uTLS client config refuses that call outright —
@@ -592,6 +636,18 @@ local function build_node_from_uci(s)
 		ob.password = s.password or ""
 		local tls = build_tls_from_uci(s, true)
 		if tls then ob.tls = tls end
+		-- Port hopping and bandwidth, through the same checks as
+		-- subscription nodes: a malformed range costs the node its
+		-- hopping, never its place in the config.
+		local ports = lib.uci_list(s, "hy2_server_ports")
+		if #ports > 0 then
+			ob.server_ports = sanitize_server_ports(ports, tag)
+			if ob.server_ports and valid_duration(s.hy2_hop_interval) then
+				ob.hop_interval = s.hy2_hop_interval
+			end
+		end
+		ob.up_mbps   = tonumber(s.hy2_up_mbps)
+		ob.down_mbps = tonumber(s.hy2_down_mbps)
 		if s.obfs_type and s.obfs_type ~= "" then
 			ob.obfs = { type = s.obfs_type }
 			if s.obfs_password and s.obfs_password ~= "" then
@@ -735,20 +791,6 @@ end
 -- all_map. Shared with luci.treadle's parse-time filter via treadlelib.
 local OUTBOUND_RESERVED_TAGS = lib.RESERVED_TAGS
 
--- Go duration literal: one or more <number><unit> pairs ("5s", "1m30s").
--- ASCII units only. sing-box also accepts "µs", but %a cannot match a
--- multi-byte rune and nothing reaching this path has a use for it.
-local DURATION_UNITS = { ns = true, us = true, ms = true, s = true, m = true, h = true }
-local function valid_duration(v)
-	if type(v) ~= "string" or v == "" then return false end
-	local pos = 1
-	while pos <= #v do
-		local num, unit, nextpos = v:match("^(%d+%.?%d*)(%a+)()", pos)
-		if not num or not DURATION_UNITS[unit] then return false end
-		pos = nextpos
-	end
-	return true
-end
 
 -- ─── subscription payload sanitiser ─────────────────────────────────────
 --
@@ -817,33 +859,6 @@ local SUB_TYPE_KEYS = {
 	wireguard   = { "tag", "type", "address", "private_key", "mtu", "system_interface", "workers" },
 }
 
--- Hysteria2 port hopping: `server_ports` is a list (or a single string) of
--- "lo:hi" ranges. sing-quic's ParsePorts rejects an entry without a colon,
--- which fails the outbound and with it the whole config, and turns a reversed
--- range into an empty port list; it also reads an empty bound as 0 or 65535.
--- Keep only explicit, ordered ranges within 1..65535 and drop the rest, so a
--- malformed entry costs the node its hopping rather than its place in the
--- config. Returns nil when nothing usable remains.
-local function sanitize_server_ports(v, tag)
-	if type(v) == "string" then v = { v } end
-	if type(v) ~= "table" then return nil end
-	local out = {}
-	for _, r in ipairs(v) do
-		local lo, hi
-		if type(r) == "string" then
-			lo, hi = r:match("^(%d+):(%d+)$")
-			lo, hi = tonumber(lo), tonumber(hi)
-		end
-		if lo and hi and lo >= 1 and lo <= hi and hi <= 65535 then
-			out[#out + 1] = lo .. ":" .. hi
-		else
-			io.stderr:write("treadle build-config: subscription node '"
-				.. tostring(tag) .. "': ignoring server_ports entry '"
-				.. tostring(r) .. "' (want \"lo:hi\")\n")
-		end
-	end
-	return (#out > 0) and out or nil
-end
 
 local function sanitize_subscription_node(p)
 	if type(p) ~= "table" then return nil end

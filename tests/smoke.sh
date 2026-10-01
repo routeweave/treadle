@@ -485,6 +485,17 @@ set treadle.0123456789abcd63.server=example.com
 set treadle.0123456789abcd63.server_port=443
 set treadle.0123456789abcd63.password=pw
 set treadle.0123456789abcd63.transport_type=ws
+set treadle.0123456789abcd64=node
+set treadle.0123456789abcd64.type=hysteria2
+set treadle.0123456789abcd64.tag=MANUAL-HY2
+set treadle.0123456789abcd64.server=example.com
+set treadle.0123456789abcd64.server_port=443
+set treadle.0123456789abcd64.password=pw
+add_list treadle.0123456789abcd64.hy2_server_ports=20000:30000
+add_list treadle.0123456789abcd64.hy2_server_ports=40000:39000
+set treadle.0123456789abcd64.hy2_hop_interval=1m
+set treadle.0123456789abcd64.hy2_up_mbps=50
+set treadle.0123456789abcd64.hy2_down_mbps=200
 set treadle.0123456789abcd6f=node
 set treadle.0123456789abcd6f.type=urltest
 set treadle.0123456789abcd6f.tag=MANUAL
@@ -493,6 +504,7 @@ add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-REALITY
 add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-TROJAN
 add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-XHTTP
 add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-ANYTLS
+add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-HY2
 set treadle.global.mode=advanced
 set treadle.routing.final_outbound=MANUAL
 commit treadle
@@ -527,6 +539,11 @@ referer=$(mtr MANUAL-XHTTP 'headers.Referer[0]')
 	&& [ -z "$(mtr MANUAL-ANYTLS type)" ] \
 	&& ok "AnyTLS node is built without the transport sing-box rejects on it" \
 	|| bad "AnyTLS: $(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-ANYTLS"]')"
+mob() { jsonfilter -i "$man" -e "@.outbounds[@.tag=\"$1\"].$2"; }
+[ "$(mob MANUAL-HY2 'server_ports[*]')" = 20000:30000 ] && [ "$(mob MANUAL-HY2 hop_interval)" = 1m ] \
+	&& [ "$(mob MANUAL-HY2 up_mbps)" = 50 ] && [ "$(mob MANUAL-HY2 down_mbps)" = 200 ] \
+	&& ok "Hysteria2 port hopping and bandwidth reach the node, the reversed range dropped" \
+	|| bad "Hysteria2: $(jsonfilter -i "$man" -e '@.outbounds[@.tag="MANUAL-HY2"]')"
 
 link() {
 	printf '{"link":"%s"}' "$1" | "$HANDLER" call parse_node_link > "$OUT/link.json"
@@ -557,6 +574,11 @@ link "vless://00000000-0000-0000-0000-000000000000@example.com:443?security=tls&
 	&& [ "$(lf transport_xhttp_host)" = example.org ] \
 	&& ok "link import: XHTTP link fills the transport" \
 	|| bad "link import (xhttp): $(cat "$OUT/link.json")"
+link "hysteria2://pw@example.com:443?sni=example.org&mport=20000-30000&up=50&down=200#HK-01"
+[ "$(lf 'hy2_server_ports[0]')" = 20000:30000 ] && [ "$(lf hy2_up_mbps)" = 50 ] \
+	&& [ "$(lf hy2_down_mbps)" = 200 ] \
+	&& ok "link import: Hysteria2 link fills port hopping and bandwidth" \
+	|| bad "link import (hysteria2): $(cat "$OUT/link.json")"
 link "not a link"
 [ -n "$(jsonfilter -i "$OUT/link.json" -e '@.error')" ] \
 	&& ok "link import: garbage is an error" || bad "link import (garbage): $(cat "$OUT/link.json")"
@@ -566,6 +588,7 @@ delete treadle.0123456789abcd60
 delete treadle.0123456789abcd61
 delete treadle.0123456789abcd62
 delete treadle.0123456789abcd63
+delete treadle.0123456789abcd64
 delete treadle.0123456789abcd6f
 set treadle.routing.final_outbound=ALL
 set treadle.global.mode=basic

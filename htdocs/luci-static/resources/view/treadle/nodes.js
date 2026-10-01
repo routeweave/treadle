@@ -540,6 +540,38 @@ return baseclass.extend({
 		o.password = true;
 		o.depends({ type: 'hysteria2', obfs_type: 'salamander' });
 
+		o = s.taboption('general', form.DynamicList, 'hy2_server_ports', _('Port hopping'),
+			_('Port ranges as <code>first:last</code>; the client hops between ports in them.'));
+		o.modalonly = true;
+		o.placeholder = '20000:30000';
+		o.validate = function(section_id, value) {
+			var m = /^(\d+):(\d+)$/.exec(value);
+			if (!value || (m && +m[1] >= 1 && +m[1] <= +m[2] && +m[2] <= 65535))
+				return true;
+			return _('Expecting a range first:last within 1-65535');
+		};
+		o.depends('type', 'hysteria2');
+
+		o = s.taboption('general', form.Value, 'hy2_hop_interval', _('Hop interval'));
+		o.modalonly = true;
+		o.placeholder = '30s';
+		o.validate = function(section_id, value) {
+			return (!value || /^(\d+(\.\d+)?(ns|us|ms|s|m|h))+$/.test(value))
+				? true : _('Expecting a duration such as 30s or 1m');
+		};
+		o.depends('type', 'hysteria2');
+
+		o = s.taboption('general', form.Value, 'hy2_up_mbps', _('Upload (Mbps)'),
+			_('Leave both empty to let the server negotiate.'));
+		o.modalonly = true;
+		o.datatype = 'uinteger';
+		o.depends('type', 'hysteria2');
+
+		o = s.taboption('general', form.Value, 'hy2_down_mbps', _('Download (Mbps)'));
+		o.modalonly = true;
+		o.datatype = 'uinteger';
+		o.depends('type', 'hysteria2');
+
 		o = s.taboption('general', form.ListValue, 'congestion_control', _('Congestion'));
 		['cubic','new_reno','bbr'].forEach(function(v) { o.value(v, v); });
 		o.modalonly = true;
