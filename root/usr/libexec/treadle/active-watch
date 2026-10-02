@@ -142,6 +142,16 @@ local function group_state(parsed)
 					entry.delay_ms = last.delay
 				end
 			end
+			-- A failed dial deletes the active member's test result but not
+			-- the selection: sing-box keeps sending new connections to it
+			-- until the next scheduled test pass (interval, 3 min by default)
+			-- re-selects. A member with no history is that state. A nested
+			-- group or unknown member is not judged.
+			if type(member) == "table" and member.type ~= "URLTest"
+				and (type(member.history) ~= "table" or #member.history == 0)
+			then
+				entry.lost = true
+			end
 			out[tag] = entry
 		end
 	end
@@ -239,6 +249,55 @@ local function log_initial(current, context)
 	end
 end
 
+-- Failover nudge. When a group's active member has lost its test result
+-- (it failed a real connection), sing-box keeps using it until the next
+-- scheduled test pass. One GET /group/<tag>/delay re-tests exactly the
+-- members without a fresh result (the dead one) and re-selects when the pass
+-- ends, so traffic moves within seconds instead of up to `interval`. At most
+-- one nudge per group per NUDGE_COOLDOWN_S: with the whole network down
+-- every member is lost and every pass fails, so repeating it faster only
+-- adds load. The request blocks until the slowest tested member answers or
+-- times out; NUDGE_FETCH_S bounds the fetch above sing-box's 15 s per-member
+-- timeout. Only the first nudge of a streak is logged.
+local NUDGE_COOLDOWN_S = 60
+local NUDGE_TIMEOUT_MS = 10000
+local NUDGE_FETCH_S    = 20
+local nudge_state = {}   -- tag -> { last = os.time(), logged = bool }
+
+local function nudge_groups(current)
+	for tag in pairs(nudge_state) do
+		local entry = current[tag]
+		if not (entry and entry.lost) then nudge_state[tag] = nil end
+	end
+	local tags = {}
+	for tag, entry in pairs(current) do
+		if entry.lost then tags[#tags + 1] = tag end
+	end
+	table.sort(tags)
+	for _, tag in ipairs(tags) do
+		local st = nudge_state[tag]
+		if not st or os.time() - st.last >= NUDGE_COOLDOWN_S then
+			if not st then
+				st = { logged = false }
+				nudge_state[tag] = st
+			end
+			st.last = os.time()
+			if not st.logged then
+				st.logged = true
+				logmsg("info", string.format(
+					"group '%s': active node %s lost its result, re-testing the group",
+					tag, current[tag].now))
+			end
+			-- The tag is percent-encoded, so it cannot break out of the quotes.
+			local f = io.popen("uclient-fetch --timeout=" .. NUDGE_FETCH_S
+				.. " -qO- 'http://" .. CLASH_HOST .. "/group/"
+				.. lib.url_encode(tag) .. "/delay?timeout=" .. NUDGE_TIMEOUT_MS
+				.. "' >/dev/null 2>&1")
+			if f then f:close() end
+		end
+	end
+end
+
 -- Lightweight UCI peek so the daemon notices a clash_api_enabled flip
 -- between procd reconciliations. Without it the loop keeps polling 9090
 -- after the user disables clash, eventually logging 'clash API
@@ -287,7 +346,8 @@ while true do
 
 		local current = group_state(parsed)
 
-		if (not primed) or had_outage or pid_changed then
+		local event_tick = (not primed) or had_outage or pid_changed
+		if event_tick then
 			-- Cold prime, post-outage recovery, or sing-box pid changed
 			-- under us — in each case the previous snapshot is either
 			-- empty or no longer authoritative about the new sing-box's
@@ -413,6 +473,11 @@ while true do
 			prev_total_down = total_down
 			prev_stats_ts   = now_ts
 		end
+		-- Last, because it can block for seconds. Not on a tick that
+		-- re-announced the groups (cold start, outage recovery, sing-box
+		-- restart): a fresh sing-box has no results yet and runs its own
+		-- first test pass.
+		if not event_tick then nudge_groups(current) end
 	else
 		fail_streak = fail_streak + 1
 		-- One warning at the threshold, not one per failed tick — the

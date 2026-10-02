@@ -978,6 +978,77 @@ done
 uci set treadle.inbounds.mode=tproxy
 uci commit treadle
 
+# --- failover nudge ---------------------------------------------------------
+
+# A urltest group keeps sending connections to a dead active member until its
+# next scheduled test pass. active-watch nudges the group as soon as that
+# member loses its result, so the switch happens within a poll, not an
+# interval. The group here tests only every 300 s: moving off the dead member
+# within seconds can only be the nudge. Two loopback SOCKS servers are the
+# members; the clash API is on 9090, where active-watch looks for it.
+step "failover nudge"
+if ! command -v curl >/dev/null 2>&1; then
+	if command -v apk >/dev/null 2>&1; then apk add curl >/dev/null 2>&1; else opkg install curl >/dev/null 2>&1; fi
+fi
+FO="$OUT/fo"
+mkdir -p "$FO/www"
+echo ok > "$FO/www/index.html"
+for n in 1 2; do
+	cat > "$FO/s$n.json" <<EOF
+{ "log": { "level": "warn" },
+  "inbounds": [ { "type": "socks", "tag": "in", "listen": "127.0.0.1", "listen_port": 1810$n } ],
+  "outbounds": [ { "type": "direct", "tag": "direct" } ],
+  "route": { "final": "direct" } }
+EOF
+done
+cat > "$FO/t.json" <<EOF
+{ "log": { "level": "warn" },
+  "inbounds": [ { "type": "mixed", "tag": "in", "listen": "127.0.0.1", "listen_port": 18100 } ],
+  "outbounds": [
+    { "type": "socks", "tag": "m1", "server": "127.0.0.1", "server_port": 18101, "version": "5" },
+    { "type": "socks", "tag": "m2", "server": "127.0.0.1", "server_port": 18102, "version": "5" },
+    { "type": "urltest", "tag": "g", "outbounds": [ "m1", "m2" ],
+      "url": "http://127.0.0.1:18199/", "interval": "300s", "tolerance": 50 } ],
+  "route": { "final": "g" },
+  "experimental": { "clash_api": { "external_controller": "127.0.0.1:9090" } } }
+EOF
+fo_now() { uclient-fetch -qO- http://127.0.0.1:9090/proxies/g 2>/dev/null | sed -n 's/.*"now": *"\([^"]*\)".*/\1/p'; }
+fo_probe() { curl -s -m 12 -o /dev/null -x socks5h://127.0.0.1:18100 http://127.0.0.1:18199/; }
+if command -v curl >/dev/null 2>&1; then
+	uhttpd -f -p 127.0.0.1:18199 -h "$FO/www" >/dev/null 2>&1 &
+	FO_PIDS="$!"
+	sing-box run -c "$FO/s1.json" >"$FO/s1.log" 2>&1 &
+	FO_S1=$!
+	sing-box run -c "$FO/s2.json" >"$FO/s2.log" 2>&1 &
+	FO_PIDS="$FO_PIDS $!"
+	sleep 2
+	sing-box run -c "$FO/t.json" >"$FO/t.log" 2>&1 &
+	FO_PIDS="$FO_PIDS $!"
+	uci set treadle.global.clash_api_enabled=1
+	uci commit treadle
+	lua /usr/libexec/treadle/active-watch >"$FO/aw.log" 2>&1 &
+	FO_PIDS="$FO_PIDS $!"
+	i=0
+	while [ "$i" -lt 20 ] && [ "$(fo_now)" != m1 ]; do sleep 1; i=$((i + 1)); done
+	fo_probe && [ "$(fo_now)" = m1 ] \
+		&& ok "the test group starts on its first member" \
+		|| bad "test group: now='$(fo_now)', probe failed: $(head -c 300 "$FO/t.log")"
+	kill "$FO_S1" 2>/dev/null; wait "$FO_S1" 2>/dev/null
+	fo_probe    # the failed request that makes sing-box drop the member's result
+	i=0
+	while [ "$i" -lt 40 ]; do
+		[ "$(fo_now)" = m2 ] && fo_probe && break
+		sleep 1; i=$((i + 1))
+	done
+	[ "$i" -lt 40 ] && ok "active-watch moved the group off a dead member within ${i}s (interval 300s)" \
+		|| bad "group still on '$(fo_now)' after 40s with the active member dead"
+	for p in $FO_PIDS; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done
+	uci set treadle.global.clash_api_enabled=0
+	uci commit treadle
+else
+	bad "curl is not available for the failover test"
+fi
+
 # --- removal -----------------------------------------------------------------
 
 # The init script installs these cron jobs on start; procd is not running
