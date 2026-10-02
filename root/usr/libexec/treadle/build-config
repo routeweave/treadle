@@ -2746,13 +2746,13 @@ if not PROBE_MODE then
 end
 
 -- Record the sing-box version this config was built for next to it, as
--- <out_path>.sbver. The start wrapper
+-- <out_path>.sbver (with the Go release, see lib.singbox_stamp). The start wrapper
 -- (/usr/libexec/treadle/sing-box) compares it with the installed binary before
 -- every start and rebuilds on a mismatch, so a sing-box upgrade followed by
 -- a crash-respawn never runs the new binary on a config built for the old
 -- one. The init script moves it along with the config.
 if not PREVIEW_MODE then
-	write_atomic(out_path .. ".sbver", (SB.version or "") .. "\n")
+	write_atomic(out_path .. ".sbver", lib.singbox_stamp(SB) .. "\n")
 end
 
 -- (Re)generate the dnsmasq managed-DNS drop-in. The content is deterministic

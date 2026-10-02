@@ -45,7 +45,13 @@ log_build_output() {
 		| sed 's/^treadle build-config: /config: /' | logger -p "daemon.$1" -t treadle
 }
 
-have=$("$SINGBOX" version 2>/dev/null | head -n 1)
+# The stamp is the version line plus the Go release when the output names one
+# (treadlelib.singbox_stamp builds the same string): the ech capability follows
+# the Go release, so a same-version reinstall built with another Go must rebuild.
+sbout=$("$SINGBOX" version 2>/dev/null)
+have=$(echo "$sbout" | head -n 1)
+gorel=$(echo "$sbout" | sed -n 's/^Environment: go\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n 1)
+[ -n "$have" ] && [ -n "$gorel" ] && have="$have go$gorel"
 built=$(cat "$cfg.sbver" 2>/dev/null)
 
 if [ -n "$have" ] && [ "$have" != "$built" ]; then

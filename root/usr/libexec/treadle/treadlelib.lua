@@ -330,11 +330,24 @@ function M.singbox_caps(line, go)
 	gmaj, gmin = tonumber(gmaj), tonumber(gmin)
 	return {
 		version      = line,
+		go           = (gmaj and gmin) and (gmaj .. "." .. gmin) or nil,
 		http_client  = at_least(1, 14),
 		initial_path = at_least(1, 14),
 		icmp_network = at_least(1, 13),
 		ech          = gmaj ~= nil and (gmaj > 1 or (gmaj == 1 and gmin >= 24))
 	}
+end
+
+-- What build-config records in <config>.sbver and the start wrapper
+-- (/usr/libexec/treadle/sing-box) recomputes in shell from the same output:
+-- the version line plus the Go release when the binary names one
+-- ("sing-box version 1.13.21 go1.24"). The Go release is part of the stamp
+-- because the `ech` flag follows it, not the sing-box version: reinstalling
+-- the same sing-box built with another Go changes what the config may
+-- contain, and must trigger the wrapper's rebuild. Keep the two in step.
+function M.singbox_stamp(caps)
+	if not caps.version then return "" end
+	return caps.version .. (caps.go and (" go" .. caps.go) or "")
 end
 
 -- The watchdog writes this after a rule-set download fails at startup: the

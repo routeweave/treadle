@@ -75,6 +75,8 @@ if [ -n "${SMOKE_SINGBOX:-}" ]; then
 fi
 SB_VERSION=$(sing-box version | head -n1)
 ok "$SB_VERSION"
+# The config stamp: the version line plus the Go release (treadlelib.singbox_stamp).
+SB_STAMP="$SB_VERSION$(sing-box version | sed -n 's/^Environment: go\([0-9][0-9]*\.[0-9][0-9]*\).*/ go\1/p' | head -n 1)"
 # Mirrors treadlelib.singbox_caps: http_client replaces download_detour at 1.14.
 # ECH needs a sing-box built with Go 1.24+ (24.10's package is not).
 SB_ECH=0
@@ -940,9 +942,9 @@ done
 uci set treadle.global.mode=basic
 uci commit treadle
 
-[ "$(cat "$bas.sbver" 2>/dev/null)" = "$SB_VERSION" ] \
-	&& ok "build-config stamps the config with the sing-box version" \
-	|| bad "stamp is '$(cat "$bas.sbver" 2>/dev/null)', want '$SB_VERSION'"
+[ "$(cat "$bas.sbver" 2>/dev/null)" = "$SB_STAMP" ] \
+	&& ok "build-config stamps the config with the sing-box version and Go release" \
+	|| bad "stamp is '$(cat "$bas.sbver" 2>/dev/null)', want '$SB_STAMP'"
 
 # procd tags an instance's log lines with the basename of the command it
 # started, so the wrapper has to be called sing-box or every sing-box line
@@ -952,24 +954,27 @@ run_sb=$(sed -n 's/^RUN_SINGBOX=//p' /etc/init.d/treadle)
 	&& ok "procd starts sing-box through a wrapper named sing-box" \
 	|| bad "procd command is '$run_sb'; its basename must be sing-box"
 
-# The start wrapper rebuilds a config whose stamp names another sing-box version
-# before starting it. Mixed mode needs no tproxy privileges, so sing-box can
-# actually start here; it is stopped once the stamp has been checked.
+# The start wrapper rebuilds a config whose stamp differs from the installed
+# sing-box: another version, or the same version built with another Go (which
+# flips the ech capability). Mixed mode needs no tproxy privileges, so
+# sing-box can actually start here; it is stopped once the stamp has been checked.
 uci set treadle.inbounds.mode=mixed
 uci commit treadle
 wrap="$OUT/wrap.json"
 "$BUILD" "$wrap" >/dev/null 2>&1
-echo "sing-box version 0.0.0" > "$wrap.sbver"
-/usr/libexec/treadle/sing-box "$wrap" > "$OUT/wrap.log" 2>&1 &
-WRAP=$!
-i=0
-while [ "$i" -lt 20 ] && [ "$(cat "$wrap.sbver" 2>/dev/null)" != "$SB_VERSION" ]; do
-	sleep 1; i=$((i + 1))
+for stale in "sing-box version 0.0.0" "$SB_VERSION go0.0"; do
+	echo "$stale" > "$wrap.sbver"
+	/usr/libexec/treadle/sing-box "$wrap" > "$OUT/wrap.log" 2>&1 &
+	WRAP=$!
+	i=0
+	while [ "$i" -lt 20 ] && [ "$(cat "$wrap.sbver" 2>/dev/null)" != "$SB_STAMP" ]; do
+		sleep 1; i=$((i + 1))
+	done
+	kill "$WRAP" 2>/dev/null; wait "$WRAP" 2>/dev/null
+	[ "$(cat "$wrap.sbver" 2>/dev/null)" = "$SB_STAMP" ] && [ ! -e "$wrap.next" ] \
+		&& ok "the start wrapper rebuilds a config stamped '$stale'" \
+		|| { bad "the start wrapper left stamp '$(cat "$wrap.sbver" 2>/dev/null)' for '$stale'"; sed 's/^/    /' "$OUT/wrap.log"; }
 done
-kill "$WRAP" 2>/dev/null; wait "$WRAP" 2>/dev/null
-[ "$(cat "$wrap.sbver" 2>/dev/null)" = "$SB_VERSION" ] && [ ! -e "$wrap.next" ] \
-	&& ok "the start wrapper rebuilds a config built for another sing-box version" \
-	|| { bad "the start wrapper left stamp '$(cat "$wrap.sbver" 2>/dev/null)'"; sed 's/^/    /' "$OUT/wrap.log"; }
 uci set treadle.inbounds.mode=tproxy
 uci commit treadle
 
