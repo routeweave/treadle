@@ -301,27 +301,23 @@ return baseclass.extend({
 			  'and moving on.'));
 		sDial.addremove = false;
 
-		// Clearing the field removes the option, and so does typing the
-		// default back in — form.js calls remove() for both — so an emptied
-		// box means "shipped default", not "no limit". `0` is the opt-out,
-		// which is why the description names it rather than saying "leave
-		// empty". build-config reads the two states the same way.
+		// No default: an empty field is the usual case and emits nothing,
+		// leaving sing-box's own 5 s. The placeholder shows that figure.
 		var oConnTimeout = advance(sDial.option(form.Value, 'connect_timeout',
 			_('Connect timeout'),
-			_('Applied to every proxy node. A node that refuses connections is ' +
-			  'dropped from its auto group immediately, but one that silently ' +
-			  'discards traffic is not — without this, each attempt waits out ' +
-			  'the kernel\'s retry schedule (around two minutes) with the app ' +
-			  'hung behind it. Set 0 for no limit.')));
+			_('How long to wait for a node\'s TCP connection before giving up ' +
+			  'on it. Leave empty for sing-box\'s own limit of 5 seconds; raise ' +
+			  'it on a very slow link whose connection takes longer, or lower ' +
+			  'it to fail over sooner. Hysteria2 and TUIC ignore it and always ' +
+			  'give up after 5 seconds.')));
 		oConnTimeout.placeholder = '5s';
-		oConnTimeout['default']  = '5s';
 		oConnTimeout.optional    = true;
 		oConnTimeout.validate = function(section_id, value) {
 			if (value == null || value === '' || value === '0')
 				return true;
 			// Go duration: one or more <number><unit> pairs, e.g. 5s, 1m30s.
 			if (!/^(\d+(\.\d+)?(ns|us|ms|s|m|h))+$/.test(value))
-				return _('Expected a duration such as "5s" or "1m30s", or 0 for no limit');
+				return _('Expected a duration such as "8s" or "1m30s"');
 			return true;
 		};
 

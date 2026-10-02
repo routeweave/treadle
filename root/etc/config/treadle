@@ -8,7 +8,6 @@ config treadle 'global'
 	option ruleset_download_detour 'default'
 	option clash_api_enabled '0'
 	option auto_test_hours '0'
-	option connect_timeout '5s'
 
 config treadle 'basic'
 	option routing 'all'

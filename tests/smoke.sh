@@ -978,6 +978,48 @@ done
 uci set treadle.inbounds.mode=tproxy
 uci commit treadle
 
+# --- connect timeout --------------------------------------------------------
+
+# sing-box already bounds a dial at 5 s, so nothing is stamped unless the user
+# sets a different limit (decision 0142). Proxy outbounds carry it, groups and
+# direct do not.
+step "connect timeout"
+uci set treadle.global.mode=advanced
+uci delete treadle.global.connect_timeout 2>/dev/null
+uci commit treadle
+ct_fields() { jsonfilter -i "$1" -e '@.outbounds[*].connect_timeout' | sort -u | tr '\n' ' '; }
+ct_proxies() { jsonfilter -i "$1" -e '@.outbounds[@.server].tag' | wc -l; }
+ct_stamped() { jsonfilter -i "$1" -e '@.outbounds[@.connect_timeout].tag' | wc -l; }
+build "connect timeout unset"
+[ -z "$(ct_fields "$OUT/connect_timeout_unset.json")" ] && [ "$(ct_proxies "$OUT/connect_timeout_unset.json")" -gt 0 ] \
+	&& ok "no connect_timeout is stamped by default" \
+	|| bad "default config stamps '$(ct_fields "$OUT/connect_timeout_unset.json")'"
+for v in 5s 0 0s; do
+	uci set treadle.global.connect_timeout="$v"
+	uci commit treadle
+	build "connect timeout $v"
+	f="$OUT/connect_timeout_$v.json"
+	[ -z "$(ct_fields "$f")" ] && ok "connect_timeout '$v' stamps nothing (sing-box's own 5 s applies)" \
+		|| bad "connect_timeout '$v' stamps '$(ct_fields "$f")'"
+done
+uci set treadle.global.connect_timeout=bogus
+uci commit treadle
+build "connect timeout bogus"
+f="$OUT/connect_timeout_bogus.json"
+[ -z "$(ct_fields "$f")" ] && grep -q "connect_timeout 'bogus' is not a duration" "$OUT/build.log" \
+	&& ok "a malformed connect_timeout is dropped with a warning" \
+	|| bad "malformed connect_timeout: stamps '$(ct_fields "$f")', log: $(head -c 200 "$OUT/build.log")"
+uci set treadle.global.connect_timeout=8s
+uci commit treadle
+build "connect timeout 8s"
+f="$OUT/connect_timeout_8s.json"
+[ "$(ct_fields "$f")" = "8s " ] && [ "$(ct_stamped "$f")" = "$(ct_proxies "$f")" ] \
+	&& ok "connect_timeout 8s is stamped on every proxy outbound, and only those" \
+	|| bad "connect_timeout 8s: fields '$(ct_fields "$f")', stamped $(ct_stamped "$f") of $(ct_proxies "$f") proxies"
+uci delete treadle.global.connect_timeout
+uci set treadle.global.mode=basic
+uci commit treadle
+
 # --- failover nudge ---------------------------------------------------------
 
 # A urltest group keeps sending connections to a dead active member until its

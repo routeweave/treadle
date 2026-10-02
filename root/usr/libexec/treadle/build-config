@@ -1097,50 +1097,42 @@ local function direct_outbound()
 	return { type = "direct", tag = "direct", domain_resolver = "local" }
 end
 
--- "0", "0s", "0m0s" — the explicit opt-out. Spelled as a value the user can
--- actually type, because an *empty* one is unreachable from the settings
--- form: form.js removes the option when the field is cleared, and again when
--- it is set to the declared default (`fval == null || fval == '' || (fval ==
--- this.default && (this.optional || this.rmempty))` → `remove()`). So absent
--- and empty cannot be made to mean different things here, and do not.
+-- "0", "0s", "0m0s": a zero duration. sing-box reads a zero (or absent)
+-- connect_timeout as "use the built-in limit", so it means the same as leaving
+-- the field empty.
 local function is_zero_duration(v)
 	if v == "0" then return true end
 	if not valid_duration(v) then return false end
 	return tonumber((v:gsub("%a+", ""))) == 0
 end
 
--- Dial timeout stamped on every proxy outbound. A node that *refuses* the
--- connection fails its dial at once, and sing-box drops it from the urltest
--- group's history (DeleteURLTestHistory in protocol/group/urltest.go), so
--- Select() skips it and the next connection lands on a different member. A
--- node that blackholes the SYN instead gets no such backstop: with no
--- connect_timeout the dial waits out the kernel's SYN retry schedule with the
--- client hung behind it, and because the member still holds valid history
--- from its last good check, further connections keep being steered onto it.
--- Bounding the dial turns that case into the refused one.
+-- Dial timeout stamped on proxy outbounds, only when the user asked for one.
+-- sing-box already bounds every dial at 5 s when the field is absent
+-- (common/dialer/default.go: `C.TCPConnectTimeout`, 1.12 and 1.13), so a
+-- blackholed node fails after 5 s without any help from here, and stamping
+-- "5s" would change nothing. Measured on a router: with the field unset a
+-- TCP dial fails after 5.0 s, with 2s after 2.0 s and with 15s after 15.0 s,
+-- so it is honoured exactly for TCP protocols. Hysteria2 and TUIC ignore it:
+-- their QUIC handshake gives up after 5 s whatever it says (decision 0142).
+-- The setting therefore exists to change the limit, in either direction.
 --
--- An absent UCI option means the shipped default, not "off", so a config
--- written by hand without the key still gets the bound. `0` opts out; see
--- is_zero_duration for why the opt-out is not spelled as an empty value.
-local CONNECT_TIMEOUT_DEFAULT = "5s"
+-- Nothing is emitted for an empty, zero or "5s" value (a config saved when
+-- "5s" was the shipped default keeps working and stops carrying a redundant
+-- field). A malformed value is dropped with a warning rather than passed
+-- through: sing-box would reject the whole config over one typo, which per
+-- 0046 strands the user on the last working generation with no visible reason.
+local SINGBOX_CONNECT_TIMEOUT = "5s"
 local _connect_timeout
 local function connect_timeout(c)
 	if _connect_timeout == nil then
 		local v = c:get("treadle", "global", "connect_timeout")
-		if v == nil or v == "" then
-			v = CONNECT_TIMEOUT_DEFAULT
-		elseif is_zero_duration(v) then
+		if v == nil or v == "" or v == SINGBOX_CONNECT_TIMEOUT or is_zero_duration(v) then
 			v = ""
 		elseif not valid_duration(v) then
-			-- Fall back to the default rather than emitting nothing: a typo
-			-- should not silently drop the protection, and it must not reach
-			-- sing-box either, which would reject the whole config over it and
-			-- strand the user on the last working generation (the init script
-			-- keeps that one running) with no visible reason.
 			io.stderr:write("treadle build-config: connect_timeout '" .. tostring(v)
-				.. "' is not a duration (e.g. 5s); using "
-				.. CONNECT_TIMEOUT_DEFAULT .. "\n")
-			v = CONNECT_TIMEOUT_DEFAULT
+				.. "' is not a duration (e.g. 8s); using sing-box's own "
+				.. SINGBOX_CONNECT_TIMEOUT .. "\n")
+			v = ""
 		end
 		_connect_timeout = v
 	end
