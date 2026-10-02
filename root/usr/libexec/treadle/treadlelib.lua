@@ -313,6 +313,8 @@ end
 --   initial_path 1.14+: a remote rule-set can start from a local file when
 --                nothing is cached, so startup does not wait on (and die of)
 --                its first download.
+--   icmp_network 1.13+: rules match ICMP echo with `network: icmp`; 1.12
+--                rejects the value, and does not route ICMP through a tun.
 --   ech          built with Go 1.24+, whatever the sing-box version: older
 --                builds (24.10's 1.12 package is Go 1.23) refuse the whole
 --                config over one ECH outbound ("ECH requires go1.24"). An
@@ -330,6 +332,7 @@ function M.singbox_caps(line, go)
 		version      = line,
 		http_client  = at_least(1, 14),
 		initial_path = at_least(1, 14),
+		icmp_network = at_least(1, 13),
 		ech          = gmaj ~= nil and (gmaj > 1 or (gmaj == 1 and gmin >= 24))
 	}
 end

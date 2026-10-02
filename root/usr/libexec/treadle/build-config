@@ -2042,6 +2042,19 @@ local BASIC_COMMON_PORTS = {
 	993, 995, 5222, 5223, 8080, 8443
 }
 
+-- Pings go direct in tun mode, as they do in tproxy mode, where firewall.sh
+-- never hands ICMP to sing-box. A tun captures ICMP, and only direct (and
+-- WireGuard/Tailscale endpoints) can carry it: a ping that reaches a rule
+-- pointing at a proxy is refused, and the client gets a fake reply from the
+-- router. A ping has no port, so whether it reached such a rule depended on
+-- the user's rule order. Placed before every user rule, so it always wins.
+-- 1.12 has no `icmp` network and does not route ICMP through a tun anyway.
+local function add_icmp_direct(c, route)
+	if not SB.icmp_network then return end
+	if (c:get("treadle", "inbounds", "mode") or "tun") ~= "tun" then return end
+	route.rules[#route.rules + 1] = { network = { "icmp" }, outbound = "direct" }
+end
+
 -- Basic mode route block. Fixed structure: sniff → DNS hijack → private-IP
 -- bypass → optional country bypass (geoip + geosite for the picked country
 -- ISO code → direct) → optional common-ports proxy rule → final routes to
@@ -2067,6 +2080,7 @@ local function build_basic_route(c)
 	-- Private and CGNAT destinations go direct; see build_route.
 	route.rules[#route.rules + 1] = { ip_is_private = true, outbound = "direct" }
 	route.rules[#route.rules + 1] = { ip_cidr = { "100.64.0.0/10" }, outbound = "direct" }
+	add_icmp_direct(c, route)
 
 	local basic        = c:get_all("treadle", "basic") or {}
 	local routing_mode = basic.routing or "all"
@@ -2237,6 +2251,7 @@ local function build_route(c, prepared)
 	-- is invalid and neither matches.
 	route.rules[#route.rules + 1] = { ip_is_private = true, outbound = "direct" }
 	route.rules[#route.rules + 1] = { ip_cidr = { "100.64.0.0/10" }, outbound = "direct" }
+	add_icmp_direct(c, route)
 
 	-- Remote rule-set objects, deduplicated by tag across rules. sing-box
 	-- downloads and refreshes each one itself; download_detour decides

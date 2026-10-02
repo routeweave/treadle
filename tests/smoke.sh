@@ -83,6 +83,10 @@ sing-box version | sed -n 's/^Environment: go\([0-9]*\)\.\([0-9]*\).*/\1 \2/p' \
 SB_HTTP_CLIENT=0
 echo "$SB_VERSION" | awk '{ split($3, v, "."); exit !(v[1] > 1 || (v[1] == 1 && v[2] >= 14)) }' \
 	&& SB_HTTP_CLIENT=1
+# ...and rules match ICMP with `network: icmp` from 1.13.
+SB_ICMP=0
+echo "$SB_VERSION" | awk '{ split($3, v, "."); exit !(v[1] > 1 || (v[1] == 1 && v[2] >= 13)) }' \
+	&& SB_ICMP=1
 
 # --- rpcd handler basics -----------------------------------------------------
 
@@ -296,6 +300,22 @@ done
 uci set treadle.inbounds.mode=tproxy
 uci commit treadle
 
+# Pings go direct in tun mode, ahead of every user rule, as tproxy never hands
+# ICMP to sing-box. 1.12 has no `icmp` network, so nothing is emitted there.
+icmp_tun=$(jsonfilter -i "$OUT/advanced___tun.json" \
+	-e '@.route.rules[@.network[0]="icmp"].outbound')
+icmp_tproxy=$(jsonfilter -i "$OUT/advanced___tproxy.json" \
+	-e '@.route.rules[@.network[0]="icmp"].outbound')
+if [ "$SB_ICMP" = 1 ]; then
+	[ "$icmp_tun" = "direct" ] && ok "tun route sends ICMP direct" \
+		|| bad "tun route ICMP outbound is '$icmp_tun', want direct"
+else
+	[ -z "$icmp_tun" ] && ok "no ICMP rule before sing-box 1.13" \
+		|| bad "ICMP rule emitted for $SB_VERSION"
+fi
+[ -z "$icmp_tproxy" ] && ok "tproxy route has no ICMP rule" \
+	|| bad "tproxy route has an ICMP rule ('$icmp_tproxy')"
+
 # In tun mode nothing ahead of sing-box bypasses CGNAT the way firewall.sh
 # does for tproxy, so the route has to send it direct itself.
 cgnat=$(jsonfilter -i "$OUT/advanced___tun.json" \
@@ -364,6 +384,15 @@ uid_adv=$(jsonfilter -i "$OUT/advanced___tun.json" \
 	-e '@.inbounds[@.type="tun"].exclude_uid_range[0]')
 [ -z "$uid_adv" ] && ok "advanced tun inbound keeps local uids" \
 	|| bad "advanced tun inbound has exclude_uid_range '$uid_adv'"
+icmp_basic=$(jsonfilter -i "$OUT/basic___tun.json" \
+	-e '@.route.rules[@.network[0]="icmp"].outbound')
+if [ "$SB_ICMP" = 1 ]; then
+	[ "$icmp_basic" = "direct" ] && ok "basic tun route sends ICMP direct" \
+		|| bad "basic tun route ICMP outbound is '$icmp_basic', want direct"
+else
+	[ -z "$icmp_basic" ] && ok "basic: no ICMP rule before sing-box 1.13" \
+		|| bad "basic: ICMP rule emitted for $SB_VERSION"
+fi
 uci set treadle.inbounds.mode=tproxy
 uci commit treadle
 
