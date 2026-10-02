@@ -292,11 +292,29 @@ auto_redirect=$(jsonfilter -i "$OUT/advanced___unset_mode.json" \
 	-e '@.inbounds[@.type="tun"].auto_redirect')
 [ "$auto_redirect" = "true" ] && ok "the default tun inbound sets auto_redirect" \
 	|| bad "the default tun inbound auto_redirect is '$auto_redirect', want true"
-for mode in tproxy tproxy_mixed tun mixed; do
+for mode in tproxy tun mixed; do
 	uci set treadle.inbounds.mode="$mode"
 	uci commit treadle
 	build "advanced / $mode"
 done
+for mode in tun tproxy; do
+	uci set treadle.inbounds.mode="$mode"
+	uci set treadle.inbounds.mixed_enabled=1
+	uci commit treadle
+	build "advanced / $mode + mixed"
+	mixed_port=$(jsonfilter -i "$OUT/advanced___${mode}_+_mixed.json" \
+		-e '@.inbounds[@.type="mixed"].listen_port')
+	[ "$mixed_port" = "2080" ] && ok "$mode mode emits the mixed inbound when mixed_enabled is on" \
+		|| bad "$mode mode mixed inbound port is '$mixed_port', want 2080"
+done
+uci set treadle.inbounds.mixed_enabled=0
+uci set treadle.inbounds.mode=tun
+uci commit treadle
+build "advanced / tun no mixed"
+no_mixed=$(jsonfilter -i "$OUT/advanced___tun_no_mixed.json" \
+	-e '@.inbounds[@.type="mixed"].tag')
+[ -z "$no_mixed" ] && ok "no mixed inbound when mixed_enabled is off" \
+	|| bad "mixed inbound present with mixed_enabled off"
 uci set treadle.inbounds.mode=tproxy
 uci commit treadle
 

@@ -24,6 +24,7 @@ config treadle 'inbounds'
 	option tun_mtu '9000'
 	option tun_stack 'system'
 	option tun_auto_route '1'
+	option mixed_enabled '0'
 	option mixed_listen '127.0.0.1'
 	option mixed_port '2080'
 

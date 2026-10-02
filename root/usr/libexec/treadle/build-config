@@ -322,7 +322,7 @@ local function build_inbounds(c)
 	local mode  = c:get("treadle", "inbounds", "mode") or "tun"
 	local inet6 = (c:get("treadle", "inbounds", "inet6") == "1")
 
-	if mode == "tproxy" or mode == "tproxy_mixed" then
+	if mode == "tproxy" then
 		inbounds[#inbounds + 1] = {
 			type        = "tproxy",
 			tag         = "tproxy-in",
@@ -364,7 +364,7 @@ local function build_inbounds(c)
 		inbounds[#inbounds + 1] = tun
 	end
 
-	if mode == "tproxy_mixed" then
+	if c:get("treadle", "inbounds", "mixed_enabled") == "1" then
 		inbounds[#inbounds + 1] = {
 			type        = "mixed",
 			tag         = "mixed-in",
@@ -2068,7 +2068,7 @@ local function build_basic_route(c)
 	}
 
 	local imode = c:get("treadle", "inbounds", "mode") or "tun"
-	if imode == "tproxy" or imode == "tproxy_mixed" then
+	if imode == "tproxy" then
 		route.default_mark = 255
 	end
 
@@ -2187,7 +2187,7 @@ local function build_route(c, prepared)
 	-- mark 255. tun mode doesn't need it but setting it unconditionally is
 	-- simpler than threading inbound mode through here.
 	local imode = c:get("treadle", "inbounds", "mode") or "tun"
-	if imode == "tproxy" or imode == "tproxy_mixed" then
+	if imode == "tproxy" then
 		route.default_mark = 255
 	end
 
@@ -2196,7 +2196,7 @@ local function build_route(c, prepared)
 	route.rules[#route.rules + 1] = { action = "sniff" }
 
 	-- Per-host bypass for tun mode. firewall.sh handles bypasses directly
-	-- in tproxy / tproxy_mixed via an `accept` rule at the head of the
+	-- in tproxy via an `accept` rule at the head of the
 	-- prerouting chain; here we get the same effect at the routing layer
 	-- so a bypassed source_ip lands on the `direct` outbound before any
 	-- user rule can claim it. MAC bypasses are inert in tun mode (the L2
@@ -2238,7 +2238,7 @@ local function build_route(c, prepared)
 	-- multicast and IPv6 ULA all match ip_is_private (sing/common/network
 	-- IsPublicAddr); CGNAT (100.64/10) does not, so it gets its own rule —
 	-- it carries Tailscale-style overlay addresses and ISP-internal hosts,
-	-- neither of which a remote proxy can reach. In tproxy / tproxy_mixed
+	-- neither of which a remote proxy can reach. In tproxy
 	-- mode both rules are inert because firewall.sh already bypasses these
 	-- ranges at prerouting; in tun mode they are load-bearing — without
 	-- them a Default server pointing at a proxy would tunnel LAN-to-LAN
@@ -2626,7 +2626,7 @@ local function build_probe_config(c)
 		default_domain_resolver = { server = "local" }
 	}
 	local imode = c:get("treadle", "inbounds", "mode") or "tun"
-	if imode == "tproxy" or imode == "tproxy_mixed" then
+	if imode == "tproxy" then
 		route.default_mark = 255
 	end
 

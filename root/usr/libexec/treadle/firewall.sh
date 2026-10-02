@@ -7,8 +7,8 @@
 # Installs an `inet treadle` nftables table with a mangle-prerouting chain
 # that TPROXYs transit LAN TCP+UDP to sing-box's tproxy listener, plus
 # the matching policy-routing rule + table that delivers marked packets
-# to the loopback socket. Only active when `inbounds.mode` is `tproxy`
-# or `tproxy_mixed`; tun mode needs no firewall (sing-box handles routing).
+# to the loopback socket. Only active when `inbounds.mode` is `tproxy`;
+# tun mode needs no firewall (sing-box handles routing).
 #
 # When inbounds.tproxy_self is enabled (the default), a `route`-hook
 # OUTPUT chain also marks router-originated traffic so the same policy
@@ -43,8 +43,8 @@ uci_get() { uci -q get "treadle.$1.$2" 2>/dev/null; }
 
 # Emit `accept` rules for every enabled `bypass` UCI section at the head of
 # the prerouting chain — matching LAN packets exit before any TPROXY work,
-# so the host's traffic never touches sing-box. Only invoked for tproxy /
-# tproxy_mixed modes; in tun mode build-config emits the equivalent
+# so the host's traffic never touches sing-box. Only invoked for tproxy
+# mode; in tun mode build-config emits the equivalent
 # source_ip_cidr direct rule into the sing-box config instead.
 #
 # One awk pass over `uci show treadle` instead of three `uci get` forks (plus
@@ -274,7 +274,7 @@ start() {
 	mode=$(uci_get inbounds mode)
 	[ -n "$mode" ] || mode=tun
 	case "$mode" in
-		tproxy|tproxy_mixed) ;;
+		tproxy) ;;
 		*)
 			stop
 			treadle_log info "firewall: $mode mode, no TPROXY ruleset needed"

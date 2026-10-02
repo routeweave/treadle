@@ -134,13 +134,13 @@ return baseclass.extend({
 		var oMode = sNet.option(form.ListValue, 'mode', _('Mode'),
 			_('How LAN traffic enters sing-box: through a TUN virtual ' +
 			  'interface (recommended), transparently via TProxy, or ' +
-			  'TProxy plus an explicit HTTP/SOCKS5 listener for app clients.'));
+			  'transparently via TProxy. An explicit HTTP/SOCKS5 listener can ' +
+			  'be added to either.'));
 		oMode.value('tun',          _('TUN only — virtual L3 interface, sing-box manages routing'));
 		oMode.value('tproxy',       _('TProxy only — transparent TCP + UDP via nftables'));
-		oMode.value('tproxy_mixed', _('TProxy + Mixed — transparent proxy and explicit HTTP/SOCKS5'));
 		oMode['default'] = 'tun';
 
-		// tproxy / tproxy_mixed group — sits directly below Mode so the
+		// tproxy group — sits directly below Mode so the
 		// mode-dependent rows are visually adjacent to the selector that
 		// reveals them.
 		var oTproxySelf = sNet.option(form.Flag, 'tproxy_self',
@@ -151,23 +151,30 @@ return baseclass.extend({
 		oTproxySelf['default'] = '1';
 		oTproxySelf.rmempty = false;
 		oTproxySelf.depends('mode', 'tproxy');
-		oTproxySelf.depends('mode', 'tproxy_mixed');
 
 		var oTproxyPort = advance(sNet.option(form.Value, 'tproxy_port', _('TProxy port')));
 		oTproxyPort.datatype = 'port';
 		oTproxyPort.placeholder = '7895';
 		oTproxyPort.depends('mode', 'tproxy');
-		oTproxyPort.depends('mode', 'tproxy_mixed');
 
-		// tproxy_mixed only group
+		var oMixedEnabled = sNet.option(form.Flag, 'mixed_enabled',
+			_('HTTP/SOCKS5 listener'),
+			_('Also accept explicit HTTP and SOCKS5 proxy connections from app clients. ' +
+			  'The default address is loopback; set a LAN address to expose it, ' +
+			  'but the listener has no authentication.'));
+		oMixedEnabled['default'] = '0';
+		oMixedEnabled.rmempty = false;
+		oMixedEnabled.depends('mode', 'tun');
+		oMixedEnabled.depends('mode', 'tproxy');
+
 		var oMixedListen = advance(sNet.option(form.Value, 'mixed_listen', _('Mixed listen address')));
 		oMixedListen.placeholder = '127.0.0.1';
-		oMixedListen.depends('mode', 'tproxy_mixed');
+		oMixedListen.depends('mixed_enabled', '1');
 
 		var oMixedPort = advance(sNet.option(form.Value, 'mixed_port', _('Mixed port')));
 		oMixedPort.datatype = 'port';
 		oMixedPort.placeholder = '2080';
-		oMixedPort.depends('mode', 'tproxy_mixed');
+		oMixedPort.depends('mixed_enabled', '1');
 
 		// tun only group
 		var oTunAddr = advance(sNet.option(form.Value, 'tun_address', _('TUN IPv4 address')));

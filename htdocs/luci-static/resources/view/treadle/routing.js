@@ -751,7 +751,7 @@ return baseclass.extend({
 		// ── bypass ──────────────────────────────────────────────────────
 		// LAN clients listed here skip the proxy entirely — applied via
 		// nftables `accept` rules at the head of the prerouting chain
-		// (tproxy / tproxy_mixed modes), or as a source_ip_cidr direct
+		// (tproxy mode), or as a source_ip_cidr direct
 		// rule in the sing-box config (tun mode, IP entries only — MAC is
 		// not visible at the IP layer the TUN device exposes, so MAC
 		// entries are inert in tun mode and a warning is surfaced inline).

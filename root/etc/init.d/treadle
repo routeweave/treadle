@@ -332,6 +332,13 @@ start_service() {
 
 	local enabled config_path mode tmp_cfg config_ok rotates order_snap
 
+	if [ "$(uci -q get treadle.inbounds.mode)" = "tproxy_mixed" ]; then
+		uci -q set treadle.inbounds.mode='tproxy'
+		uci -q set treadle.inbounds.mixed_enabled='1'
+		uci -q commit treadle
+		treadle_log notice "config: migrated mode tproxy_mixed to tproxy with the HTTP/SOCKS5 listener on"
+	fi
+
 	config_load treadle
 	config_get_bool enabled global enabled 0
 
