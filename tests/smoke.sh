@@ -871,6 +871,7 @@ fi
 uci set treadle.global.mode=basic
 uci set treadle.basic.routing=bypass_country
 uci set treadle.basic.bypass_country=cn
+uci set treadle.basic.server=HK-05
 uci commit treadle
 build "basic / bypass country"
 bas="$OUT/basic___bypass_country.json"
@@ -881,8 +882,17 @@ else
 fi
 [ "$d" = "direct" ] && ok "basic rule-sets download direct" \
 	|| bad "basic rule-set download detour '$d', fields: $(rs_fields "$bas")"
+# The bypassed country's geosite resolves via `local`, mirroring its route rule.
+[ "$(jsonfilter -i "$bas" -e '@.dns.rules[@.rule_set[0]="sagernet-geosite-cn"].server')" = "local" ] \
+	&& ok "basic bypass country resolves its geosite via local" \
+	|| bad "basic bypass country: no local DNS rule for the geosite: $(jsonfilter -i "$bas" -e '@.dns.final' -e '@.dns.rules[*]' -e '@.route.final')"
 uci set treadle.basic.routing=all
+uci delete treadle.basic.server
 uci commit treadle
+build "basic / no bypass"
+[ -z "$(jsonfilter -i "$OUT/basic___no_bypass.json" -e '@.dns.rules[*].rule_set')" ] \
+	&& ok "basic without bypass has no geosite DNS rule" \
+	|| bad "basic without bypass still has a rule-set DNS rule"
 
 # From 1.14 every remote rule-set starts from an empty placeholder when
 # nothing is cached, so startup never waits on (or dies of) a first download.

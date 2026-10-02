@@ -1827,6 +1827,25 @@ local function build_local_dns_servers(c)
 	} }
 end
 
+-- Basic mode's country bypass: the geosite rule-set tag that build_basic_route
+-- emits, or nil when there is none. Sagernet's geoip catalog covers ~all ISO
+-- codes, but their geosite catalog ships only a handful of per-country lists
+-- — at the time of writing, only `cn`. Emitting geosite-<cc> for every
+-- country produces 404s on the .srs fetch, sing-box logs the failure and the
+-- rule is half-effective, so geosite is gated on this known-good set. Shared
+-- by build_dns and build_basic_route so the DNS rule and the route rule can
+-- never name different rule-sets.
+local SAGERNET_GEOSITES = { cn = true }
+local function basic_bypass_geosite(c)
+	if read_mode(c) ~= "basic" then return nil end
+	local basic = c:get_all("treadle", "basic") or {}
+	local cc    = string.lower(basic.bypass_country or "")
+	if basic.routing ~= "bypass_country" or not SAGERNET_GEOSITES[cc] then
+		return nil
+	end
+	return "sagernet-geosite-" .. cc, "geosite-" .. cc
+end
+
 local function build_dns(c, prepared)
 	local strategy         = c:get("treadle", "dns", "strategy") or ""
 	-- Mode-aware: Advanced reads the user's final-outbound knob, Basic derives
@@ -1908,6 +1927,24 @@ local function build_dns(c, prepared)
 
 	local routing_rules, per_outbound = build_routing_dns_rules(prepared, fakeip_on)
 	for _, r in ipairs(routing_rules) do rules[#rules + 1] = r end
+
+	-- Basic mode synthesises no routing rules (prepare_rules returns {}), so
+	-- mirror its one domain-bearing route rule by hand: domains in the bypassed
+	-- country's geosite resolve via `local`, so a CDN geolocalises to the
+	-- router's own network and hands back nearby endpoints for the direct
+	-- connection. Without it they would go to `remote` (or `fakeip`) like
+	-- everything else. Nothing to mirror when the default is not a proxy:
+	-- `final` is already `local`.
+	if default_is_proxy then
+		local geosite_tag = basic_bypass_geosite(c)
+		if geosite_tag then
+			rules[#rules + 1] = {
+				action   = "route",
+				server   = "local",
+				rule_set = { geosite_tag }
+			}
+		end
+	end
 
 	-- Per-outbound DNS servers: one `remote-<tag>` per outbound flagged via
 	-- `rule.dns_via_outbound`, so the DNS lookup for a domain exits through
@@ -2107,32 +2144,18 @@ local function build_basic_route(c)
 	-- domain-routed ones. `rule_set` on a route rule is OR-matched in
 	-- sing-box, so one rule with both tags suffices. Provider is hardcoded
 	-- to sagernet to match the rule-set Advanced mode emits by default.
-	-- Known gap: lookups for bypassed-country domains still exit via the
-	-- `remote` resolver — DNS routing rules are not synthesised in Basic
-	-- (prepare_rules returns {}). With fakeip off the resolution is over
-	-- DoT and content is encrypted, so it is a mild correctness wart but
-	-- not a leak. With fakeip on (an Advanced setting that persists in UCI
-	-- if a user crosses modes) `remote` returns a fake IP that still routes
-	-- direct via the geoip set after demap, but the resolver used was the
-	-- proxied one — same wart, different surface.
+	-- Their DNS lookups are steered to `local` by a matching rule in build_dns.
 	-- Sagernet's geoip catalog covers ~all ISO codes (every Basic-mode
-	-- option resolves), but their geosite catalog ships only a handful
-	-- of per-country lists — at the time of writing, only `cn`.
-	-- Emitting geosite-<cc> for every country produces 404s on the
-	-- .srs fetch, sing-box logs the failure and the rule is half-effective
-	-- (direct-IP traffic bypassed, domain-routed traffic still proxied).
-	-- Gate geosite emission on the known-good set; geoip stays
-	-- unconditional so the bypass at least catches IP-routed packets
-	-- everywhere.
-	local SAGERNET_GEOSITES = { cn = true }
+	-- option resolves), but geosite is gated on a known-good set — see
+	-- basic_bypass_geosite. geoip stays unconditional so the bypass at least
+	-- catches IP-routed packets everywhere.
 	if routing_mode == "bypass_country" and cc ~= "" then
 		local geoip_name = "geoip-" .. cc
 		local geoip_tag  = "sagernet-" .. geoip_name
 		emit_rs(geoip_tag, provider_url("sagernet", delivery, geoip_name))
 		local rs_tags = { geoip_tag }
-		if SAGERNET_GEOSITES[cc] then
-			local geosite_name = "geosite-" .. cc
-			local geosite_tag  = "sagernet-" .. geosite_name
+		local geosite_tag, geosite_name = basic_bypass_geosite(c)
+		if geosite_tag then
 			emit_rs(geosite_tag, provider_url("sagernet", delivery, geosite_name))
 			rs_tags[#rs_tags + 1] = geosite_tag
 		end
