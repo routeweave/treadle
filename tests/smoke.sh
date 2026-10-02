@@ -97,6 +97,16 @@ jsonfilter -i "$OUT/list.json" -e '@.get_status' >/dev/null \
 echo '{}' | "$HANDLER" call get_status > "$OUT/status.json"
 jsonfilter -i "$OUT/status.json" -e '@.version' >/dev/null \
 	&& ok "get_status reports the sing-box version" || bad "get_status: $(cat "$OUT/status.json")"
+# The package manager's own answer, not the files the handler reads.
+if command -v apk >/dev/null 2>&1; then
+	want_pv=$(apk list -I luci-app-treadle | sed -n 's/^luci-app-treadle-\([^ ]*\) .*/\1/p')
+else
+	want_pv=$(opkg list-installed luci-app-treadle | sed -n 's/^luci-app-treadle - //p')
+fi
+got_pv=$(jsonfilter -i "$OUT/status.json" -e '@.package_version')
+[ -n "$want_pv" ] && [ "$got_pv" = "$want_pv" ] \
+	&& ok "get_status reports the installed Treadle version" \
+	|| bad "get_status package_version '$got_pv', package manager says '$want_pv'"
 echo '{"logs":10}' | "$HANDLER" call get_dashboard > "$OUT/dash.json"
 jsonfilter -i "$OUT/dash.json" -e '@.status.version' >/dev/null \
 	&& jsonfilter -i "$OUT/dash.json" -e '@.groups' >/dev/null \

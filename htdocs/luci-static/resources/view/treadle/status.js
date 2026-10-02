@@ -48,7 +48,7 @@
 'require view.treadle.lib.badges as badges';
 
 // Everything a poll tick needs, from one handler process:
-//   status — enabled / running / paused / version / mode
+//   status — enabled / running / paused / version / package_version / mode
 //   groups — each urltest group's active member (clash `now`) from the
 //            snapshot the active-watch daemon writes every 10 s, the same
 //            view that backs the syslog change-log; { error: "clash API
@@ -500,9 +500,13 @@ return baseclass.extend({
 
 	_renderFooter: function(status, mode) {
 		// No autostart read-out: the Enable toggle is the visible control
-		// for that flag, so the footer would just echo it. Mode and version
-		// are not shown elsewhere on the page.
-		return _('%s · Mode: %s').format(shortVersion(status.version), mode);
+		// for that flag, so the footer would just echo it. Mode and versions
+		// are not shown elsewhere on the page. Treadle's own version comes
+		// first, as it is the one a bug report has to name.
+		var versions = [ shortVersion(status.version) ];
+		if (status.package_version)
+			versions.unshift('Treadle ' + status.package_version);
+		return _('%s · Mode: %s').format(versions.join(' · '), mode);
 	},
 
 	_renderActions: function(state) {

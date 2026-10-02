@@ -1614,6 +1614,41 @@ local function singbox_version()
 	return version
 end
 
+-- The installed Treadle package version ("0.11.0-r1"), so a bug report can
+-- name the running build. Read straight from the package manager's database
+-- rather than by forking apk/opkg: apk keeps `P:<name>` then `V:<version>`
+-- in one flat file, opkg a per-package control file. Scanning apk's database
+-- takes ~2 ms on a router (136 KB), cheaper than a fork, and unlike a tmpfs
+-- cache it cannot go stale across an upgrade. Returns nil on a hand-copied
+-- install that no package manager knows about.
+local function treadle_version()
+	local f = io.open("/lib/apk/db/installed", "r")
+	if f then
+		local hit, version = false, nil
+		for line in f:lines() do
+			if hit then
+				if line:sub(1, 2) == "V:" then version = line:sub(3) break end
+				if line == "" then break end
+			elseif line == "P:luci-app-treadle" then
+				hit = true
+			end
+		end
+		f:close()
+		return version
+	end
+	f = io.open("/usr/lib/opkg/info/luci-app-treadle.control", "r")
+	if f then
+		local version
+		for line in f:lines() do
+			version = line:match("^Version:%s*(%S+)")
+			if version then break end
+		end
+		f:close()
+		return version
+	end
+	return nil
+end
+
 -- Fetch a subscription URL and update its UCI state.
 -- Returns a result table { status, node_count } on success.
 local function sync_one(id)
@@ -1851,6 +1886,7 @@ local methods = {
 				running = running,
 				paused = paused,
 				version = version,
+				package_version = treadle_version(),
 				mode    = mode,
 				compat  = compat
 			}
