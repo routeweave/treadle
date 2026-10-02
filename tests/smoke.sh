@@ -325,6 +325,23 @@ cgnat=$(jsonfilter -i "$OUT/basic.json" \
 [ "$cgnat" = "direct" ] && ok "basic route sends CGNAT direct" \
 	|| bad "basic route CGNAT outbound is '$cgnat', want direct"
 
+# Basic never proxies the router's own traffic. tproxy gets that from
+# firewall.sh; a tun inbound captures local output too, so Basic excludes
+# every local uid there. Advanced keeps the router's traffic in the tunnel.
+uci set treadle.inbounds.mode=tun
+uci commit treadle
+build "basic / tun"
+uid_basic=$(jsonfilter -i "$OUT/basic___tun.json" \
+	-e '@.inbounds[@.type="tun"].exclude_uid_range[0]')
+[ "$uid_basic" = "0:65535" ] && ok "basic tun inbound excludes local uids" \
+	|| bad "basic tun inbound exclude_uid_range is '$uid_basic', want 0:65535"
+uid_adv=$(jsonfilter -i "$OUT/advanced___tun.json" \
+	-e '@.inbounds[@.type="tun"].exclude_uid_range[0]')
+[ -z "$uid_adv" ] && ok "advanced tun inbound keeps local uids" \
+	|| bad "advanced tun inbound has exclude_uid_range '$uid_adv'"
+uci set treadle.inbounds.mode=tproxy
+uci commit treadle
+
 # With no proxy default, a remote DNS server given by hostname must still
 # get a detour, or sing-box finds no resolver for its address and rejects
 # the config. Basic here has no server selected; Advanced is set to direct.

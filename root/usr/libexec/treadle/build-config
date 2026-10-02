@@ -338,7 +338,7 @@ local function build_inbounds(c)
 		local address = { c:get("treadle", "inbounds", "tun_address") or "172.19.0.1/30" }
 		if inet6 then address[#address + 1] = "fdfe:dcba:9876::1/126" end
 		local auto_route = c:get("treadle", "inbounds", "tun_auto_route") ~= "0"
-		inbounds[#inbounds + 1] = {
+		local tun = {
 			type          = "tun",
 			tag           = "tun-in",
 			address       = address,
@@ -354,6 +354,14 @@ local function build_inbounds(c)
 			strict_route  = false,
 			stack         = c:get("treadle", "inbounds", "tun_stack") or "system"
 		}
+		-- Basic mode never proxies the router's own traffic (firewall.sh forces
+		-- tproxy_self off for it), but auto_route captures local output too.
+		-- Forwarded LAN traffic has no local user, so excluding every local uid
+		-- keeps only the LAN in the tunnel.
+		if read_mode(c) == "basic" and auto_route then
+			tun.exclude_uid_range = { "0:65535" }
+		end
+		inbounds[#inbounds + 1] = tun
 	end
 
 	if mode == "tproxy_mixed" then
