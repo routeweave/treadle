@@ -779,10 +779,14 @@ return baseclass.extend({
 		var bpName = bp.option(form.Value, 'name', _('Name'));
 		bpName.placeholder = _('Optional label');
 
+		// MAC entries only fire in TProxy mode, so a new entry defaults to
+		// the kind that works in the current inbound mode: IP in TUN (the
+		// shipped mode), MAC otherwise (it survives a lease change).
+		var bpDefaultKind = (imode === 'tun') ? 'ip' : 'mac';
 		var bpKind = bp.option(form.ListValue, 'kind', _('Type'));
 		bpKind.value('mac', _('MAC'));
 		bpKind.value('ip',  _('IP'));
-		bpKind['default'] = 'mac';
+		bpKind['default'] = bpDefaultKind;
 
 		// Build the suggestion list for the Value combobox once per kind —
 		// each DHCP lease contributes a single entry whose key matches the
@@ -804,7 +808,7 @@ return baseclass.extend({
 
 		var bpValue = bp.option(form.Value, 'value', _('Value'));
 		bpValue.rmempty = false;
-		bpValue.placeholder = '00:11:22:33:44:55';
+		bpValue.placeholder = (bpDefaultKind === 'mac') ? '00:11:22:33:44:55' : '192.168.1.50';
 		// form.Value falls back to a plain ui.Textfield when no .value()
 		// entries are declared at construction; force a ui.Combobox so
 		// addChoices / clearChoices are available for the kind-driven
@@ -832,7 +836,7 @@ return baseclass.extend({
 				if (!w) return;
 				var kindOpts = self.map.lookupOption('kind', section_id);
 				var kind = (kindOpts && kindOpts[0])
-					? (kindOpts[0].formvalue(section_id) || 'mac') : 'mac';
+					? (kindOpts[0].formvalue(section_id) || bpDefaultKind) : bpDefaultKind;
 				var c = bypassChoices(kind);
 				w.clearChoices(true);
 				w.addChoices(c[0], c[1]);
@@ -860,7 +864,7 @@ return baseclass.extend({
 				return _('A value is required.');
 			var kindOpts = this.map.lookupOption('kind', section_id);
 			var kind = (kindOpts && kindOpts[0])
-				? (kindOpts[0].formvalue(section_id) || 'mac') : 'mac';
+				? (kindOpts[0].formvalue(section_id) || bpDefaultKind) : bpDefaultKind;
 			if (kind === 'mac') {
 				// nft only accepts colon-separated MACs; reject '-' and '.'
 				// up front so saved values match firewall.sh's regex.
@@ -894,7 +898,7 @@ return baseclass.extend({
 		var bpWarn = bp.option(form.DummyValue, '_warn', '');
 		bpWarn.modalonly = false;
 		bpWarn.cfgvalue = function(section_id) {
-			var kind = uci.get('treadle', section_id, 'kind') || 'mac';
+			var kind = uci.get('treadle', section_id, 'kind') || bpDefaultKind;
 			if (kind === 'mac' && imode === 'tun')
 				return E('span', { 'class': 'label warning',
 					'style': 'padding:1px 6px; border-radius:3px; text-transform:none;',
