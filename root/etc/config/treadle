@@ -16,7 +16,7 @@ config treadle 'basic'
 	option ports 'all'
 
 config treadle 'inbounds'
-	option mode 'tproxy'
+	option mode 'tun'
 	option tproxy_port '7895'
 	option tproxy_self '1'
 	option inet6 '1'

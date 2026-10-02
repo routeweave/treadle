@@ -324,7 +324,7 @@ return baseclass.extend({
 
 		var info     = runtimeInfo(outbounds);
 		var active   = info.active;
-		var mode     = uci.get('treadle', 'inbounds', 'mode') || 'tproxy';
+		var mode     = uci.get('treadle', 'inbounds', 'mode') || 'tun';
 		var subCount = uci.sections('treadle', 'subscription').length;
 		var manualCount = uci.sections('treadle', 'node').length;
 
@@ -1023,7 +1023,7 @@ return baseclass.extend({
 				if (!document.getElementById('treadle-status-badge')) {
 					var info     = runtimeInfo(this._outbounds);
 					var active   = info.active;
-					var mode     = uci.get('treadle', 'inbounds', 'mode') || 'tproxy';
+					var mode     = uci.get('treadle', 'inbounds', 'mode') || 'tun';
 					var subCount = uci.sections('treadle', 'subscription').length;
 					while (runtime.firstChild) runtime.removeChild(runtime.firstChild);
 					this._renderRuntime(status, active, subCount, info, mode)
@@ -1061,7 +1061,7 @@ return baseclass.extend({
 		}
 		var footer = document.getElementById('treadle-status-footer');
 		if (footer) {
-			var mode2 = uci.get('treadle', 'inbounds', 'mode') || 'tproxy';
+			var mode2 = uci.get('treadle', 'inbounds', 'mode') || 'tun';
 			footer.textContent = this._renderFooter(status, mode2);
 		}
 	},

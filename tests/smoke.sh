@@ -246,6 +246,23 @@ build() {
 }
 
 step "configs"
+# The shipped default is tun, and a missing option builds the same thing, so
+# the conffile, the builder and the UI agree (see decision 0118 for what a
+# mismatch costs). tproxy stays selectable, which the loop below covers.
+shipped_mode=$(uci -q get treadle.inbounds.mode)
+[ "$shipped_mode" = "tun" ] && ok "shipped inbound mode is tun" \
+	|| bad "shipped inbound mode is '$shipped_mode', want tun"
+uci delete treadle.inbounds.mode
+uci commit treadle
+build "advanced / unset mode"
+unset_in=$(jsonfilter -i "$OUT/advanced___unset_mode.json" \
+	-e '@.inbounds[0].type')
+[ "$unset_in" = "tun" ] && ok "an unset inbound mode builds a tun inbound" \
+	|| bad "an unset inbound mode builds '$unset_in', want tun"
+auto_redirect=$(jsonfilter -i "$OUT/advanced___unset_mode.json" \
+	-e '@.inbounds[@.type="tun"].auto_redirect')
+[ "$auto_redirect" = "true" ] && ok "the default tun inbound sets auto_redirect" \
+	|| bad "the default tun inbound auto_redirect is '$auto_redirect', want true"
 for mode in tproxy tproxy_mixed tun mixed; do
 	uci set treadle.inbounds.mode="$mode"
 	uci commit treadle

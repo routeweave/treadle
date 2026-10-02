@@ -94,13 +94,15 @@ switching modes never loses settings.
 
 `inbounds.mode` picks the method:
 
-- **`tproxy`** (default) and **`tproxy_mixed`** — `firewall.sh` installs
-  `inet treadle`: a prerouting chain that TPROXYs LAN TCP and UDP to
-  sing-box, skipping reserved ranges and per-device bypasses, and
-  optionally an output chain for the router's own traffic. sing-box marks
-  its own sockets (`default_mark`) so they are never looped back in.
-- **`tun`** — sing-box routes through a TUN device itself; no firewall
+- **`tun`** (default) — sing-box routes through a TUN device itself, with
+  `auto_redirect` so it installs its own nftables rules; no `inet treadle`
   table is installed.
+- **`tproxy`** and **`tproxy_mixed`** — the alternative, kept selectable:
+  `firewall.sh` installs `inet treadle`: a prerouting chain that TPROXYs
+  LAN TCP and UDP to sing-box, skipping reserved ranges and per-device
+  bypasses, and optionally an output chain for the router's own traffic.
+  sing-box marks its own sockets (`default_mark`) so they are never looped
+  back in.
 - **`mixed`** — a local SOCKS/HTTP proxy only.
 
 On every reload the ruleset is **replaced atomically**: the generated

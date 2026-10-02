@@ -757,7 +757,7 @@ return baseclass.extend({
 		// entries are inert in tun mode and a warning is surfaced inline).
 		var leases = (data && data[3] && Array.isArray(data[3].leases))
 			? data[3].leases : [];
-		var imode = uci.get('treadle', 'inbounds', 'mode') || 'tproxy';
+		var imode = uci.get('treadle', 'inbounds', 'mode') || 'tun';
 
 		var bp = m.section(form.GridSection, 'bypass', _('Bypass'),
 			_('LAN clients listed here skip the proxy entirely. Useful for ' +

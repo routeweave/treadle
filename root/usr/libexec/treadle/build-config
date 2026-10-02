@@ -319,7 +319,7 @@ end
 
 local function build_inbounds(c)
 	local inbounds = {}
-	local mode  = c:get("treadle", "inbounds", "mode") or "tproxy"
+	local mode  = c:get("treadle", "inbounds", "mode") or "tun"
 	local inet6 = (c:get("treadle", "inbounds", "inet6") == "1")
 
 	if mode == "tproxy" or mode == "tproxy_mixed" then
@@ -2046,7 +2046,7 @@ local function build_basic_route(c)
 		default_domain_resolver = { server = "local" }
 	}
 
-	local imode = c:get("treadle", "inbounds", "mode") or "tproxy"
+	local imode = c:get("treadle", "inbounds", "mode") or "tun"
 	if imode == "tproxy" or imode == "tproxy_mixed" then
 		route.default_mark = 255
 	end
@@ -2164,7 +2164,7 @@ local function build_route(c, prepared)
 	-- proxy back through itself. Harmless when no firewall rule references
 	-- mark 255. tun mode doesn't need it but setting it unconditionally is
 	-- simpler than threading inbound mode through here.
-	local imode = c:get("treadle", "inbounds", "mode") or "tproxy"
+	local imode = c:get("treadle", "inbounds", "mode") or "tun"
 	if imode == "tproxy" or imode == "tproxy_mixed" then
 		route.default_mark = 255
 	end
@@ -2602,7 +2602,7 @@ local function build_probe_config(c)
 		auto_detect_interface   = true,
 		default_domain_resolver = { server = "local" }
 	}
-	local imode = c:get("treadle", "inbounds", "mode") or "tproxy"
+	local imode = c:get("treadle", "inbounds", "mode") or "tun"
 	if imode == "tproxy" or imode == "tproxy_mixed" then
 		route.default_mark = 255
 	end

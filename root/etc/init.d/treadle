@@ -343,7 +343,7 @@ start_service() {
 	[ "$enabled" = "1" ] || return 1
 
 	config_get config_path global config_path /var/etc/treadle/sing-box.json
-	config_get mode inbounds mode tproxy
+	config_get mode inbounds mode tun
 
 	# Transient pause: the Status page Stop button writes PAUSE_MARKER and
 	# calls /etc/init.d/treadle stop, so the service stops without flipping

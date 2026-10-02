@@ -272,7 +272,7 @@ start() {
 	# in atomically (see build_nft) and the policy rule is only added when
 	# missing. A mode without TPROXY removes both instead.
 	mode=$(uci_get inbounds mode)
-	[ -n "$mode" ] || mode=tproxy
+	[ -n "$mode" ] || mode=tun
 	case "$mode" in
 		tproxy|tproxy_mixed) ;;
 		*)

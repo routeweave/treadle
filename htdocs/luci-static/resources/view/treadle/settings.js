@@ -132,13 +132,13 @@ return baseclass.extend({
 		sNet.addremove = false;
 
 		var oMode = sNet.option(form.ListValue, 'mode', _('Mode'),
-			_('How LAN traffic enters sing-box: transparently via TProxy ' +
-			  '(recommended), via a TUN virtual interface, or both TProxy ' +
-			  'plus an explicit HTTP/SOCKS5 listener for app clients.'));
-		oMode.value('tproxy',       _('TProxy only — transparent TCP + UDP via nftables'));
+			_('How LAN traffic enters sing-box: through a TUN virtual ' +
+			  'interface (recommended), transparently via TProxy, or ' +
+			  'TProxy plus an explicit HTTP/SOCKS5 listener for app clients.'));
 		oMode.value('tun',          _('TUN only — virtual L3 interface, sing-box manages routing'));
+		oMode.value('tproxy',       _('TProxy only — transparent TCP + UDP via nftables'));
 		oMode.value('tproxy_mixed', _('TProxy + Mixed — transparent proxy and explicit HTTP/SOCKS5'));
-		oMode['default'] = 'tproxy';
+		oMode['default'] = 'tun';
 
 		// tproxy / tproxy_mixed group — sits directly below Mode so the
 		// mode-dependent rows are visually adjacent to the selector that
