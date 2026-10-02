@@ -105,6 +105,31 @@ jsonfilter -i "$OUT/dash-nolog.json" -e '@.logs' >/dev/null 2>&1 \
 	&& bad "get_dashboard read the logs without being asked" \
 	|| ok "get_dashboard skips the logs unless asked"
 
+# sing-box 1.13 logs the timeout that ends an answered ICMP echo session as an
+# error; the Status box hides that one line and keeps every other sing-box line.
+# The container has no syslog, so a stand-in logread supplies the lines. The
+# JSON encoder escapes the slash in "i/o", so the benign line is matched on
+# its address and the start of its error text.
+mkdir -p "$OUT/fakebin"
+cat > "$OUT/fakebin/logread" <<'EOF'
+#!/bin/sh
+echo 'Fri Oct  2 09:12:11 2026 daemon.err sing-box[7051]: ERROR[0357] [123 12.0s] outbound/direct[direct]: receive ICMP echo reply: read ip 192.0.2.10: i/o timeout'
+echo 'Fri Oct  2 09:12:12 2026 daemon.err sing-box[7051]: ERROR[0358] outbound/direct[direct]: dial tcp 192.0.2.20:443: connection refused'
+echo 'Fri Oct  2 09:12:13 2026 daemon.err sing-box[7051]: ERROR[0359] outbound/direct[direct]: receive ICMP echo reply: read ip 192.0.2.10: no route to host'
+EOF
+chmod +x "$OUT/fakebin/logread"
+echo '{"lines":20}' | PATH="$OUT/fakebin:$PATH" "$HANDLER" call get_logs > "$OUT/logs.json"
+grep -q 'read ip 192.0.2.10: i' "$OUT/logs.json" \
+	&& bad "get_logs shows the benign ICMP timeout" \
+	|| ok "get_logs hides the ICMP echo session timeout"
+grep -q 'connection refused' "$OUT/logs.json" && grep -q 'no route to host' "$OUT/logs.json" \
+	&& ok "get_logs keeps the other sing-box errors, including other ICMP ones" \
+	|| bad "get_logs dropped a real error: $(head -c 300 "$OUT/logs.json")"
+echo '{"lines":20}' | PATH="$OUT/fakebin:$PATH" "$HANDLER" call get_log > "$OUT/log-full.json"
+grep -q 'read ip 192.0.2.10: i' "$OUT/log-full.json" \
+	&& ok "get_log (full log) still shows the ICMP timeout" \
+	|| bad "get_log hid the ICMP timeout; the full log must stay complete"
+
 # --- subscriptions -----------------------------------------------------------
 
 step "subscriptions"

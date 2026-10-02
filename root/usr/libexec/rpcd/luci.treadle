@@ -2065,6 +2065,16 @@ local methods = {
 				return out
 			end
 
+			-- sing-box 1.13 (sing-tun before the 1.14.2 library) logs the read
+			-- timeout that ends an ICMP echo session at error level even when
+			-- the ping was answered, so every ping a LAN client sends through
+			-- the tun fills the box with a harmless error. Hidden here only;
+			-- the syslog and the full-log view keep the line.
+			local function benign(line)
+				return line:find("receive ICMP echo reply: ", 1, true) ~= nil
+					and line:find(": i/o timeout", 1, true) ~= nil
+			end
+
 			local treadle, singbox = ring(), ring()
 			-- Dumping the whole syslog ring buffer is what makes this call
 			-- expensive (~56 ms for 4.5k lines on a 6-core aarch64 router).
@@ -2086,7 +2096,7 @@ local methods = {
 						end
 					elseif line:find("sing-box[", 1, true) or
 					       line:find(" sing-box: ", 1, true) then
-						push(singbox, line)
+						if not benign(line) then push(singbox, line) end
 					end
 				end
 				f:close()
