@@ -4,7 +4,13 @@
 include $(TOPDIR)/rules.mk
 
 LUCI_TITLE:=LuCI interface for sing-box
-LUCI_DEPENDS:=+luci-base +luci-lib-jsonc +sing-box (>=1.12) +rpcd +uclient-fetch +ca-bundle +lua +libuci-lua +nftables-json +kmod-nft-tproxy
+LUCI_DEPENDS:=+luci-base +luci-lib-jsonc +sing-box +rpcd +uclient-fetch +ca-bundle +lua +libuci-lua +nftables-json +kmod-nft-tproxy
+# Minimum versions, one `name>=version` per package named in LUCI_DEPENDS. They
+# cannot sit in LUCI_DEPENDS itself: the OpenWrt SDK reads "(>=1.12)" there as the
+# name of a package, and the Kconfig it generates no longer parses. luci.mk ignores
+# this variable, so an SDK build enforces no floor; scripts/package.sh turns it into
+# the apk (`sing-box>=1.12`) and ipk (`sing-box (>= 1.12)`) dependency strings.
+TREADLE_DEP_MIN:=sing-box>=1.12
 LUCI_PKGARCH:=all
 
 PKG_NAME:=luci-app-treadle
@@ -20,9 +26,17 @@ PKG_MAINTAINER:=RouteWeave
 PKG_LICENSE:=GPL-3.0-only
 PKG_LICENSE_FILES:=LICENSE
 PKG_URL:=https://github.com/routeweave/treadle
+# luci.mk takes the maintainer and URL from these, not from PKG_*.
+LUCI_MAINTAINER:=$(PKG_MAINTAINER)
+LUCI_URL:=$(PKG_URL)
 
-include $(TOPDIR)/feeds/luci/luci.mk
-
+# Conffiles and the maintainer scripts are defined BEFORE the include on purpose.
+# luci.mk ends by evaluating BuildPackage, which looks for these definitions at
+# that moment: a conffiles or prerm block placed after the include is invisible to
+# an SDK build, which then ships a package that overwrites /etc/config/treadle on
+# upgrade and does not stop the service on removal. (Only postinst is predefined
+# by luci.mk, behind an ifndef, so it was never affected.) scripts/package.sh
+# refuses to build when one of these comes after the include.
 define Package/luci-app-treadle/conffiles
 /etc/config/treadle
 /etc/treadle/extra.json
@@ -58,5 +72,7 @@ define Package/luci-app-treadle/prerm
 }
 exit 0
 endef
+
+include $(TOPDIR)/feeds/luci/luci.mk
 
 # $(eval $(call BuildPackage,luci-app-treadle)) is called by luci.mk

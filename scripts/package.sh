@@ -64,12 +64,26 @@ PKG_LICENSE=$(mk_var PKG_LICENSE)
 PKG_URL=$(mk_var PKG_URL)
 PKG_DESC=$(mk_var LUCI_TITLE)
 LUCI_DEPENDS=$(mk_var LUCI_DEPENDS)
+DEP_MIN=$(mk_var TREADLE_DEP_MIN)
 LUCI_PKGARCH=$(mk_var LUCI_PKGARCH)
 PKG_CONFFILES=$(mk_block "define Package/${PKG_NAME}/conffiles")
 
 for v in PKG_NAME PKG_VERSION PKG_RELEASE PKG_MAINTAINER PKG_LICENSE \
          PKG_URL PKG_DESC LUCI_DEPENDS LUCI_PKGARCH PKG_CONFFILES; do
 	[ -n "${!v}" ] || die "could not parse $v from $MAKEFILE"
+done
+
+# luci.mk evaluates BuildPackage at the end of the include, so a conffiles or
+# prerm block defined after it is invisible to an OpenWrt SDK build (conffiles
+# lost, prerm reduced to the generic one) while this script, which finds blocks
+# by name, would never notice. Refuse to build rather than let the two drift.
+include_line=$(grep -n '^include .*luci\.mk' "$MAKEFILE" | head -n 1 | cut -d: -f1)
+[ -n "$include_line" ] || die "no luci.mk include found in $MAKEFILE"
+for blk in conffiles prerm; do
+	blk_line=$(grep -n "^define Package/${PKG_NAME}/${blk}\$" "$MAKEFILE" | head -n 1 | cut -d: -f1)
+	if [ -n "$blk_line" ] && [ "$blk_line" -gt "$include_line" ]; then
+		die "Package/${PKG_NAME}/${blk} is defined after the luci.mk include (line $blk_line, include at $include_line); an SDK build would not see it"
+	fi
 done
 
 # Architecture tokens derived from the Makefile's LUCI_PKGARCH, the same way
@@ -84,27 +98,43 @@ case "$LUCI_PKGARCH" in
 	*)     PKG_ARCH_APK="$LUCI_PKGARCH" ;;
 esac
 
-# APK and IPK dependency strings, both derived from the Makefile's single
-# LUCI_DEPENDS list. The two formats differ in version-constraint syntax:
+# APK and IPK dependency strings, both derived from the Makefile: the package
+# names from LUCI_DEPENDS, the minimum versions from TREADLE_DEP_MIN (a
+# `name>=version` list). The two formats differ in version-constraint syntax:
 #   APK: "sing-box>=1.12"     (no space, no parentheses)
 #   IPK: "sing-box (>= 1.12)" (Debian-style)
-# A `(constraint)` token attaches to the package name that precedes it.
+# A constraint cannot be written inside LUCI_DEPENDS, whose entries the OpenWrt
+# SDK reads as package names.
 PKG_DEPENDS_APK=""
 PKG_DEPENDS_IPK=""
+used_min=""
 for tok in $LUCI_DEPENDS; do
 	case "$tok" in
-		\(*\))
-			constraint=${tok#\(}; constraint=${constraint%\)}
-			rel=${constraint%%[0-9]*}
-			ver=${constraint#"$rel"}
-			PKG_DEPENDS_APK="${PKG_DEPENDS_APK}${constraint}"
-			PKG_DEPENDS_IPK="${PKG_DEPENDS_IPK} (${rel} ${ver})"
-			;;
-		*)
-			pkg=${tok#+}
-			PKG_DEPENDS_APK="${PKG_DEPENDS_APK:+$PKG_DEPENDS_APK }${pkg}"
-			PKG_DEPENDS_IPK="${PKG_DEPENDS_IPK:+$PKG_DEPENDS_IPK, }${pkg}"
-			;;
+		*\(*|*\)*|*\>*|*\<*|*=*)
+			die "LUCI_DEPENDS entry '$tok' carries a version constraint; put it in TREADLE_DEP_MIN (the OpenWrt SDK reads it here as a package name)" ;;
+	esac
+	pkg=${tok#+}
+	apk_dep=$pkg
+	ipk_dep=$pkg
+	for c in $DEP_MIN; do
+		cname=${c%%[<>=]*}
+		[ "$cname" = "$pkg" ] || continue
+		constraint=${c#"$cname"}
+		rel=${constraint%%[0-9]*}
+		ver=${constraint#"$rel"}
+		[ -n "$rel" ] && [ -n "$ver" ] || die "TREADLE_DEP_MIN entry '$c' is not name<relation>version"
+		apk_dep="${pkg}${rel}${ver}"
+		ipk_dep="${pkg} (${rel} ${ver})"
+		used_min="$used_min $cname"
+	done
+	PKG_DEPENDS_APK="${PKG_DEPENDS_APK:+$PKG_DEPENDS_APK }${apk_dep}"
+	PKG_DEPENDS_IPK="${PKG_DEPENDS_IPK:+$PKG_DEPENDS_IPK, }${ipk_dep}"
+done
+for c in $DEP_MIN; do
+	cname=${c%%[<>=]*}
+	case " $used_min " in
+		*" $cname "*) ;;
+		*) die "TREADLE_DEP_MIN names '$cname', which is not in LUCI_DEPENDS" ;;
 	esac
 done
 

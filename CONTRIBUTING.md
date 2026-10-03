@@ -21,7 +21,16 @@ scripts/package.sh
 
 The `Makefile` is the single source of truth for package metadata
 (`PKG_VERSION`, `LUCI_DEPENDS`, conffiles, …). `package.sh` parses those
-values out — never edit them in `package.sh`.
+values out — never edit them in `package.sh`. Two rules keep the same
+`Makefile` valid for an OpenWrt SDK build, and `package.sh` refuses to build
+when either is broken:
+
+- **Version floors go in `TREADLE_DEP_MIN`** (`sing-box>=1.12`), not in
+  `LUCI_DEPENDS`: the SDK reads a `(>=1.12)` there as a package name and
+  fails. `package.sh` turns the variable into the apk and ipk spellings.
+- **`conffiles` and `prerm` are defined above the `luci.mk` include.**
+  `luci.mk` looks for them when it is included, so a block after it is
+  silently dropped from an SDK package.
 
 ### Using the OpenWrt SDK
 
@@ -31,6 +40,13 @@ make package/luci-app-treadle/compile V=s
 ```
 
 Output: `bin/packages/<arch>/base/luci-app-treadle_*.apk`
+
+This path is not built in CI: the package has nothing to compile, `package.sh`
+is the supported build, and an SDK build compiles the whole dependency tree
+(`luci-base`, `sing-box`, …). It was checked once by hand, and the two rules
+above came out of that. Known differences from `package.sh`'s output: the SDK
+does not enforce the `sing-box` version floor, ships `extra.json` as `0644`
+rather than `0600`, and adds a `conffiles_static` checksum file.
 
 ### Checks
 
