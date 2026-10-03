@@ -18,6 +18,7 @@
 
 'use strict';
 'require baseclass';
+'require dom';
 'require form';
 'require rpc';
 'require session';
@@ -42,6 +43,37 @@ var callSetExtraConfig = rpc.declare({
 	params: ['payload'],
 	expect: { '': {} }
 });
+
+// SagerNet sing-box updates (decision 0153): the helper runs in the
+// background and get_singbox_update reports its progress.
+var callGetSingboxUpdate = rpc.declare({
+	object: 'luci.treadle',
+	method: 'get_singbox_update',
+	expect: { '': {} }
+});
+
+var callCheckSingboxUpdate = rpc.declare({
+	object: 'luci.treadle',
+	method: 'check_singbox_update',
+	expect: { '': {} }
+});
+
+var callInstallSingboxUpdate = rpc.declare({
+	object: 'luci.treadle',
+	method: 'install_singbox_update',
+	params: ['version'],
+	expect: { '': {} }
+});
+
+var callRevertSingboxPackage = rpc.declare({
+	object: 'luci.treadle',
+	method: 'revert_singbox_package',
+	expect: { '': {} }
+});
+
+function formatMB(bytes) {
+	return (bytes / 1048576).toFixed(1) + ' MB';
+}
 
 // DNS address validator — mirrors build-config's parse_dns_url. An optional
 // scheme, a host that is a valid IP or hostname, an optional port, and an
@@ -104,13 +136,15 @@ return baseclass.extend({
 		// A failed RPC must not blank the tab — degrade to empty data.
 		return Promise.all([
 			callGetWanDns().catch(function() { return {}; }),
-			callGetExtraConfig().catch(function() { return {}; })
+			callGetExtraConfig().catch(function() { return {}; }),
+			callGetSingboxUpdate().catch(function() { return {}; })
 		]);
 	},
 
 	render: function(results) {
 		var wanDnsInfo = (results && results[0]) || {};
 		var extraData  = (results && results[1]) || {};
+		this._sbu      = (results && results[2]) || {};
 		var wanDns     = wanDnsInfo.wan_dns || null;
 		var extraText  = extraData.json || '';
 
@@ -487,9 +521,168 @@ return baseclass.extend({
 
 		formNode.insertBefore(toggle, formNode.firstChild);
 		formNode.appendChild(styleEl);
+		formNode.appendChild(this._renderSbuSection());
 		formNode.appendChild(extraSection);
 
+		// A check or install may already be running (another tab, or a
+		// reload mid-install): pick up its progress.
+		if (this._sbu.busy)
+			this._sbuPoll(0);
+
 		return formNode;
+	},
+
+	// ── sing-box version (SagerNet updates) ──────────────────────────────
+	// Always visible: it is an action, not a setting. The body is rebuilt
+	// from get_singbox_update on every poll.
+	_renderSbuSection: function() {
+		this._sbuBody = E('div', {});
+		this._renderSbuBody();
+		return E('div', { 'class': 'cbi-section' }, [
+			E('h3', {}, [ _('sing-box version') ]),
+			E('div', { 'class': 'cbi-section-descr' }, [
+				_('Check SagerNet\'s latest stable sing-box release for an OpenWrt package built for this router, and install it in place of the OpenWrt package. SagerNet\'s packages are not signed: Treadle checks the download against the SHA-256 that GitHub publishes for it, test-runs the binary, and returns to the OpenWrt package if the new version does not start.')
+			]),
+			this._sbuBody
+		]);
+	},
+
+	_renderSbuBody: function() {
+		var st = this._sbu || {};
+		var cur = st.current || {};
+		var latest = st.latest || null;
+		var busy = !!st.busy;
+
+		function row(label, value) {
+			return E('div', { 'class': 'cbi-value' }, [
+				E('label', { 'class': 'cbi-value-title' }, [ label ]),
+				E('div', { 'class': 'cbi-value-field', 'style': 'padding-top:0.4em;' }, value)
+			]);
+		}
+
+		var source = cur.source === 'sagernet' ? _('SagerNet package')
+			: cur.source === 'openwrt' ? _('OpenWrt package') : _('unknown package');
+		var installed = cur.version
+			? _('%s (%s)').format(cur.version, source)
+			: _('not found');
+
+		var latestCell;
+		if (!latest) {
+			latestCell = [ _('Not checked yet.') ];
+		} else {
+			var bits = [ latest.version ];
+			if (latest.published_at)
+				bits.push(String(latest.published_at).substring(0, 10));
+			if (latest.asset && latest.asset.size)
+				bits.push(formatMB(latest.asset.size));
+			latestCell = [ bits.join(' · ') ];
+			if (latest.notes_url)
+				latestCell.push(' — ', E('a', {
+					'href': latest.notes_url, 'target': '_blank', 'rel': 'noreferrer'
+				}, [ _('release notes') ]));
+		}
+
+		var msg = null;
+		if (busy)
+			msg = E('p', {}, [ E('em', { 'class': 'spinning' }, [ st.step || _('Working…') ]) ]);
+		else if (st.state === 'error' && st.error)
+			msg = E('div', { 'class': 'alert-message warning' }, [ st.error ]);
+		else if (st.message)
+			msg = E('p', {}, [ st.message ]);
+		else if (latest && !st.newer && latest.asset)
+			msg = E('p', {}, [ _('The installed sing-box is up to date.') ]);
+
+		var buttons = [
+			E('button', {
+				'class': 'btn cbi-button cbi-button-neutral',
+				'disabled': busy ? '' : null,
+				'click': ui.createHandlerFn(this, this._handleSbuCheck)
+			}, [ _('Check for updates') ])
+		];
+		if (latest && st.newer && latest.asset)
+			buttons.push(' ', E('button', {
+				'class': 'btn cbi-button cbi-button-apply',
+				'disabled': busy ? '' : null,
+				'click': ui.createHandlerFn(this, this._handleSbuInstall, latest)
+			}, [ _('Install %s').format(latest.version) ]));
+		if (cur.source === 'sagernet')
+			buttons.push(' ', E('button', {
+				'class': 'btn cbi-button cbi-button-remove',
+				'disabled': busy ? '' : null,
+				'click': ui.createHandlerFn(this, this._handleSbuRevert)
+			}, [ _('Return to the OpenWrt package') ]));
+
+		dom.content(this._sbuBody, [
+			row(_('Installed'), [ installed ]),
+			row(_('Latest stable'), latestCell),
+			msg ? row('', [ msg ]) : '',
+			row('', buttons)
+		]);
+	},
+
+	// Poll get_singbox_update until the helper reports a finished state newer
+	// than `since` (seconds; 0 = just follow the current run). A single
+	// rescheduled setTimeout, never an interval.
+	_sbuPoll: function(since) {
+		var self = this;
+		window.clearTimeout(this._sbuTimer);
+		this._sbuTimer = window.setTimeout(function() {
+			callGetSingboxUpdate().then(function(st) {
+				st = st || {};
+				// Until the helper writes its first update, the file still
+				// shows the previous run. Give it 30 s to start.
+				if (since && !((st.updated_at || 0) >= since)) {
+					if (Date.now() / 1000 - since < 30) {
+						st.busy = true;
+					} else {
+						st.busy = false;
+						st.state = 'error';
+						st.error = _('The update helper did not start. See the system log.');
+					}
+				}
+				self._sbu = st;
+				self._renderSbuBody();
+				if (st.busy)
+					self._sbuPoll(since);
+			}).catch(function() {
+				self._sbuPoll(since);
+			});
+		}, 2000);
+	},
+
+	_sbuStart: function(promise) {
+		var self = this;
+		var since = Math.floor(Date.now() / 1000);
+		return promise.then(function(res) {
+			if (res && res.error) {
+				ui.addNotification(null, E('p', res.error === 'busy'
+					? _('A sing-box check or install is already running.')
+					: _('Could not start: %s').format(res.error)), 'error');
+				return;
+			}
+			self._sbu = Object.assign({}, self._sbu, { busy: true, step: _('Starting…'), error: null, message: null });
+			self._renderSbuBody();
+			self._sbuPoll(since);
+		}).catch(function(e) {
+			ui.addNotification(null, E('p', _('Could not start: %s').format(e.message || e)), 'error');
+		});
+	},
+
+	_handleSbuCheck: function() {
+		return this._sbuStart(callCheckSingboxUpdate());
+	},
+
+	_handleSbuInstall: function(latest) {
+		if (!confirm(_('Install sing-box %s from SagerNet?\n\nThe package (%s) is downloaded from GitHub, checked against its published SHA-256 and installed in place of the current package. Treadle restarts on the new version, so traffic pauses briefly; if it does not start, the OpenWrt package is reinstalled.')
+				.format(latest.version, latest.asset && latest.asset.size ? formatMB(latest.asset.size) : '?')))
+			return;
+		return this._sbuStart(callInstallSingboxUpdate(latest.version));
+	},
+
+	_handleSbuRevert: function() {
+		if (!confirm(_('Return to the OpenWrt feed\'s sing-box package?\n\nThe SagerNet package is replaced by the version in the OpenWrt feed, which may be older, and Treadle restarts on it.')))
+			return;
+		return this._sbuStart(callRevertSingboxPackage());
 	},
 
 	_handleSaveExtra: function() {

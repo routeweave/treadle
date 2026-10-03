@@ -17,6 +17,7 @@ see [CONTRIBUTING.md](../CONTRIBUTING.md); for version numbers see
 | `firewall.sh` | `usr/libexec/treadle/` | The `inet treadle` nftables table and the policy rule for TPROXY. |
 | Cron jobs | `hourly`, `watchdog` | Subscription auto-update and scheduled latency tests; restart a service procd gave up on, and retry rule-set downloads that failed at startup by the other route. |
 | `active-watch` | `usr/libexec/treadle/` | Daemon (only with the clash API on) that snapshots group state and traffic every 10 s for the Status page and logs group switches. |
+| `singbox-update` | `usr/libexec/treadle/` | Run on demand from Settings: finds SagerNet's latest stable OpenWrt package for this router, installs it (SHA-256 checked, binary test-run, standalone sing-box service left as it was) and restarts Treadle on it, or returns to the OpenWrt feed's package. |
 
 ## Where state lives
 

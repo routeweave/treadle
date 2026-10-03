@@ -1,0 +1,634 @@
+#!/usr/bin/env lua
+-- SPDX-License-Identifier: GPL-3.0-only
+-- Copyright (C) 2026 RouteWeave
+--
+-- singbox-update: checks SagerNet's latest stable sing-box release for an
+-- OpenWrt package built for this router, installs it, or returns to the
+-- OpenWrt feed's package. Forked detached by luci.treadle's
+-- check_singbox_update / install_singbox_update / revert_singbox_package
+-- RPCs; progress and results go to STATUS, which get_singbox_update reads.
+--
+--   singbox-update check
+--   singbox-update install <version>
+--   singbox-update revert
+--
+-- Why each step exists (decision 0153):
+--   * Stable releases only, from the GitHub API's releases/latest, which also
+--     carries each asset's SHA-256 ("digest"). The package itself is unsigned.
+--   * SagerNet's package is named sing-box, like OpenWrt's, so it installs as
+--     an upgrade. It ships /etc/config/sing-box with enabled '1' and a default
+--     config.json that runs a Shadowsocks server with a published password;
+--     an upgrade replaces the untouched OpenWrt file (enabled '0'). The
+--     standalone service's config and init script are therefore snapshotted
+--     before every package change and put back after it.
+--   * apk pins a file install to its checksum; reverting is
+--     `apk add sing-box=<feed version>` then `apk add sing-box` (re-pin by
+--     name). `apk upgrade --available` would upgrade unrelated packages.
+--     opkg refuses to downgrade even with --force-downgrade, so a revert
+--     removes the package with --force-depends and installs the verified
+--     feed file.
+--   * After a change Treadle is restarted (its start wrapper rebuilds the
+--     config for the new version, decision 0120). If sing-box does not come
+--     up, the OpenWrt feed package is reinstalled.
+
+local jsonc = require "luci.jsonc"
+local lib   = dofile("/usr/libexec/treadle/treadlelib.lua")
+
+local STATUS     = "/var/etc/treadle/singbox-update.json"
+local LOCK       = "/var/lock/treadle-singbox-update.lock"
+local WORK       = "/tmp/treadle-singbox-update"
+local SINGBOX    = "/usr/bin/sing-box"
+local VCACHE     = "/var/etc/treadle/.singbox-version"
+local LATEST_API = "https://api.github.com/repos/SagerNet/sing-box/releases/latest"
+-- Test hook: a local copy of the releases/latest reply (tests/smoke.sh).
+local LATEST_FILE = os.getenv("TREADLE_SBU_LATEST_JSON")
+
+local SB_UCI  = "/etc/config/sing-box"
+local SB_INIT = "/etc/init.d/sing-box"
+
+local TMP_MARGIN_KB   = 16 * 1024
+local FLASH_MARGIN_KB = 5 * 1024
+local UP_TIMEOUT_S    = 60
+
+-- ─── small helpers ───────────────────────────────────────────────────────
+
+local function sq(s)
+	return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
+end
+
+local function log(level, msg)
+	if level == "warn" then level = "warning" end
+	os.execute("logger -p daemon." .. level .. " -t treadle "
+		.. sq("sing-box update: " .. msg) .. " 2>/dev/null")
+end
+
+-- Run a shell command; returns its stdout and whether it exited 0.
+local function run(cmd)
+	local f = io.popen("(" .. cmd .. ") 2>&1; echo \"__rc=$?\"")
+	if not f then return "", false end
+	local out = f:read("*a") or ""
+	f:close()
+	local rc = tonumber(out:match("__rc=(%d+)%s*$")) or 1
+	return (out:gsub("__rc=%d+%s*$", "")), rc == 0
+end
+
+local function ok(cmd)
+	local _, good = run(cmd)
+	return good
+end
+
+local function now() return os.time() end
+
+local status = {}
+
+local function save()
+	status.updated_at = now()
+	os.execute("mkdir -p /var/etc/treadle 2>/dev/null")
+	local tmp = STATUS .. ".tmp"
+	local f = io.open(tmp, "w")
+	if not f then return end
+	f:write(jsonc.stringify(status))
+	f:close()
+	os.rename(tmp, STATUS)
+end
+
+local function load()
+	local raw = lib.read_file(STATUS)
+	local okp, st = pcall(jsonc.parse, raw or "")
+	if okp and type(st) == "table" then return st end
+	return {}
+end
+
+local function step(msg)
+	status.step = msg
+	save()
+end
+
+local function fail(msg)
+	status.state = "error"
+	status.error = msg
+	status.step = nil
+	save()
+	log("err", msg)
+	os.execute("rm -rf " .. WORK .. " 2>/dev/null")
+	os.execute("lock -u " .. LOCK .. " 2>/dev/null")
+	os.exit(0)
+end
+
+local function finish(state, msg)
+	status.state = state
+	status.message = msg
+	status.step = nil
+	status.error = nil
+	save()
+	os.execute("rm -rf " .. WORK .. " 2>/dev/null")
+	os.execute("lock -u " .. LOCK .. " 2>/dev/null")
+	os.exit(0)
+end
+
+-- Free space (KB) of the filesystem holding `path`.
+local function free_kb(path)
+	local out = run("df -k " .. sq(path) .. " | tail -n 1")
+	local avail = out:match("^%S+%s+%d+%s+%d+%s+(%d+)")
+	return tonumber(avail)
+end
+
+-- Compare dotted numeric versions ("1.14.2", "1.13.21-r1"): -1, 0 or 1.
+-- The package revision is ignored; only the upstream version matters here.
+local function vercmp(a, b)
+	local function parts(v)
+		v = tostring(v or ""):gsub("%-r%d+$", "")
+		local t = {}
+		for n in v:gmatch("%d+") do t[#t + 1] = tonumber(n) end
+		return t
+	end
+	local x, y = parts(a), parts(b)
+	for i = 1, math.max(#x, #y) do
+		local p, q = x[i] or 0, y[i] or 0
+		if p ~= q then return p < q and -1 or 1 end
+	end
+	return 0
+end
+
+-- ─── what is installed ───────────────────────────────────────────────────
+
+local function package_manager()
+	if lib.file_exists("/lib/apk/db/installed") then return "apk" end
+	if lib.file_exists("/usr/lib/opkg/status") then return "opkg" end
+	return nil
+end
+
+-- The OpenWrt package architecture SagerNet names its assets after.
+local function router_arch(pm)
+	if pm == "apk" then
+		local a = (lib.read_file("/etc/apk/arch") or ""):match("^%s*(%S+)")
+		return a
+	end
+	-- opkg lists "arch <name> <priority>"; the most specific has the
+	-- highest priority. "all" and "noarch" never carry binaries.
+	local best, prio = nil, -1
+	for name, p in run("opkg print-architecture"):gmatch("arch%s+(%S+)%s+(%d+)") do
+		p = tonumber(p)
+		if name ~= "all" and name ~= "noarch" and p > prio then
+			best, prio = name, p
+		end
+	end
+	return best
+end
+
+-- Installed sing-box package version and maintainer, read from the package
+-- database (no fork).
+local function installed_package(pm)
+	if pm == "apk" then
+		local f = io.open("/lib/apk/db/installed", "r")
+		if not f then return nil end
+		local hit, ver, maint = false, nil, nil
+		for line in f:lines() do
+			if hit then
+				if line == "" then break end
+				local k, v = line:sub(1, 2), line:sub(3)
+				if k == "V:" then ver = v elseif k == "m:" then maint = v end
+			elseif line == "P:sing-box" then
+				hit = true
+			end
+		end
+		f:close()
+		return ver, maint
+	end
+	local s = lib.read_file("/usr/lib/opkg/info/sing-box.control") or ""
+	return s:match("\nVersion:%s*(%S+)") or s:match("^Version:%s*(%S+)"),
+		s:match("Maintainer:%s*([^\n]+)")
+end
+
+-- SagerNet's packages name nekohasekai as maintainer; OpenWrt's do not.
+local function package_source(maint)
+	if not maint then return nil end
+	if maint:find("sekai.icu", 1, true) or maint:find("nekohasekai", 1, true) then
+		return "sagernet"
+	end
+	return "openwrt"
+end
+
+local function binary_version(path)
+	local out = run(sq(path or SINGBOX) .. " version")
+	return out:match("sing%-box version (%S+)")
+end
+
+local function describe_installed(pm)
+	local pkg, maint = installed_package(pm)
+	return {
+		version     = binary_version(),
+		package     = pkg,
+		source      = package_source(maint)
+	}
+end
+
+-- ─── download helpers ────────────────────────────────────────────────────
+
+local function fetch(url, out)
+	return ok("uclient-fetch -q --timeout=30 -O " .. sq(out) .. " " .. sq(url))
+end
+
+local function sha256(path)
+	return (run("sha256sum " .. sq(path))):match("^(%x+)")
+end
+
+-- Package metadata without installing: name, version, arch, installed size
+-- in KB. apk v3 packages are ADB, read with `apk adbdump`; an ipk is a
+-- tar.gz holding control.tar.gz.
+local function package_meta(pm, file)
+	local m = {}
+	if pm == "apk" then
+		local out = run("apk adbdump " .. sq(file) .. " | sed -n '1,30p'")
+		m.name    = out:match("\n%s*name:%s*(%S+)")
+		m.version = out:match("\n%s*version:%s*(%S+)")
+		m.arch    = out:match("\n%s*arch:%s*(%S+)")
+		local bytes = tonumber(out:match("\n%s*installed%-size:%s*(%d+)"))
+		m.size_kb = bytes and math.ceil(bytes / 1024) or nil
+	else
+		local ctl
+		for _, member in ipairs({ "./control.tar.gz", "control.tar.gz" }) do
+			local out, good = run("tar -xzOf " .. sq(file) .. " " .. member
+				.. " | tar -xzO ./control 2>/dev/null || tar -xzOf "
+				.. sq(file) .. " " .. member .. " | tar -xzO control")
+			if good and out:find("Package:", 1, true) then ctl = out break end
+		end
+		ctl = ctl or ""
+		m.name    = ctl:match("Package:%s*(%S+)")
+		m.version = ctl:match("Version:%s*(%S+)")
+		m.arch    = ctl:match("Architecture:%s*(%S+)")
+		m.size_kb = tonumber(ctl:match("Installed%-Size:%s*(%d+)"))
+	end
+	return m
+end
+
+-- Unpack only the binary to `dir` and ask it for its version, proving it
+-- runs on this CPU before the package manager touches anything.
+local function test_run(pm, file, dir)
+	os.execute("rm -rf " .. sq(dir) .. "; mkdir -p " .. sq(dir))
+	if pm == "apk" then
+		if not ok("apk extract --allow-untrusted --destination " .. sq(dir) .. " " .. sq(file)) then
+			return nil
+		end
+	else
+		local member
+		for _, mname in ipairs({ "./data.tar.gz", "data.tar.gz" }) do
+			if ok("tar -tzf " .. sq(file) .. " " .. mname) then member = mname break end
+		end
+		if not member or not ok("tar -xzOf " .. sq(file) .. " " .. member
+				.. " | tar -xz -C " .. sq(dir) .. " ./usr/bin/sing-box") then
+			return nil
+		end
+	end
+	local v = binary_version(dir .. "/usr/bin/sing-box")
+	os.execute("rm -rf " .. sq(dir))
+	return v
+end
+
+-- ─── the standalone sing-box service ─────────────────────────────────────
+-- Both OpenWrt's and SagerNet's sing-box packages ship an init script and
+-- /etc/config/sing-box for running sing-box on its own. Treadle never uses
+-- it; a package change must leave it exactly as it was.
+
+local function snapshot_standalone()
+	os.execute("mkdir -p " .. WORK)
+	local snap = { enabled = ok(SB_INIT .. " enabled") }
+	for _, p in ipairs({ SB_UCI, SB_INIT }) do
+		local name = p:gsub("/", "_")
+		snap[p] = WORK .. "/snap" .. name
+		if not ok("cp -p " .. sq(p) .. " " .. sq(snap[p])) then snap[p] = nil end
+	end
+	return snap
+end
+
+local function restore_standalone(snap)
+	for _, p in ipairs({ SB_UCI, SB_INIT }) do
+		if snap[p] then os.execute("cp -p " .. sq(snap[p]) .. " " .. sq(p)) end
+	end
+	os.execute("rm -f " .. sq(SB_UCI .. "-opkg") .. " " .. sq(SB_INIT .. "-opkg")
+		.. " " .. sq(SB_UCI .. ".apk-new") .. " " .. sq(SB_INIT .. ".apk-new"))
+	if snap.enabled then
+		os.execute(SB_INIT .. " enable 2>/dev/null")
+	else
+		os.execute(SB_INIT .. " disable 2>/dev/null")
+	end
+	-- Whatever the package's own scripts started, put the service back in
+	-- the state its restored config describes.
+	local c = require("uci").cursor()
+	local on = c:get("sing-box", "main", "enabled") == "1"
+	c:close()
+	if not on then os.execute(SB_INIT .. " stop 2>/dev/null") end
+end
+
+-- ─── bringing Treadle back up ────────────────────────────────────────────
+
+local function treadle_enabled()
+	local c = require("uci").cursor()
+	local e = c:get("treadle", "global", "enabled")
+	c:close()
+	return e == "1"
+end
+
+-- Restart Treadle and wait until procd reports its sing-box instance running
+-- on the expected binary, and still running a few seconds later (a config
+-- the new version rejects shows up as a crash loop, not a refused start).
+local function restart_and_verify(want_version)
+	os.execute("rm -f " .. VCACHE)
+	if not treadle_enabled() then
+		return binary_version() == want_version
+	end
+	os.execute("/etc/init.d/treadle restart >/dev/null 2>&1")
+	local deadline = now() + UP_TIMEOUT_S
+	local first_pid
+	while now() < deadline do
+		os.execute("sleep 2")
+		local inst = lib.singbox_instance(jsonc)
+		if inst and inst.running and inst.pid then
+			if first_pid == inst.pid then
+				return binary_version() == want_version
+			end
+			first_pid = inst.pid
+			os.execute("sleep 3")
+		else
+			first_pid = nil
+		end
+	end
+	return false
+end
+
+-- ─── the OpenWrt feed package ────────────────────────────────────────────
+
+-- apk: the feed's sing-box version. `apk search` lists repository packages.
+local function apk_feed_version()
+	run("apk update -q")
+	local out = run("apk search -x -v sing-box")
+	return out:match("sing%-box%-(%S+)")
+end
+
+-- opkg: the feed's sing-box entry (version, file URL, SHA-256) from the
+-- package lists, which live in /var and are empty after a reboot.
+local function opkg_feed_entry()
+	run("opkg update")
+	local feeds = {}
+	for _, conf in ipairs({ "/etc/opkg/distfeeds.conf", "/etc/opkg/customfeeds.conf" }) do
+		for line in (lib.read_file(conf) or ""):gmatch("[^\n]+") do
+			local name, url = line:match("^%s*src/gz%s+(%S+)%s+(%S+)")
+			if name then feeds[name] = url end
+		end
+	end
+	for name, base in pairs(feeds) do
+		local list = "/var/opkg-lists/" .. name
+		if lib.file_exists(list) then
+			local idx = run("gunzip -c " .. sq(list) .. " 2>/dev/null || cat " .. sq(list))
+			local block = idx:match("\nPackage: sing%-box\n(.-)\n\n")
+				or idx:match("^Package: sing%-box\n(.-)\n\n")
+			if block then
+				return {
+					version = block:match("Version:%s*(%S+)"),
+					url     = base .. "/" .. (block:match("Filename:%s*(%S+)") or ""),
+					sha256  = block:match("SHA256sum:%s*(%x+)")
+				}
+			end
+		end
+	end
+	return nil
+end
+
+-- Put the OpenWrt feed's sing-box back. Returns true or false, message.
+local function install_feed_package(pm)
+	if pm == "apk" then
+		local fv = apk_feed_version()
+		if not fv then return false, "the OpenWrt feed has no sing-box package" end
+		step("installing sing-box " .. fv .. " from the OpenWrt feed")
+		local out, good = run("apk add " .. sq("sing-box=" .. fv))
+		if not good then return false, "apk could not install sing-box " .. fv .. ": " .. out:sub(-200) end
+		run("apk add sing-box")   -- re-pin by name so feed upgrades apply again
+		return true, fv
+	end
+	local e = opkg_feed_entry()
+	if not e or not e.version or not e.sha256 then
+		return false, "the OpenWrt feed has no sing-box package"
+	end
+	step("downloading sing-box " .. e.version .. " from the OpenWrt feed")
+	local file = WORK .. "/feed-sing-box.ipk"
+	os.execute("mkdir -p " .. WORK)
+	if not fetch(e.url, file) or sha256(file) ~= e.sha256 then
+		return false, "could not download a verified sing-box " .. e.version .. " from the OpenWrt feed"
+	end
+	step("installing sing-box " .. e.version .. " from the OpenWrt feed")
+	-- opkg will not downgrade a package in place, so the installed one is
+	-- removed first; the verified file is already on hand.
+	run("opkg remove --force-depends sing-box")
+	local out, good = run("opkg install " .. sq(file))
+	if not good then return false, "opkg could not install sing-box " .. e.version .. ": " .. out:sub(-200) end
+	return true, e.version
+end
+
+-- ─── commands ────────────────────────────────────────────────────────────
+
+local function cmd_check()
+	status = load()
+	status.state = "checking"
+	status.error = nil
+	status.message = nil
+	step("asking GitHub for the latest stable release")
+
+	local pm = package_manager()
+	if not pm then fail("no apk or opkg package database found") end
+	local arch = router_arch(pm)
+	if not arch then fail("could not determine this router's package architecture") end
+	status.pm, status.arch = pm, arch
+	status.installed = describe_installed(pm)
+
+	local file = LATEST_FILE
+	if not file then
+		os.execute("mkdir -p " .. WORK)
+		file = WORK .. "/latest.json"
+		if not fetch(LATEST_API, file) then
+			fail("could not reach the GitHub API (api.github.com)")
+		end
+	end
+	local okp, rel = pcall(jsonc.parse, lib.read_file(file) or "")
+	if not okp or type(rel) ~= "table" or type(rel.tag_name) ~= "string" then
+		fail("GitHub's reply was not a release (rate-limited or blocked?)")
+	end
+	if rel.prerelease or rel.draft then
+		fail("GitHub's latest release is marked as a pre-release")
+	end
+
+	local version = rel.tag_name:gsub("^v", "")
+	if not version:match("^%d+%.%d+%.%d+$") then
+		fail("unexpected release tag " .. rel.tag_name)
+	end
+	local ext = (pm == "apk") and "apk" or "ipk"
+	local want = "sing-box_" .. version .. "_openwrt_" .. arch .. "." .. ext
+	local asset
+	for _, a in ipairs(type(rel.assets) == "table" and rel.assets or {}) do
+		if a.name == want then asset = a break end
+	end
+
+	status.latest = {
+		version      = version,
+		published_at = rel.published_at,
+		notes_url    = rel.html_url,
+		asset        = asset and {
+			name   = asset.name,
+			size   = asset.size,
+			sha256 = type(asset.digest) == "string" and asset.digest:match("^sha256:(%x+)$") or nil,
+			url    = asset.browser_download_url
+		} or nil
+	}
+	status.checked_at = now()
+	status.newer = status.installed.version ~= nil
+		and vercmp(version, status.installed.version) > 0
+	if not asset then
+		finish("checked", "SagerNet publishes no " .. ext .. " package for " .. arch)
+	end
+	finish("checked")
+end
+
+local function cmd_install(version)
+	status = load()
+	local latest = status.latest
+	if type(version) ~= "string" or not version:match("^%d+%.%d+%.%d+$") then
+		fail("invalid version")
+	end
+	if type(latest) ~= "table" or latest.version ~= version
+	   or type(latest.asset) ~= "table" then
+		fail("check for updates first")
+	end
+	local asset = latest.asset
+	if not (type(asset.url) == "string"
+		and asset.url:match("^https://github%.com/SagerNet/sing%-box/releases/download/")
+		and asset.sha256 and tonumber(asset.size)) then
+		fail("the release information is incomplete; check for updates again")
+	end
+
+	status.state = "installing"
+	status.error, status.message = nil, nil
+	local pm = package_manager()
+	status.pm = pm
+
+	-- Room to download into RAM.
+	local size_kb = math.ceil(tonumber(asset.size) / 1024)
+	local tmp_free = free_kb("/tmp") or 0
+	if tmp_free < size_kb + TMP_MARGIN_KB then
+		fail(string.format("not enough free RAM in /tmp: need %d MB, have %d MB",
+			math.ceil((size_kb + TMP_MARGIN_KB) / 1024), math.floor(tmp_free / 1024)))
+	end
+
+	step("downloading " .. asset.name)
+	os.execute("rm -rf " .. WORK .. "; mkdir -p " .. WORK)
+	local file = WORK .. "/" .. asset.name
+	if not fetch(asset.url, file) then fail("download failed") end
+	step("verifying the download")
+	if sha256(file) ~= asset.sha256 then
+		fail("the download does not match GitHub's SHA-256; not installed")
+	end
+	local meta = package_meta(pm, file)
+	if meta.name ~= "sing-box" or vercmp(meta.version, version) ~= 0
+	   or meta.arch ~= status.arch then
+		fail("the package is not sing-box " .. version .. " for " .. tostring(status.arch))
+	end
+
+	-- Room on flash for the installed files.
+	if meta.size_kb then
+		local flash_free = free_kb("/overlay") or free_kb("/") or 0
+		if flash_free < meta.size_kb + FLASH_MARGIN_KB then
+			fail(string.format("not enough free flash: need %d MB, have %d MB",
+				math.ceil((meta.size_kb + FLASH_MARGIN_KB) / 1024), math.floor(flash_free / 1024)))
+		end
+	end
+
+	-- Prove the binary runs here, when there is RAM to unpack it.
+	if meta.size_kb and (free_kb("/tmp") or 0) > meta.size_kb + TMP_MARGIN_KB then
+		step("test-running the new binary")
+		local v = test_run(pm, file, WORK .. "/x")
+		if v ~= version then
+			fail("the new sing-box does not run on this router; not installed")
+		end
+	end
+
+	local before = describe_installed(pm)
+	local snap = snapshot_standalone()
+
+	step("installing sing-box " .. version)
+	local out, good
+	if pm == "apk" then
+		out, good = run("apk add --allow-untrusted " .. sq(file))
+	else
+		out, good = run("opkg install " .. sq(file))
+	end
+	restore_standalone(snap)
+	if not good then
+		fail("the package manager refused the package: " .. out:sub(-200))
+	end
+	log("notice", "installed SagerNet sing-box " .. version
+		.. " (was " .. tostring(before.version) .. ", " .. tostring(before.source) .. ")")
+
+	local running = treadle_enabled()
+	step(running and ("restarting Treadle on sing-box " .. version)
+		or "checking the installed binary")
+	if restart_and_verify(version) then
+		status.installed = describe_installed(pm)
+		status.newer = false
+		finish("done", running
+			and ("sing-box " .. version .. " is installed and running")
+			or ("sing-box " .. version .. " is installed; Treadle is disabled, so it was not started"))
+	end
+
+	-- The new version did not come up (or, with Treadle disabled, the
+	-- installed binary is not the one expected): go back to the feed package.
+	log("err", "sing-box " .. version .. " did not start; returning to the OpenWrt package")
+	step("sing-box " .. version .. " did not start; returning to the OpenWrt package")
+	local snap2 = snapshot_standalone()
+	local rok, rver = install_feed_package(pm)
+	restore_standalone(snap2)
+	if rok then
+		restart_and_verify(binary_version())
+		status.installed = describe_installed(pm)
+		fail("sing-box " .. version .. " did not start; went back to the OpenWrt package (" .. rver .. ")")
+	end
+	fail("sing-box " .. version .. " did not start, and returning to the OpenWrt package failed: " .. tostring(rver))
+end
+
+local function cmd_revert()
+	status = load()
+	status.state = "reverting"
+	status.error, status.message = nil, nil
+	local pm = package_manager()
+	if not pm then fail("no apk or opkg package database found") end
+	status.pm = pm
+	step("looking up the OpenWrt feed's sing-box")
+	local snap = snapshot_standalone()
+	local good, ver = install_feed_package(pm)
+	restore_standalone(snap)
+	if not good then fail(ver) end
+	log("notice", "returned to the OpenWrt sing-box package " .. ver)
+	step("restarting Treadle")
+	restart_and_verify(binary_version())
+	status.installed = describe_installed(pm)
+	status.newer = status.latest and status.latest.version and status.installed.version
+		and vercmp(status.latest.version, status.installed.version) > 0 or false
+	finish("done", "back on the OpenWrt package, sing-box " .. tostring(status.installed.version))
+end
+
+-- ─── main ────────────────────────────────────────────────────────────────
+
+os.execute("mkdir -p /var/lock 2>/dev/null")
+if os.execute("lock -n " .. LOCK .. " 2>/dev/null") ~= 0 then
+	os.exit(0)
+end
+
+local cmd = arg[1]
+if cmd == "check" then
+	cmd_check()
+elseif cmd == "install" then
+	cmd_install(arg[2])
+elseif cmd == "revert" then
+	cmd_revert()
+else
+	io.stderr:write("usage: singbox-update check | install <version> | revert\n")
+	os.execute("lock -u " .. LOCK .. " 2>/dev/null")
+	os.exit(2)
+end

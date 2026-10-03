@@ -41,6 +41,7 @@ root/usr/libexec/treadle/build-config
 root/usr/libexec/treadle/active-watch
 root/usr/libexec/treadle/test-all-runner
 root/usr/libexec/treadle/fetch-catalog
+root/usr/libexec/treadle/singbox-update
 root/usr/libexec/treadle/treadlelib.lua"
 
 # shellcheck disable=SC2086  # the lists above are newline-separated paths

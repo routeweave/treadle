@@ -159,6 +159,20 @@ opkg remove luci-app-treadle      # OpenWrt 24.10
 The service stops and the package is removed; `/etc/config/treadle` is
 preserved unless you also `rm` it.
 
+### A newer sing-box
+
+The OpenWrt feeds lag behind sing-box releases. **Settings → sing-box
+version** checks SagerNet's latest stable release for an OpenWrt package
+built for your router and can install it in place of the feed's package,
+then restart Treadle on it; **Return to the OpenWrt package** undoes it.
+
+Know what you are installing: SagerNet's packages are not signed (Treadle
+checks the download against the SHA-256 GitHub publishes), they are about
+twice the size of OpenWrt's build (check your free flash), and on apk the
+package is pinned to that file, so feed updates no longer apply to sing-box
+until you return to the OpenWrt package. After a firmware upgrade, packages
+reinstalled from the feeds bring the feed's sing-box back.
+
 ## Troubleshooting
 
 **Logs.** Status tab → *View full log*, or from a shell:

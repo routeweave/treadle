@@ -271,6 +271,21 @@ function renderCompat(compat) {
 	})) ];
 }
 
+// Warning while the sing-box package's own service is enabled (get_status
+// `standalone_singbox`). Treadle runs its own instance and never uses it;
+// SagerNet's package ships it enabled, running a demo Shadowsocks server.
+function renderStandalone(on) {
+	if (!on)
+		return [];
+	return [ E('div', { 'class': 'alert-message warning' }, [
+		E('p', {}, [ _('The sing-box package\'s own service is enabled (/etc/config/sing-box). Treadle runs its own sing-box and does not use it; a second instance can conflict with Treadle, and SagerNet\'s package enables it with a demo Shadowsocks server. Unless you set it up yourself, disable it: uci set sing-box.main.enabled=0; uci commit sing-box; /etc/init.d/sing-box stop') ])
+	]) ];
+}
+
+function renderWarnings(status) {
+	return renderCompat(status.compat).concat(renderStandalone(status.standalone_singbox));
+}
+
 function downloadConfig(json) {
 	var blob = new Blob([ json ], { type: 'application/json' });
 	var url  = URL.createObjectURL(blob);
@@ -348,7 +363,7 @@ return baseclass.extend({
 			// ── Version warning ────────────────────────────────────────
 			// Shown only while the config leaves something out for the
 			// installed sing-box; refreshed by _updateStatus.
-			E('div', { 'id': 'treadle-compat' }, renderCompat(status.compat)),
+			E('div', { 'id': 'treadle-compat' }, renderWarnings(status)),
 
 			// ── Get started ────────────────────────────────────────────
 			// First-run checklist, shown only while nothing at all is
@@ -1014,7 +1029,7 @@ return baseclass.extend({
 
 		var compatBox = document.getElementById('treadle-compat');
 		if (compatBox)
-			dom.content(compatBox, renderCompat(status.compat));
+			dom.content(compatBox, renderWarnings(status));
 
 		// Show/hide the runtime section as a whole. When flipping from
 		// disabled→enabled, the section was previously hidden but its

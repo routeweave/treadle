@@ -1649,6 +1649,68 @@ local function treadle_version()
 	return nil
 end
 
+-- Where the installed sing-box package came from: "sagernet" for SagerNet's
+-- own OpenWrt packages (their maintainer is nekohasekai), "openwrt" for the
+-- feed's, nil when no package manager knows it. Read from the package
+-- database like treadle_version, without a fork.
+local function singbox_package_source()
+	local maint
+	local f = io.open("/lib/apk/db/installed", "r")
+	if f then
+		local hit = false
+		for line in f:lines() do
+			if hit then
+				if line == "" then break end
+				if line:sub(1, 2) == "m:" then maint = line:sub(3) break end
+			elseif line == "P:sing-box" then
+				hit = true
+			end
+		end
+		f:close()
+	else
+		local s = read_file("/usr/lib/opkg/info/sing-box.control") or ""
+		maint = s:match("Maintainer:%s*([^\n]+)")
+	end
+	if not maint then return nil end
+	if maint:find("sekai.icu", 1, true) or maint:find("nekohasekai", 1, true) then
+		return "sagernet"
+	end
+	return "openwrt"
+end
+
+-- singbox-update's progress file and its fork-and-forget launcher.
+local SBU_STATUS = "/var/etc/treadle/singbox-update.json"
+local SBU_HELPER = "/usr/libexec/treadle/singbox-update"
+
+local function sbu_status()
+	local st = json_parse(read_file(SBU_STATUS) or "")
+	return type(st) == "table" and st or {}
+end
+
+-- A check, install or revert is in progress. The helper rewrites the file at
+-- every step, so a state left "running" with no update for ten minutes is a
+-- helper that died, not one still working.
+local function sbu_busy(st)
+	local s = st.state
+	return (s == "checking" or s == "installing" or s == "reverting")
+		and type(st.updated_at) == "number"
+		and (os.time() - st.updated_at) < 600
+end
+
+-- `cmd` is "check", "revert" or "install <x.y.z>"; callers validate the
+-- version, so it is safe to pass on the command line as is.
+local function sbu_fork(cmd)
+	if sbu_busy(sbu_status()) then
+		return { error = "busy" }
+	end
+	if os.execute("test -x " .. SBU_HELPER) ~= 0 then
+		log_treadle("err", "sing-box update helper missing at " .. SBU_HELPER)
+		return { error = "helper unavailable" }
+	end
+	os.execute(SBU_HELPER .. " " .. cmd .. " </dev/null >/dev/null 2>&1 &")
+	return { started = true }
+end
+
 -- Fetch a subscription URL and update its UCI state.
 -- Returns a result table { status, node_count } on success.
 local function sync_one(id)
@@ -1848,10 +1910,15 @@ local methods = {
 			-- pcall, causing os.exit(1) and an UBUS_STATUS_NOT_FOUND reply.
 			local enabled = false
 			local mode = "basic"
+			local standalone = false
 			local c_ok, c = pcall(uci_cursor)
 			if c_ok then
 				local val = c:get("treadle", "global", "enabled")
 				local m   = c:get("treadle", "global", "mode")
+				-- The sing-box package's own service, which Treadle never
+				-- uses. SagerNet's package ships it enabled with a demo
+				-- Shadowsocks server (decision 0153), so say so if it is on.
+				standalone = (c:get("sing-box", "main", "enabled") == "1")
 				c:close()
 				enabled = (val == "1")
 				-- Anything but the two known values reads as the shipped
@@ -1888,7 +1955,8 @@ local methods = {
 				version = version,
 				package_version = treadle_version(),
 				mode    = mode,
-				compat  = compat
+				compat  = compat,
+				standalone_singbox = standalone
 			}
 		end
 	},
@@ -2616,6 +2684,47 @@ local methods = {
 		call = function()
 			os.execute("/usr/libexec/treadle/fetch-catalog >/dev/null 2>&1 &")
 			return { started = true }
+		end
+	},
+
+	-- SagerNet sing-box updates (decision 0153). The work runs in
+	-- /usr/libexec/treadle/singbox-update, forked detached like the test
+	-- runner; it writes its progress to SBU_STATUS, which the Settings page
+	-- polls through get_singbox_update. Checking makes an outbound request
+	-- and installing changes packages, so both are write-side.
+	get_singbox_update = {
+		call = function()
+			local st = sbu_status()
+			st.busy = sbu_busy(st)
+			local line = singbox_version()
+			st.current = {
+				version = line and line:match("sing%-box version (%S+)") or nil,
+				source  = singbox_package_source()
+			}
+			return st
+		end
+	},
+
+	check_singbox_update = {
+		call = function()
+			return sbu_fork("check")
+		end
+	},
+
+	install_singbox_update = {
+		args = { version = "" },
+		call = function(args)
+			local v = args.version
+			if type(v) ~= "string" or not v:match("^%d+%.%d+%.%d+$") then
+				return { error = "invalid version" }
+			end
+			return sbu_fork("install " .. v)
+		end
+	},
+
+	revert_singbox_package = {
+		call = function()
+			return sbu_fork("revert")
 		end
 	}
 }

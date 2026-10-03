@@ -1377,6 +1377,49 @@ else
 	bad "curl is not available for the failover test"
 fi
 
+# --- sing-box updates from SagerNet ------------------------------------------
+# The check reads a recorded releases/latest reply (no GitHub call, no rate
+# limit); the install and revert paths need the real packages and are tested
+# by hand on 25.12 and 24.10 (decision 0153).
+
+step "sing-box updates"
+SBU=/usr/libexec/treadle/singbox-update
+SBU_STATUS=/var/etc/treadle/singbox-update.json
+if command -v apk >/dev/null 2>&1; then sbu_ext=apk; else sbu_ext=ipk; fi
+sbu_arch=$(cat /etc/apk/arch 2>/dev/null || opkg print-architecture | awk '$2 != "all" && $2 != "noarch" {print $2}' | tail -n 1)
+
+TREADLE_SBU_LATEST_JSON="$FIX/singbox-release-latest.json" "$SBU" check
+echo '{}' | "$HANDLER" call get_singbox_update > "$OUT/sbu.json"
+sbu() { jsonfilter -i "$OUT/sbu.json" -e "$1"; }
+[ "$(sbu '@.state')" = checked ] && [ "$(sbu '@.newer')" = true ] \
+	&& [ "$(sbu '@.latest.version')" = 9.9.9 ] \
+	&& ok "check finds the newer stable release" \
+	|| bad "check: $(cat "$OUT/sbu.json")"
+[ "$(sbu '@.latest.asset.name')" = "sing-box_9.9.9_openwrt_${sbu_arch}.${sbu_ext}" ] \
+	&& [ -n "$(sbu '@.latest.asset.sha256')" ] \
+	&& ok "check picks this router's $sbu_ext for $sbu_arch, with its SHA-256" \
+	|| bad "check picked '$(sbu '@.latest.asset.name')' for $sbu_arch/$sbu_ext"
+[ "$(sbu '@.current.source')" = openwrt ] && [ -n "$(sbu '@.current.version')" ] \
+	&& ok "get_singbox_update reports the installed OpenWrt sing-box" \
+	|| bad "current: $(sbu '@.current')"
+
+sed 's/"prerelease": false/"prerelease": true/' "$FIX/singbox-release-latest.json" > "$OUT/sbu-pre.json"
+TREADLE_SBU_LATEST_JSON="$OUT/sbu-pre.json" "$SBU" check
+[ "$(jsonfilter -i "$SBU_STATUS" -e '@.state')" = error ] \
+	&& ok "check refuses a pre-release" || bad "check accepted a pre-release"
+
+echo '{"version":"1.2.3;reboot"}' | "$HANDLER" call install_singbox_update > "$OUT/sbu-bad.json"
+[ "$(jsonfilter -i "$OUT/sbu-bad.json" -e '@.error')" = "invalid version" ] \
+	&& ok "install rejects a malformed version" || bad "install_singbox_update: $(cat "$OUT/sbu-bad.json")"
+
+# get_status flags the sing-box package's own service when it is enabled.
+uci -q set sing-box.main.enabled=1 && uci commit sing-box
+echo '{}' | "$HANDLER" call get_status > "$OUT/status-sa.json"
+[ "$(jsonfilter -i "$OUT/status-sa.json" -e '@.standalone_singbox')" = true ] \
+	&& ok "get_status flags the standalone sing-box service" \
+	|| bad "standalone_singbox not set: $(cat "$OUT/status-sa.json")"
+uci -q set sing-box.main.enabled=0 && uci commit sing-box
+
 # --- removal -----------------------------------------------------------------
 
 # The init script installs these cron jobs on start; procd is not running
