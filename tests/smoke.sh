@@ -791,6 +791,135 @@ link "not a link"
 [ -n "$(jsonfilter -i "$OUT/link.json" -e '@.error')" ] \
 	&& ok "link import: garbage is an error" || bad "link import (garbage): $(cat "$OUT/link.json")"
 
+# Round trip (the behavioural half of scripts/check-node-fields.sh): every fixture
+# share link goes through parse_node_link, becomes a manual node from the editor
+# fields it returned, and is built; the result must equal the outbound the
+# subscription path built from the same link. uri-rt.txt adds links that carry
+# ALPN, uTLS, insecure, WebSocket, HTTP hosts, HTTPUpgrade, REALITY over gRPC,
+# Hysteria2 obfuscation and hopping, and TUIC settings. XHTTP is left out: its
+# padding is re-rolled on every build, so two builds never match.
+cat > "$OUT/rt.lua" <<'EOF'
+local j = require "luci.jsonc"
+local function rd(p) local f = assert(io.open(p)); local s = f:read("*a"); f:close(); return j.parse(s) end
+local function q(v) return "'" .. tostring(v):gsub("'", "'\\''") .. "'" end
+
+if arg[1] == "uci" then
+	local d, uid = rd(arg[2]), arg[3]
+	local fields = d.fields or {}
+	io.write("set treadle." .. uid .. "=node\n")
+	local keys = {}
+	for k in pairs(fields) do keys[#keys + 1] = k end
+	table.sort(keys)
+	for _, k in ipairs(keys) do
+		local v = fields[k]
+		if k == "tag" then v = "RT-" .. v end
+		if type(v) == "table" then
+			for _, x in ipairs(v) do io.write("add_list treadle." .. uid .. "." .. k .. "=" .. q(x) .. "\n") end
+		else
+			io.write("set treadle." .. uid .. "." .. k .. "=" .. q(v) .. "\n")
+		end
+	end
+	for _, name in ipairs(d.dropped or {}) do io.stderr:write(name .. "\n") end
+elseif arg[1] == "cmp" then
+	local by = {}
+	for _, ob in ipairs(rd(arg[2]).outbounds or {}) do by[ob.tag] = ob end
+	local function diff(a, b, path, out)
+		if type(a) ~= type(b) then out[#out + 1] = path .. ": " .. type(a) .. " vs " .. type(b); return end
+		if type(a) == "table" then
+			local keys = {}
+			for k in pairs(a) do keys[k] = true end
+			for k in pairs(b) do keys[k] = true end
+			for k in pairs(keys) do diff(a[k], b[k], path .. "." .. tostring(k), out) end
+		elseif a ~= b then
+			out[#out + 1] = path .. ": " .. tostring(a) .. " vs " .. tostring(b)
+		end
+	end
+	for i = 3, #arg do
+		local tag = arg[i]
+		local sub, man = by[tag], by["RT-" .. tag]
+		if not sub then print(tag .. " MISSING subscription outbound")
+		elseif not man then print(tag .. " MISSING round-tripped outbound")
+		else
+			sub, man = j.parse(j.stringify(sub)), j.parse(j.stringify(man))
+			sub.tag, man.tag = nil, nil
+			local out = {}
+			diff(sub, man, "", out)
+			table.sort(out)
+			print(tag .. " " .. (#out == 0 and "equal" or "DIFF " .. table.concat(out, " | ")))
+		end
+	end
+end
+EOF
+uci set treadle.0123456789abcd06=subscription
+uci set treadle.0123456789abcd06.name="fixture uri-rt.txt"
+uci set "treadle.0123456789abcd06.url=http://127.0.0.1:$PORT/uri-rt.txt"
+uci set treadle.0123456789abcd06.enabled=1
+uci commit treadle
+printf '{"id":"0123456789abcd06"}' | "$HANDLER" call sync_subscription > "$OUT/sync-rt.json"
+[ "$(jsonfilter -i "$OUT/sync-rt.json" -e '@.status')" = ok ] && [ "$(jsonfilter -i "$OUT/sync-rt.json" -e '@.node_count')" = 6 ] \
+	&& ok "uri-rt.txt: 6 nodes" || bad "uri-rt.txt sync: $(cat "$OUT/sync-rt.json")"
+
+rt_tags=""
+n=0
+rm -f "$OUT/rt.uci" "$OUT/rt.dropped"
+for f in uri.txt uri-rt.txt; do
+	while read -r line; do
+		[ -n "$line" ] || continue
+		n=$((n + 1))
+		printf '{"link":"%s"}' "$line" | "$HANDLER" call parse_node_link > "$OUT/rt$n.json"
+		rt_tag=$(jsonfilter -i "$OUT/rt$n.json" -e '@.fields.tag')
+		rt_tags="$rt_tags $rt_tag"
+		lua "$OUT/rt.lua" uci "$OUT/rt$n.json" "0123456789abce$(printf %02x "$n")" >> "$OUT/rt.uci" 2>> "$OUT/rt.dropped"
+		# Both sides must reach the built config, so both join the manual group.
+		echo "add_list treadle.0123456789abcd6f.urltest_outbounds=$rt_tag" >> "$OUT/rt.uci"
+		echo "add_list treadle.0123456789abcd6f.urltest_outbounds=RT-$rt_tag" >> "$OUT/rt.uci"
+	done < "$FIX/sub/$f"
+done
+# One node typed by hand: HTTP hosts as a comma-separated list, with stray spaces
+# and an empty entry, the way the editor field takes them.
+cat >> "$OUT/rt.uci" <<'EOF'
+set treadle.0123456789abce40=node
+set treadle.0123456789abce40.type=vless
+set treadle.0123456789abce40.tag=RT-HAND
+set treadle.0123456789abce40.server=example.com
+set treadle.0123456789abce40.server_port=443
+set treadle.0123456789abce40.uuid=00000000-0000-0000-0000-000000000000
+set treadle.0123456789abce40.transport_type=http
+set treadle.0123456789abce40.transport_http_host='a.example.org, b.example.org ,,c.example.org'
+add_list treadle.0123456789abcd6f.urltest_outbounds=RT-HAND
+EOF
+echo "commit treadle" >> "$OUT/rt.uci"
+uci batch < "$OUT/rt.uci"
+build "round trip"
+[ "$(jsonfilter -i "$OUT/round_trip.json" -e '@.outbounds[@.tag="RT-HAND"].transport.host[*]' | tr '\n' ' ')" \
+	= "a.example.org b.example.org c.example.org " ] \
+	&& ok "a hand-typed comma-separated HTTP host list becomes a trimmed host array" \
+	|| bad "HTTP host list: $(jsonfilter -i "$OUT/round_trip.json" -e '@.outbounds[@.tag="RT-HAND"].transport')"
+# shellcheck disable=SC2086
+lua "$OUT/rt.lua" cmp "$OUT/round_trip.json" $rt_tags > "$OUT/rt.result"
+while read -r tag verdict detail; do
+	if [ "$verdict" = equal ]; then
+		ok "round trip: $tag builds the same outbound from its link as the subscription does"
+	else
+		bad "round trip $tag: $verdict $detail"
+	fi
+done < "$OUT/rt.result"
+[ ! -s "$OUT/rt.dropped" ] && ok "round trip: the editor holds every setting of the fixture links" \
+	|| bad "round trip: settings the editor cannot hold: $(tr '\n' ' ' < "$OUT/rt.dropped")"
+
+# Leave the config as it was: drop the round-trip nodes, their group entries and the subscription.
+for t in $rt_tags; do
+	uci del_list "treadle.0123456789abcd6f.urltest_outbounds=$t"
+	uci del_list "treadle.0123456789abcd6f.urltest_outbounds=RT-$t"
+done
+n=1
+while [ "$n" -le 20 ]; do uci -q delete "treadle.0123456789abce$(printf %02x "$n")"; n=$((n + 1)); done
+uci del_list "treadle.0123456789abcd6f.urltest_outbounds=RT-HAND"
+uci delete treadle.0123456789abce40
+uci delete treadle.0123456789abcd06
+uci commit treadle
+rm -f /etc/treadle/nodes/0123456789abcd06.json
+
 uci batch <<'EOF'
 delete treadle.0123456789abcd60
 delete treadle.0123456789abcd61

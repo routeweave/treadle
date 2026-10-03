@@ -676,7 +676,8 @@ return baseclass.extend({
 		o.placeholder = '/';
 		depAny(o, 'type', TRANSPORT_TYPES, { transport_type: 'http' });
 
-		o = s.taboption('transport', form.Value, 'transport_http_host', _('HTTP host'));
+		o = s.taboption('transport', form.Value, 'transport_http_host', _('HTTP host'),
+			_('Separate several hosts with commas.'));
 		o.modalonly = true;
 		depAny(o, 'type', TRANSPORT_TYPES, { transport_type: 'http' });
 

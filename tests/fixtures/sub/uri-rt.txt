@@ -1,0 +1,6 @@
+vless://00000000-0000-0000-0000-000000000000@example.com:443?security=tls&sni=example.com&alpn=h2%2Chttp%2F1.1&fp=chrome&allowInsecure=1&type=ws&path=%2Fws&host=example.org#RT-01
+vless://00000000-0000-0000-0000-000000000000@example.net:443?security=tls&sni=example.net&type=http&path=%2Fh&host=a.example.org%2Cb.example.org#RT-02
+trojan://%3Cpassword%3E@example.org:443?sni=example.org&type=httpupgrade&path=%2Fup&host=example.org#RT-03
+vless://00000000-0000-0000-0000-000000000000@example.net:443?security=reality&sni=example.org&fp=firefox&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=0123abcd&flow=xtls-rprx-vision&type=grpc&serviceName=svc#RT-04
+hysteria2://%3Cpassword%3E@203.0.113.11:443?sni=example.com&insecure=1&obfs=salamander&obfs-password=%3Cpassword%3E&mport=20000-30000&up=50&down=200#RT-05
+tuic://00000000-0000-0000-0000-000000000000:%3Cpassword%3E@203.0.113.12:443?sni=example.com&congestion_control=bbr&udp_relay_mode=native&alpn=h3#RT-06

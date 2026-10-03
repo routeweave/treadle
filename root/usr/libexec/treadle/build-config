@@ -609,8 +609,15 @@ local function build_transport_from_uci(s)
 	if t == "http" then
 		local tr = { type = "http" }
 		if s.transport_http_path and s.transport_http_path ~= "" then tr.path = s.transport_http_path end
+		-- Several hosts are comma-separated, as a share link spells them and as
+		-- the link import (outbound_to_uci) writes them back.
 		if s.transport_http_host and s.transport_http_host ~= "" then
-			tr.host = { s.transport_http_host }
+			local hosts = {}
+			for part in s.transport_http_host:gmatch("[^,]+") do
+				part = part:match("^%s*(.-)%s*$")
+				if part ~= "" then hosts[#hosts + 1] = part end
+			end
+			if #hosts > 0 then tr.host = hosts end
 		end
 		return tr
 	end

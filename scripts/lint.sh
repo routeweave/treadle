@@ -48,6 +48,7 @@ run "shellcheck (router, busybox)" shellcheck -s busybox -S warning $ROUTER_SH
 run "shellcheck (scripts)" shellcheck -S warning scripts/*.sh tests/*.sh
 # shellcheck disable=SC2086
 run "luacheck (Lua 5.1)" luacheck -q $ROUTER_LUA
+run "node field parity (editor vs link import)" sh scripts/check-node-fields.sh
 run "eslint (LuCI views)" npx --yes "eslint@$ESLINT_VERSION" htdocs
 
 [ "$fail" -eq 0 ] && printf 'All checks passed.\n'
