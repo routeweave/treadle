@@ -176,6 +176,7 @@ M.COMPAT_PATH = "/var/etc/treadle/compat.json"
 -- test-all-runner (starts the instance and probes it).
 M.PROBE_CLASH_HOST  = "127.0.0.1:9091"
 M.PROBE_CONFIG_PATH = "/var/etc/treadle/sing-box-probe.json"
+M.BOOTSTRAP_CONFIG_PATH = "/var/etc/treadle/sing-box-bootstrap.json"
 
 -- Read a whole file. Returns its contents, or nil when it cannot be opened.
 function M.read_file(path)

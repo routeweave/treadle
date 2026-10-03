@@ -262,6 +262,49 @@ treadle_build_checked() {
 	return 0
 }
 
+# Warm sing-box's rule-set cache before an initial start (0144). sing-box
+# 1.12/1.13 exit when a remote rule-set that is not cached fails to download
+# at startup, and the shipped route (through the default urltest, whose first
+# member is used before it is tested) fails that way when that member is down.
+# A throwaway sing-box holding only the rule-sets downloads them over the WAN
+# into the same cache file; the real start then loads them from it without
+# touching the network. Best effort and bounded: any failure falls through to
+# the unchanged start, which the watchdog's retry still covers. Only when no
+# managed sing-box is running, since a running one holds the cache file (a
+# second instance waits 10 s for it, then fails). build-config writes nothing
+# when every rule-set already downloads direct, which ends this at once.
+treadle_warm_rule_sets() {
+	local boot blog pid tries res
+	boot=/var/etc/treadle/sing-box-bootstrap.json
+	blog=/var/etc/treadle/sing-box-bootstrap.log
+	rm -f "$boot" "$blog"
+	pgrep -f "^$SINGBOX run -c $config_path" >/dev/null 2>&1 && return 0
+	"$BUILD_CONFIG" --bootstrap "$boot" >/dev/null 2>&1 || return 0
+	[ -f "$boot" ] || return 0
+	"$SINGBOX" check -c "$boot" >/dev/null 2>&1 || { rm -f "$boot"; return 0; }
+	"$SINGBOX" run -c "$boot" >"$blog" 2>&1 &
+	pid=$!
+	tries=0
+	res=
+	# 25 s: sing-box itself gives up initialising rule-sets at about 20 s on a
+	# slow WAN, and other starts wait up to 30 s for this lock.
+	while [ "$tries" -lt 25 ]; do
+		grep -q "sing-box started" "$blog" 2>/dev/null && { res=ok; break; }
+		kill -0 "$pid" 2>/dev/null || break
+		tries=$((tries + 1))
+		sleep 1
+	done
+	kill "$pid" 2>/dev/null
+	wait "$pid" 2>/dev/null
+	if [ "$res" = "ok" ]; then
+		treadle_log info "rule-sets: cache warmed before start"
+	else
+		treadle_log warn "rule-sets: could not download them before start ($(grep -m1 FATAL "$blog" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g; s/^.*FATAL[^ ]* *//' | head -c 160)); starting anyway"
+	fi
+	rm -f "$boot" "$blog"
+	return 0
+}
+
 # True when some urltest group orders its members from the snapshot (0131),
 # i.e. when taking a new snapshot can change the config at all.
 treadle_order_rotates() {
@@ -481,6 +524,7 @@ start_service() {
 	# otherwise indistinguishable from one that actually restarted sing-box.
 	if [ ! -f "$config_path" ]; then
 		treadle_log notice "config: writing initial sing-box config ($mode mode)"
+		treadle_warm_rule_sets
 	elif cmp -s "$tmp_cfg" "$config_path"; then
 		treadle_log info "config: sing-box config unchanged, no restart"
 	else

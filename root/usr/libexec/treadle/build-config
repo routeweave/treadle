@@ -45,6 +45,7 @@ local DNS_IN_PORT    = 5335  -- the init script checks this port too; keep them 
 -- default output path — shared with test-all-runner via treadlelib.
 local PROBE_CLASH_HOST  = lib.PROBE_CLASH_HOST
 local PROBE_CONFIG_PATH = lib.PROBE_CONFIG_PATH
+local BOOTSTRAP_CONFIG_PATH = lib.BOOTSTRAP_CONFIG_PATH
 
 local read_file = lib.read_file
 
@@ -113,6 +114,7 @@ local PREVIEW_MODE = false
 -- the production one (build_probe_config below). Implies the same
 -- side-effect suppression as --preview. Set in main() below.
 local PROBE_MODE = false
+local BOOTSTRAP_MODE = false
 
 local function read_mode(c)
 	local m = c:get("treadle", "global", "mode")
@@ -2660,6 +2662,50 @@ local function build_probe_config(c)
 	return config
 end
 
+-- The rule-set cache warm-up config (--bootstrap): a throwaway sing-box that
+-- holds only the remote rule-sets, downloads them straight over the WAN and
+-- writes them into the real cache file, so the real start finds them cached.
+-- sing-box 1.12/1.13 exit when a rule-set that is not cached fails to
+-- download at startup, and the shipped route (through the default urltest,
+-- whose first member is used before it has been tested) fails that way
+-- whenever that member is down (0118). From a warm cache sing-box starts
+-- without touching the network, whatever the download route. Derived from the
+-- real built config, so the tags, URLs, formats and cache path are those the
+-- real instance will look up. Returns nil when there is nothing to warm: no
+-- remote rule-set, or every one already downloads direct (Basic, the `direct`
+-- route, a flipped retry), where the warm-up would repeat the same download.
+local function build_bootstrap_config(c, full)
+	local cache_file = full.experimental and full.experimental.cache_file
+	if type(cache_file) ~= "table" then return nil end
+	local rule_sets, via_other = {}, false
+	for _, rs in ipairs(full.route and full.route.rule_set or {}) do
+		if rs.type == "remote" then
+			local direct = rs.download_detour == "direct"
+				or (type(rs.http_client) == "table" and rs.http_client.detour == "direct")
+			if not direct then via_other = true end
+			local copy = { type = "remote", tag = rs.tag, format = rs.format, url = rs.url }
+			if SB.http_client then
+				copy.http_client = { detour = "direct" }
+			else
+				copy.download_detour = "direct"
+			end
+			rule_sets[#rule_sets + 1] = copy
+		end
+	end
+	if not via_other then return nil end
+	return {
+		log       = { level = "info", timestamp = false },
+		dns       = { servers = build_local_dns_servers(c), final = "local" },
+		outbounds = { direct_outbound() },
+		route     = {
+			auto_detect_interface   = true,
+			default_domain_resolver = { server = "local" },
+			rule_set                = rule_sets
+		},
+		experimental = { cache_file = cache_file }
+	}
+end
+
 -- ─── main ────────────────────────────────────────────────────────────────
 
 local c = uci_mod.cursor()
@@ -2672,6 +2718,8 @@ local c = uci_mod.cursor()
 -- --probe: build the ephemeral latency-test instance config instead
 -- (side-effect-free like --preview; out_path defaults to
 -- PROBE_CONFIG_PATH, never the live config_path).
+-- --bootstrap: build the rule-set cache warm-up config (side-effect-free
+-- like --preview; writes nothing and exits 0 when there is nothing to warm).
 -- --order-snapshot: write a new urltest member-order snapshot and exit
 -- without building (0131; the init script calls it only when sing-box is
 -- about to restart anyway).
@@ -2685,6 +2733,9 @@ while i <= #args do
 	elseif args[i] == "--probe" then
 		PROBE_MODE   = true
 		PREVIEW_MODE = true
+	elseif args[i] == "--bootstrap" then
+		BOOTSTRAP_MODE = true
+		PREVIEW_MODE   = true
 	elseif args[i] == "--order-snapshot" then
 		c:close()
 		local ok, err = write_order_snapshot()
@@ -2699,12 +2750,25 @@ while i <= #args do
 	i = i + 1
 end
 if not out_path or out_path == "" then
-	out_path = PROBE_MODE and PROBE_CONFIG_PATH
+	out_path = (PROBE_MODE and PROBE_CONFIG_PATH)
+		or (BOOTSTRAP_MODE and BOOTSTRAP_CONFIG_PATH)
 		or c:get("treadle", "global", "config_path") or "/var/etc/treadle/sing-box.json"
 end
 
-local config = PROBE_MODE and build_probe_config(c)
-	or apply_extra(c, build_config(c))
+local config
+if PROBE_MODE then
+	config = build_probe_config(c)
+elseif BOOTSTRAP_MODE then
+	config = build_bootstrap_config(c, apply_extra(c, build_config(c)))
+	if config == nil then
+		-- Nothing to warm: leave no config behind for the caller to run.
+		c:close()
+		os.remove(out_path)
+		os.exit(0)
+	end
+else
+	config = apply_extra(c, build_config(c))
+end
 c:close()
 
 -- Pretty-print, then unescape forward slashes. luci.jsonc wraps json-c, which
@@ -2722,9 +2786,9 @@ if not ok then
 	os.exit(1)
 end
 
--- The probe instance's config is not what runs, so only a real build
+-- The probe and warm-up configs are not what runs, so only a real build
 -- reports what it left out.
-if not PROBE_MODE then
+if not PROBE_MODE and not BOOTSTRAP_MODE then
 	local compat = {}
 	for key, items in pairs(UNSUPPORTED) do
 		compat[#compat + 1] = { key = key, items = items }

@@ -978,6 +978,150 @@ done
 uci set treadle.inbounds.mode=tproxy
 uci commit treadle
 
+# --- rule-set cache warm-up -------------------------------------------------
+
+# sing-box 1.12/1.13 exit when a remote rule-set that is not cached fails to
+# download at startup, and the shipped route (through the default urltest,
+# whose first member is a placeholder here) fails that way. A rules-only
+# sing-box downloads over the WAN into the real cache file first, so the real
+# start finds them cached (0144). The rule-set is a local HTTP file, so this
+# needs no outside network. From 1.14 an empty placeholder already prevents
+# the exit, so the cold start is only a failure before that.
+step "rule-set cache warm-up"
+RSD="$OUT/warm"
+mkdir -p "$RSD/www"
+echo '{"version":1,"rules":[{"domain_suffix":["warm.invalid"]}]}' > "$RSD/t.json"
+sing-box rule-set compile -o "$RSD/www/t.srs" "$RSD/t.json" >/dev/null 2>&1 \
+	|| die "could not compile the test rule-set"
+uhttpd -f -p 127.0.0.1:18200 -h "$RSD/www" >/dev/null 2>&1 &
+WARM_HTTP=$!
+uci batch <<'EOF'
+set treadle.0123456789abcd40.enabled=0
+set treadle.0123456789abcd60=customrs
+set treadle.0123456789abcd60.label=warmtest
+set treadle.0123456789abcd60.url=http://127.0.0.1:18200/t.srs
+set treadle.0123456789abcd60.format=binary
+set treadle.0123456789abcd61=rule
+set treadle.0123456789abcd61.enabled=1
+set treadle.0123456789abcd61.order=3
+set treadle.0123456789abcd61.outbound=direct
+set treadle.0123456789abcd62=condition
+set treadle.0123456789abcd62.rule=0123456789abcd61
+set treadle.0123456789abcd62.kind=ruleset
+add_list treadle.0123456789abcd62.value=warmtest
+set treadle.global.mode=advanced
+commit treadle
+EOF
+build "warm real"
+real="$OUT/warm_real.json"
+"$BUILD" --bootstrap "$RSD/boot.json" >/dev/null 2>&1
+[ -f "$RSD/boot.json" ] && sing-box check -c "$RSD/boot.json" >/dev/null 2>&1 \
+	&& ok "the warm-up config exists and passes sing-box check" \
+	|| bad "no valid warm-up config for a via-proxy rule-set download"
+want_tag=$(jsonfilter -i "$real" -e '@.route.rule_set[@.type="remote"].tag')
+got_tag=$(jsonfilter -i "$RSD/boot.json" -e '@.route.rule_set[*].tag')
+[ -n "$want_tag" ] && [ "$got_tag" = "$want_tag" ] \
+	&& ok "the warm-up uses the real rule-set tag, so the cache key matches" \
+	|| bad "warm-up rule-set '$got_tag', real '$want_tag'"
+if [ "$SB_HTTP_CLIENT" = "1" ]; then
+	via=$(jsonfilter -i "$RSD/boot.json" -e '@.route.rule_set[*].http_client.detour')
+else
+	via=$(jsonfilter -i "$RSD/boot.json" -e '@.route.rule_set[*].download_detour')
+fi
+[ "$via" = "direct" ] && ok "the warm-up downloads direct" || bad "warm-up download route '$via'"
+[ "$(jsonfilter -i "$RSD/boot.json" -e '@.experimental.cache_file.path')" \
+	= "$(jsonfilter -i "$real" -e '@.experimental.cache_file.path')" ] \
+	&& ok "the warm-up writes the real cache file" || bad "warm-up cache file differs"
+
+uci set treadle.global.ruleset_download_detour=direct
+uci commit treadle
+rm -f "$RSD/boot.json"
+"$BUILD" --bootstrap "$RSD/boot.json" >/dev/null 2>&1
+[ ! -e "$RSD/boot.json" ] && ok "nothing to warm when rule-sets already download direct" \
+	|| bad "a warm-up config was written for a direct download route"
+uci delete treadle.global.ruleset_download_detour
+uci set treadle.global.mode=basic
+uci set treadle.basic.routing=bypass_country
+uci set treadle.basic.bypass_country=cn
+uci commit treadle
+"$BUILD" --bootstrap "$RSD/boot.json" >/dev/null 2>&1
+[ ! -e "$RSD/boot.json" ] && ok "nothing to warm in Basic mode (it always downloads direct)" \
+	|| bad "a warm-up config was written in Basic mode"
+uci set treadle.basic.routing=all
+uci set treadle.global.mode=advanced
+uci commit treadle
+
+# The real config with its tun/tproxy inbound swapped for a plain listener, so
+# sing-box can run unprivileged here.
+cat > "$RSD/runnable.lua" <<'EOF'
+local j = require "luci.jsonc"
+local f = io.open(arg[1]); local c = j.parse(f:read("*a")); f:close()
+local keep = {}
+for _, ib in ipairs(c.inbounds or {}) do
+	if ib.type ~= "tun" and ib.type ~= "tproxy" then keep[#keep + 1] = ib end
+end
+keep[#keep + 1] = { type = "mixed", tag = "warm-in", listen = "127.0.0.1", listen_port = 18210 }
+c.inbounds = keep
+c.log = { level = "info", timestamp = false }   -- the started line is the signal
+local o = io.open(arg[2], "w"); o:write((j.stringify(c, true):gsub("\\/", "/"))); o:close()
+EOF
+lua "$RSD/runnable.lua" "$real" "$RSD/real-run.json"
+sing-box check -c "$RSD/real-run.json" >/dev/null 2>&1 || die "the runnable test config is invalid"
+
+# start the real-style config; report started / FATAL (max 25 s)
+warm_start() {
+	sing-box run -c "$RSD/real-run.json" > "$RSD/run.log" 2>&1 &
+	wp=$!
+	n=0; res=timeout
+	while [ "$n" -lt 25 ]; do
+		grep -q "sing-box started" "$RSD/run.log" && { res=started; break; }
+		grep -q "FATAL" "$RSD/run.log" && { res=FATAL; break; }
+		n=$((n + 1)); sleep 1
+	done
+	kill "$wp" 2>/dev/null; wait "$wp" 2>/dev/null
+	echo "$res"
+}
+rm -f /etc/treadle/cache.db
+cold=$(warm_start)
+if [ "$SB_HTTP_CLIENT" = "1" ]; then
+	[ "$cold" = "started" ] && ok "cold cache, dead download route: 1.14 starts on the empty placeholder" \
+		|| bad "cold start on 1.14 gave '$cold'"
+else
+	[ "$cold" = "FATAL" ] && ok "cold cache, dead download route: sing-box exits (the failure the warm-up prevents)" \
+		|| bad "cold start gave '$cold', expected the rule-set FATAL before 1.14"
+fi
+
+# The init script's function, run on its own with its three inputs stubbed.
+sed -n '/^treadle_warm_rule_sets() {/,/^}/p' /etc/init.d/treadle > "$RSD/warm-fn.sh"
+rm -f /etc/treadle/cache.db "$RSD/log"
+(
+	# Exported only because the sourced function reads them.
+	export BUILD_CONFIG="$BUILD" SINGBOX=/usr/bin/sing-box config_path=/nonexistent/sing-box.json
+	treadle_log() { echo "$1 $2" >> "$RSD/log"; }
+	# shellcheck disable=SC1091
+	. "$RSD/warm-fn.sh"
+	treadle_warm_rule_sets
+)
+grep -q "cache warmed before start" "$RSD/log" 2>/dev/null && [ -s /etc/treadle/cache.db ] \
+	&& ok "the warm-up downloaded the rule-set into the cache" \
+	|| bad "warm-up did not warm the cache: $(cat "$RSD/log" 2>/dev/null)"
+[ ! -e /var/etc/treadle/sing-box-bootstrap.json ] && [ ! -e /var/etc/treadle/sing-box-bootstrap.log ] \
+	&& ok "the warm-up leaves no files behind" || bad "warm-up left its config or log behind"
+warm=$(warm_start)
+[ "$warm" = "started" ] && ok "after the warm-up the real start succeeds with the download route still dead" \
+	|| bad "warm start gave '$warm': $(tail -c 400 "$RSD/run.log" | sed 's/\x1b\[[0-9;]*m//g')"
+
+kill "$WARM_HTTP" 2>/dev/null; wait "$WARM_HTTP" 2>/dev/null
+rm -f /etc/treadle/cache.db
+uci batch <<'EOF'
+delete treadle.0123456789abcd60
+delete treadle.0123456789abcd61
+delete treadle.0123456789abcd62
+set treadle.0123456789abcd40.enabled=1
+set treadle.global.mode=basic
+commit treadle
+EOF
+
 # --- connect timeout --------------------------------------------------------
 
 # sing-box already bounds a dial at 5 s, so nothing is stamped unless the user
