@@ -1335,8 +1335,14 @@ if command -v curl >/dev/null 2>&1; then
 	sing-box run -c "$FO/s1.json" >"$FO/s1.log" 2>&1 &
 	FO_S1=$!
 	sing-box run -c "$FO/s2.json" >"$FO/s2.log" 2>&1 &
-	FO_PIDS="$FO_PIDS $!"
-	sleep 2
+	FO_S2=$!
+	FO_PIDS="$FO_PIDS $FO_S1 $FO_S2"
+	# Both servers must answer before the group starts: a member whose first test
+	# fails because its server is not listening yet loses its result, and the group
+	# then settles on the other one for the whole (300 s) interval.
+	fo_up() { curl -s -m 3 -o /dev/null -x "socks5h://127.0.0.1:$1" http://127.0.0.1:18199/; }
+	i=0
+	while [ "$i" -lt 30 ] && ! { fo_up 18101 && fo_up 18102; }; do sleep 1; i=$((i + 1)); done
 	sing-box run -c "$FO/t.json" >"$FO/t.log" 2>&1 &
 	FO_PIDS="$FO_PIDS $!"
 	uci set treadle.global.clash_api_enabled=1
@@ -1344,19 +1350,26 @@ if command -v curl >/dev/null 2>&1; then
 	lua /usr/libexec/treadle/active-watch >"$FO/aw.log" 2>&1 &
 	FO_PIDS="$FO_PIDS $!"
 	i=0
-	while [ "$i" -lt 20 ] && [ "$(fo_now)" != m1 ]; do sleep 1; i=$((i + 1)); done
-	fo_probe && [ "$(fo_now)" = m1 ] \
-		&& ok "the test group starts on its first member" \
-		|| bad "test group: now='$(fo_now)', probe failed: $(head -c 300 "$FO/t.log")"
-	kill "$FO_S1" 2>/dev/null; wait "$FO_S1" 2>/dev/null
+	while [ "$i" -lt 30 ] && [ -z "$(fo_now)" ]; do sleep 1; i=$((i + 1)); done
+	# Whichever member the group picked first is the one that dies.
+	first=$(fo_now)
+	case "$first" in
+		m1) victim=$FO_S1; other=m2 ;;
+		m2) victim=$FO_S2; other=m1 ;;
+		*)  victim=; other= ;;
+	esac
+	fo_probe && [ -n "$victim" ] \
+		&& ok "the test group is serving through its first member" \
+		|| bad "test group: now='$first', probe failed: $(head -c 300 "$FO/t.log")"
+	[ -n "$victim" ] && { kill "$victim" 2>/dev/null; wait "$victim" 2>/dev/null; }
 	fo_probe    # the failed request that makes sing-box drop the member's result
 	i=0
 	while [ "$i" -lt 40 ]; do
-		[ "$(fo_now)" = m2 ] && fo_probe && break
+		[ -n "$other" ] && [ "$(fo_now)" = "$other" ] && fo_probe && break
 		sleep 1; i=$((i + 1))
 	done
-	[ "$i" -lt 40 ] && ok "active-watch moved the group off a dead member within ${i}s (interval 300s)" \
-		|| bad "group still on '$(fo_now)' after 40s with the active member dead"
+	[ "$i" -lt 40 ] && ok "active-watch moved the group from $first to $other within ${i}s (interval 300s)" \
+		|| bad "group still on '$(fo_now)' after 40s with its active member ($first) dead"
 	for p in $FO_PIDS; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done
 	uci set treadle.global.clash_api_enabled=0
 	uci commit treadle
