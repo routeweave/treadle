@@ -2101,11 +2101,12 @@ local methods = {
 				return out
 			end
 
-			-- sing-box 1.13 (sing-tun before the 1.14.2 library) logs the read
-			-- timeout that ends an ICMP echo session at error level even when
-			-- the ping was answered, so every ping a LAN client sends through
-			-- the tun fills the box with a harmless error. Hidden here only;
-			-- the syslog and the full-log view keep the line.
+			-- sing-box 1.13 (sing-tun v0.8) logs the read timeout that ends
+			-- an ICMP echo session at error level even when the ping was
+			-- answered, so every ping a LAN client sends through the tun fills
+			-- the box with a harmless error; the sing-tun in 1.14.0 and later
+			-- does not. Hidden here only; the syslog and the full-log view
+			-- keep the line.
 			local function benign(line)
 				return line:find("receive ICMP echo reply: ", 1, true) ~= nil
 					and line:find(": i/o timeout", 1, true) ~= nil
