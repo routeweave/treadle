@@ -1460,6 +1460,32 @@ if command -v curl >/dev/null 2>&1; then
 	done
 	[ "$i" -lt 40 ] && ok "active-watch moved the group from $first to $other within ${i}s (interval 300s)" \
 		|| bad "group still on '$(fo_now)' after 40s with its active member ($first) dead"
+	# Traffic stats: /connections every tick (10 s) while the Status page
+	# polls (get_clash_stats stamps a marker), once a minute otherwise.
+	aw_ts() { jsonfilter -i "$1" -e '@.updated_at' 2>/dev/null; }
+	ACT=/var/etc/treadle/.active-nodes.json
+	STS=/var/etc/treadle/.clash-stats.json
+	# Two stats writes within 25 s while watched: only the per-tick path does that.
+	n=0; last=$(aw_ts "$STS"); i=0
+	while [ "$i" -lt 25 ] && [ "$n" -lt 2 ]; do
+		echo '{}' | "$HANDLER" call get_clash_stats >/dev/null
+		sleep 1; i=$((i + 1))
+		cur=$(aw_ts "$STS")
+		[ -n "$cur" ] && [ "$cur" != "$last" ] && { n=$((n + 1)); last=$cur; }
+	done
+	[ "$n" -ge 2 ] && ok "active-watch fetches /connections every tick while the Status page is open" \
+		|| bad "stats written $n time(s) in 25s while watched"
+	# Unwatched: two more ticks of the groups snapshot, no new stats write.
+	rm -f /var/etc/treadle/.status-viewed
+	idle_from=$(aw_ts "$STS"); ticks=0; prev=$(aw_ts "$ACT"); i=0
+	while [ "$i" -lt 30 ] && [ "$ticks" -lt 2 ]; do
+		sleep 1; i=$((i + 1))
+		cur=$(aw_ts "$ACT")
+		[ -n "$cur" ] && [ "$cur" != "$prev" ] && { ticks=$((ticks + 1)); prev=$cur; }
+	done
+	[ "$ticks" -ge 2 ] && [ "$(aw_ts "$STS")" = "$idle_from" ] \
+		&& ok "active-watch skips /connections while nobody is watching" \
+		|| bad "idle: $ticks tick(s), stats $idle_from -> $(aw_ts "$STS")"
 	for p in $FO_PIDS; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done
 	uci set treadle.global.clash_api_enabled=0
 	uci commit treadle

@@ -27,6 +27,16 @@ local SNAPSHOT     = "/var/etc/treadle/.active-nodes.json"
 local STATS_SNAP   = "/var/etc/treadle/.clash-stats.json"
 local POLL_S       = 10
 
+-- The traffic snapshot only feeds the Status page, and /connections carries
+-- the whole connection list (tens of KB on a busy router) just to be
+-- counted. get_clash_stats writes the epoch into STATUS_VIEWED on every
+-- Status tick; while it is recent, /connections is fetched every tick,
+-- otherwise once per STATS_IDLE_S. The idle fetches keep a baseline, so a
+-- page that opens shows a rate at most that old, and a live one within a tick.
+local STATUS_VIEWED = "/var/etc/treadle/.status-viewed"
+local VIEWED_WINDOW_S = 30
+local STATS_IDLE_S    = 60
+
 -- Pending log lines accumulated during the current tick. Flushed at the
 -- end of each iteration via a single `logger` fork that reads them from
 -- stdin — important because a WAN flap can fan into dozens of group-flip
@@ -90,19 +100,25 @@ local function fetch_json(api_path)
 	return parsed
 end
 
--- Atomically write one JSON snapshot (0600, tmp + rename). The consumers
--- (the get_active_groups / get_clash_stats RPCs) tolerate a missing file,
--- so a write skip on failure is fine. The containing /var/etc/treadle is
--- created 0700 once at startup below — no per-tick mkdir/chmod forks; at
--- ~200ms per busybox fork on MIPS they add up fast at a 10s cadence.
+-- Atomically write one JSON snapshot (tmp + rename). The consumers (the
+-- get_active_groups / get_clash_stats RPCs) tolerate a missing file, so a
+-- write skip on failure is fine. No mkdir or chmod per write: the files
+-- hold node tags and traffic counters, no credentials, and the containing
+-- /var/etc/treadle is created 0700 once at startup below (and re-tightened
+-- by every service start), so nobody but root can reach them. At ~200 ms
+-- per busybox fork on MIPS, per-tick forks add up fast at a 10 s cadence.
 local function save_json(path, tbl)
 	local tmp = path .. ".tmp"
 	local f = io.open(tmp, "w")
 	if not f then return end
 	f:write(jsonc.stringify(tbl))
 	f:close()
-	os.execute("chmod 0600 '" .. tmp .. "' 2>/dev/null")
 	os.rename(tmp, path)
+end
+
+local function status_viewed()
+	local t = tonumber((read_file(STATUS_VIEWED) or ""):match("%d+"))
+	return t ~= nil and os.time() - t <= VIEWED_WINDOW_S
 end
 
 -- Ask procd for sing-box's current pid. Returns the pid (a positive
@@ -221,6 +237,9 @@ local post_event_until  = 0
 local prev_total_up   = nil
 local prev_total_down = nil
 local prev_stats_ts   = nil
+-- Set when sing-box restarted on a tick that skipped /connections, so the
+-- next fetch does not diff against the old process's counters.
+local stats_stale     = false
 
 -- Emit one "active node is X" line per group. Used in two situations
 -- that both mean "the user just lost track of the live selection":
@@ -443,12 +462,20 @@ while true do
 		primed   = true
 
 		-- ── Throughput / connections snapshot ─────────────────────────
-		-- Same tick, second cheap HTTP call. Failure is non-fatal: we
-		-- skip the stats write rather than dropping the proxies work
-		-- we just did. A pid change in this tick or a counter regression
-		-- both mean "the previous baseline is invalid"; zero the rate
-		-- and re-baseline so the next tick's diff is honest.
-		local conns = fetch_json("/connections")
+		-- Same tick, second HTTP call, every tick while the Status page is
+		-- open and once per STATS_IDLE_S otherwise (see STATUS_VIEWED).
+		-- Failure is non-fatal: we skip the stats write rather than
+		-- dropping the proxies work we just did. A pid change since the
+		-- last fetch or a counter regression both mean "the previous
+		-- baseline is invalid"; zero the rate and re-baseline so the next
+		-- diff is honest.
+		if pid_changed then stats_stale = true end
+		local conns
+		if status_viewed() or not prev_stats_ts
+			or os.time() - prev_stats_ts >= STATS_IDLE_S
+		then
+			conns = fetch_json("/connections")
+		end
 		if conns then
 			local total_up   = tonumber(conns.uploadTotal)   or 0
 			local total_down = tonumber(conns.downloadTotal) or 0
@@ -457,7 +484,7 @@ while true do
 			local now_ts = os.time()
 			local up_bps, down_bps = 0, 0
 			if prev_total_up and prev_total_down and prev_stats_ts
-				and not pid_changed
+				and not stats_stale
 				and total_up >= prev_total_up
 				and total_down >= prev_total_down
 			then
@@ -479,6 +506,7 @@ while true do
 			prev_total_up   = total_up
 			prev_total_down = total_down
 			prev_stats_ts   = now_ts
+			stats_stale     = false
 		end
 		-- Last, because it can block for seconds. Not on a tick that
 		-- re-announced the groups (cold start, outage recovery, sing-box

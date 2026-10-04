@@ -1418,6 +1418,11 @@ local methods = {
 			if enabled ~= "1" then
 				return { error = "clash API disabled" }
 			end
+			-- Tell active-watch someone is watching, so it fetches
+			-- /connections every tick instead of once a minute. A tmpfs
+			-- timestamp, no fork: the only side effect of this read.
+			local vf = io.open("/var/etc/treadle/.status-viewed", "w")
+			if vf then vf:write(os.time()); vf:close() end
 			local snap = read_file("/var/etc/treadle/.clash-stats.json")
 			if not snap or snap == "" or not _jsonc_ok then
 				return { updated_at = 0 }
