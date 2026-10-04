@@ -1103,6 +1103,21 @@ uci commit treadle
 	&& ok "build-config stamps the config with the sing-box version and Go release" \
 	|| bad "stamp is '$(cat "$bas.sbver" 2>/dev/null)', want '$SB_STAMP'"
 
+# `sing-box version` is cached under a key naming the binary (size, mtime).
+# A hit must be used; a replaced binary (here: a new mtime) must miss.
+VCACHE=/var/etc/treadle/.singbox-version-out
+vkey=$(head -n 1 "$VCACHE" 2>/dev/null)
+printf '%s\nsing-box version 9.9.9\n' "$vkey" > "$VCACHE"
+"$BUILD" "$OUT/vcache.json" >/dev/null 2>&1
+[ -n "$vkey" ] && [ "$(cat "$OUT/vcache.json.sbver")" = "sing-box version 9.9.9" ] \
+	&& ok "build-config reads sing-box's version from its cache" \
+	|| bad "version cache not used: key '$vkey', stamp '$(cat "$OUT/vcache.json.sbver" 2>/dev/null)'"
+touch -d '2001-01-01 00:00:00' /usr/bin/sing-box
+"$BUILD" "$OUT/vcache.json" >/dev/null 2>&1
+[ "$(cat "$OUT/vcache.json.sbver")" = "$SB_STAMP" ] \
+	&& ok "a replaced sing-box binary invalidates the version cache" \
+	|| bad "stale version cache: stamp '$(cat "$OUT/vcache.json.sbver" 2>/dev/null)'"
+
 # procd tags an instance's log lines with the basename of the command it
 # started, so the wrapper has to be called sing-box or every sing-box line
 # drops out of the Status log view and `logread -e sing-box`.

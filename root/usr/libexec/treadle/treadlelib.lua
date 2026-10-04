@@ -287,15 +287,48 @@ function M.detect_wan_dns(jsonc)
 	return servers[1]
 end
 
+-- `sing-box version` takes ~100 ms on a fast aarch64 router (Go start-up),
+-- more than half of a whole config build. Its output is cached on tmpfs
+-- under a key naming the installed binary: its size (from seek, no fork)
+-- and mtime (one `date -r` fork). An upgrade replaces the file, so the key
+-- changes and the next read runs the binary again; the cache can only go
+-- stale for a different binary of the same size and the same mtime second.
+local SINGBOX_BIN   = "/usr/bin/sing-box"
+local VERSION_CACHE = "/var/etc/treadle/.singbox-version-out"
+
+local function singbox_bin_key()
+	local f = io.open(SINGBOX_BIN, "rb")
+	if not f then return nil end
+	local size = f:seek("end")
+	f:close()
+	local p = io.popen("date -r " .. SINGBOX_BIN .. " +%s 2>/dev/null")
+	if not p then return nil end
+	local mtime = p:read("*l")
+	p:close()
+	if not size or not mtime or not mtime:match("^%d+$") then return nil end
+	return size .. " " .. mtime
+end
+
 -- First line of `sing-box version` ("sing-box version 1.14.2"), or nil when
 -- the binary is missing or prints nothing, plus the Go release it was built
--- with ("1.23") when the output names one. Not cached: build-config needs
--- the binary actually installed now, and the fork costs ~20 ms.
+-- with ("1.23") when the output names one. Read through the cache above, so
+-- it always describes the binary installed now.
 function M.singbox_version_line()
-	local f = io.popen("/usr/bin/sing-box version 2>/dev/null")
-	if not f then return nil end
-	local out = f:read("*a") or ""
-	f:close()
+	local key = singbox_bin_key()
+	local out
+	if key then
+		local k, rest = (M.read_file(VERSION_CACHE) or ""):match("^([^\n]*)\n(.*)$")
+		if k == key then out = rest end
+	end
+	if not out then
+		local f = io.popen(SINGBOX_BIN .. " version 2>/dev/null")
+		if not f then return nil end
+		out = f:read("*a") or ""
+		f:close()
+		if key and out:match("^[^\n]+") then
+			M.write_secure(VERSION_CACHE, key .. "\n" .. out)
+		end
+	end
 	local line = out:match("^([^\n]+)")
 	if not line then return nil end
 	return line, out:match("Environment: go(%d+%.%d+)")
