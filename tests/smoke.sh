@@ -85,6 +85,9 @@ sing-box version | sed -n 's/^Environment: go\([0-9]*\)\.\([0-9]*\).*/\1 \2/p' \
 SB_HTTP_CLIENT=0
 echo "$SB_VERSION" | awk '{ split($3, v, "."); exit !(v[1] > 1 || (v[1] == 1 && v[2] >= 14)) }' \
 	&& SB_HTTP_CLIENT=1
+# 1.14 also brings tun exclude_mac_address and the optimistic DNS cache, and
+# keys the DNS cache by server (independent_cache is deprecated).
+SB_114=$SB_HTTP_CLIENT
 # ...and rules match ICMP with `network: icmp` from 1.13.
 SB_ICMP=0
 echo "$SB_VERSION" | awk '{ split($3, v, "."); exit !(v[1] > 1 || (v[1] == 1 && v[2] >= 13)) }' \
@@ -326,6 +329,32 @@ no_mixed=$(jsonfilter -i "$OUT/advanced___tun_no_mixed.json" \
 	-e '@.inbounds[@.type="mixed"].tag')
 [ -z "$no_mixed" ] && ok "no mixed inbound when mixed_enabled is off" \
 	|| bad "mixed inbound present with mixed_enabled off"
+# The bypass list above holds one MAC entry. From 1.14 it goes in the tun
+# inbound's exclude_mac_address (with auto-route on); before that it is left
+# out and named for the Status warning.
+mac_tun=$(jsonfilter -i "$OUT/advanced___tun_no_mixed.json" \
+	-e '@.inbounds[@.type="tun"].exclude_mac_address[*]')
+if [ "$SB_114" = 1 ]; then
+	[ "$mac_tun" = "00:11:22:33:44:55" ] && ok "tun inbound excludes the bypassed MAC" \
+		|| bad "tun exclude_mac_address is '$mac_tun', want 00:11:22:33:44:55"
+else
+	[ -z "$mac_tun" ] && grep -q "MAC bypass in tun mode needs sing-box 1.14" "$OUT/build.log" \
+		&& ok "no exclude_mac_address before sing-box 1.14" \
+		|| bad "MAC bypass on $SB_VERSION: '$mac_tun', log: $(head -c 200 "$OUT/build.log")"
+	echo '{}' | "$HANDLER" call get_status > "$OUT/status-mac.json"
+	[ "$(jsonfilter -i "$OUT/status-mac.json" -e '@.compat[@.key="tun_mac"].items[0]')" = "00:11:22:33:44:55" ] \
+		&& ok "get_status names the inert MAC bypass, for the Status warning" \
+		|| bad "get_status compat: $(cat "$OUT/status-mac.json")"
+fi
+uci set treadle.inbounds.tun_auto_route=0
+uci commit treadle
+build "advanced / tun no auto-route"
+[ -z "$(jsonfilter -i "$OUT/advanced___tun_no_auto-route.json" \
+	-e '@.inbounds[@.type="tun"].exclude_mac_address[*]')" ] \
+	&& ok "no exclude_mac_address without auto-route" \
+	|| bad "exclude_mac_address emitted without auto-route"
+uci set treadle.inbounds.tun_auto_route=1
+uci commit treadle
 uci set treadle.inbounds.mode=tproxy
 uci commit treadle
 
@@ -1289,6 +1318,45 @@ f="$OUT/connect_timeout_8s.json"
 	&& ok "connect_timeout 8s is stamped on every proxy outbound, and only those" \
 	|| bad "connect_timeout 8s: fields '$(ct_fields "$f")', stamped $(ct_stamped "$f") of $(ct_proxies "$f") proxies"
 uci delete treadle.global.connect_timeout
+uci commit treadle
+
+# Fake-IP keeps the per-server cache flag only where it does something
+# (before 1.14); the optimistic cache is emitted from 1.14, with a valid
+# window passed through and a malformed one dropped for sing-box's default.
+dns_field() { jsonfilter -i "$OUT/$1.json" -e "@.dns.$2"; }
+uci set treadle.dns.fakeip_enabled=1
+uci set treadle.dns.optimistic=1
+uci set treadle.dns.optimistic_timeout=12h
+uci commit treadle
+build "dns fakeip optimistic"
+indep=$(dns_field dns_fakeip_optimistic independent_cache)
+opt=$(dns_field dns_fakeip_optimistic optimistic.timeout)
+if [ "$SB_114" = 1 ]; then
+	[ -z "$indep" ] && ok "no independent_cache from sing-box 1.14" \
+		|| bad "independent_cache '$indep' emitted for $SB_VERSION"
+	[ "$opt" = "12h" ] && [ "$(dns_field dns_fakeip_optimistic optimistic.enabled)" = "true" ] \
+		&& ok "optimistic DNS cache with its window" \
+		|| bad "optimistic: $(jsonfilter -i "$OUT/dns_fakeip_optimistic.json" -e '@.dns.optimistic')"
+else
+	[ "$indep" = "true" ] && ok "fake-IP keeps independent_cache before sing-box 1.14" \
+		|| bad "independent_cache is '$indep' for $SB_VERSION, want true"
+	[ -z "$(jsonfilter -i "$OUT/dns_fakeip_optimistic.json" -e '@.dns.optimistic')" ] \
+		&& grep -q "optimistic DNS cache needs sing-box 1.14" "$OUT/build.log" \
+		&& ok "no optimistic DNS cache before sing-box 1.14" \
+		|| bad "optimistic on $SB_VERSION, log: $(head -c 200 "$OUT/build.log")"
+fi
+if [ "$SB_114" = 1 ]; then
+	uci set treadle.dns.optimistic_timeout=bogus
+	uci commit treadle
+	build "dns optimistic bogus window"
+	[ "$(dns_field dns_optimistic_bogus_window optimistic)" = "true" ] \
+		&& grep -q "optimistic_timeout 'bogus' is not a duration" "$OUT/build.log" \
+		&& ok "a malformed optimistic window falls back to sing-box's default" \
+		|| bad "optimistic bogus window: $(jsonfilter -i "$OUT/dns_optimistic_bogus_window.json" -e '@.dns.optimistic')"
+fi
+uci set treadle.dns.fakeip_enabled=0
+uci set treadle.dns.optimistic=0
+uci delete treadle.dns.optimistic_timeout
 uci set treadle.global.mode=basic
 uci commit treadle
 

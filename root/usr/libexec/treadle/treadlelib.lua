@@ -314,6 +314,15 @@ end
 --   initial_path 1.14+: a remote rule-set can start from a local file when
 --                nothing is cached, so startup does not wait on (and die of)
 --                its first download.
+--   dns_cache_per_server 1.14+: the DNS cache is always keyed by server, so
+--                `independent_cache` does nothing but log a deprecation
+--                warning; it is removed in 1.16. Before 1.14 it is what keeps
+--                fake-IP answers out of the other servers' cache.
+--   dns_optimistic 1.14+: `dns.optimistic` answers from an expired cache
+--                entry at once and refreshes it in the background.
+--   tun_mac      1.14+: the tun inbound takes `exclude_mac_address`, which
+--                auto_redirect turns into an nftables return ahead of the
+--                redirect, so a listed LAN client never reaches sing-box.
 --   icmp_network 1.13+: rules match ICMP echo with `network: icmp`; 1.12
 --                rejects the value, and does not route ICMP through a tun.
 --   ech          built with Go 1.24+, whatever the sing-box version: older
@@ -334,6 +343,9 @@ function M.singbox_caps(line, go)
 		go           = (gmaj and gmin) and (gmaj .. "." .. gmin) or nil,
 		http_client  = at_least(1, 14),
 		initial_path = at_least(1, 14),
+		dns_cache_per_server = at_least(1, 14),
+		dns_optimistic = at_least(1, 14),
+		tun_mac      = at_least(1, 14),
 		icmp_network = at_least(1, 13),
 		ech          = gmaj ~= nil and (gmaj > 1 or (gmaj == 1 and gmin >= 24))
 	}

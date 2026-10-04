@@ -751,19 +751,21 @@ return baseclass.extend({
 		// ── bypass ──────────────────────────────────────────────────────
 		// LAN clients listed here skip the proxy entirely — applied via
 		// nftables `accept` rules at the head of the prerouting chain
-		// (tproxy mode), or as a source_ip_cidr direct
-		// rule in the sing-box config (tun mode, IP entries only — MAC is
-		// not visible at the IP layer the TUN device exposes, so MAC
-		// entries are inert in tun mode and a warning is surfaced inline).
+		// (tproxy mode). In tun mode an IP entry is a source_ip_cidr direct
+		// rule, and a MAC entry goes in the tun inbound's
+		// exclude_mac_address, which needs sing-box 1.14+ and auto-route;
+		// without them MAC entries are inert and a warning is shown inline.
 		var leases = (data && data[3] && Array.isArray(data[3].leases))
 			? data[3].leases : [];
 		var imode = uci.get('treadle', 'inbounds', 'mode') || 'tun';
+		var macInert = imode === 'tun' && !(data && data[3] && data[3].tun_mac &&
+			uci.get('treadle', 'inbounds', 'tun_auto_route') !== '0');
 
 		var bp = m.section(form.GridSection, 'bypass', _('Bypass'),
 			_('LAN clients listed here skip the proxy entirely. Useful for ' +
 			  'devices that need direct WAN access (corporate VPN clients, ' +
-			  'gaming consoles, IoT). MAC bypass requires TProxy or TProxy + ' +
-			  'Mixed mode; IP bypass works in all modes.'));
+			  'gaming consoles, IoT). IP bypass works in all modes; MAC bypass ' +
+			  'in TUN mode needs sing-box 1.14 or later and auto-route.'));
 		bp.addremove = true;
 		bp.anonymous = true;
 		bp.addbtntitle = _('Add bypass');
@@ -779,10 +781,9 @@ return baseclass.extend({
 		var bpName = bp.option(form.Value, 'name', _('Name'));
 		bpName.placeholder = _('Optional label');
 
-		// MAC entries only fire in TProxy mode, so a new entry defaults to
-		// the kind that works in the current inbound mode: IP in TUN (the
-		// shipped mode), MAC otherwise (it survives a lease change).
-		var bpDefaultKind = (imode === 'tun') ? 'ip' : 'mac';
+		// A new entry defaults to MAC (it survives a lease change) unless
+		// MAC entries would be inert here, then to IP.
+		var bpDefaultKind = macInert ? 'ip' : 'mac';
 		var bpKind = bp.option(form.ListValue, 'kind', _('Type'));
 		bpKind.value('mac', _('MAC'));
 		bpKind.value('ip',  _('IP'));
@@ -892,17 +893,16 @@ return baseclass.extend({
 			return true;
 		};
 
-		// Grid-only column: warn when a MAC entry won't fire because the
-		// current inbound mode is `tun`. Empty cell otherwise — invisible
-		// in the common (tproxy) case.
+		// Grid-only column: warn when a MAC entry won't fire (tun mode on an
+		// older sing-box or without auto-route). Empty cell otherwise.
 		var bpWarn = bp.option(form.DummyValue, '_warn', '');
 		bpWarn.modalonly = false;
 		bpWarn.cfgvalue = function(section_id) {
 			var kind = uci.get('treadle', section_id, 'kind') || bpDefaultKind;
-			if (kind === 'mac' && imode === 'tun')
+			if (kind === 'mac' && macInert)
 				return E('span', { 'class': 'label warning',
 					'style': 'padding:1px 6px; border-radius:3px; text-transform:none;',
-					'title': _('MAC bypass requires TProxy or TProxy + Mixed mode')
+					'title': _('MAC bypass in TUN mode needs sing-box 1.14 or later and auto-route')
 				}, [ _('⚠ TUN mode: ignored') ]);
 			return '';
 		};

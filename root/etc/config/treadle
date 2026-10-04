@@ -35,5 +35,6 @@ config treadle 'dns'
 	option fakeip_enabled '0'
 	option fakeip_range_v4 '198.18.0.0/15'
 	option fakeip_range_v6 'fc00::/18'
+	option optimistic '0'
 
 config treadle 'routing'

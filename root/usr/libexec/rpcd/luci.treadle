@@ -2627,6 +2627,8 @@ local methods = {
 	-- Bypass section on the Routing tab to autocomplete MAC / IP entries
 	-- against current LAN clients. The file format is
 	--   <expire-ts> <mac> <ip> <hostname-or-*> <client-id>
+	-- `tun_mac` tells the same section whether MAC entries work in tun mode
+	-- with the installed sing-box (treadlelib.singbox_caps).
 	list_dhcp_leases = {
 		call = function()
 			local leases = {}
@@ -2645,7 +2647,10 @@ local methods = {
 				end
 				f:close()
 			end
-			return { leases = leases }
+			return {
+				leases  = leases,
+				tun_mac = lib.singbox_caps(singbox_version()).tun_mac
+			}
 		end
 	},
 

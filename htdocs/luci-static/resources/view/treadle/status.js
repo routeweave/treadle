@@ -261,7 +261,9 @@ function renderCompat(compat) {
 	if (!Array.isArray(compat) || !compat.length)
 		return [];
 	var msgs = {
-		ech: _('ECH needs a sing-box built with Go 1.24 or later, as in OpenWrt 25.12. The installed one is older, so these nodes are left out: %s')
+		ech: _('ECH needs a sing-box built with Go 1.24 or later, as in OpenWrt 25.12. The installed one is older, so these nodes are left out: %s'),
+		tun_mac: _('MAC bypass in TUN mode needs sing-box 1.14 or later. The installed one is older, so these clients still go through Treadle: %s'),
+		dns_optimistic: _('The optimistic DNS cache needs sing-box 1.14 or later. The installed one is older, so it is off.')
 	};
 	return [ E('div', { 'class': 'alert-message warning' }, compat.map(function(c) {
 		var items = Array.isArray(c.items) ? c.items.join(', ') : '';

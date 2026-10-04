@@ -58,6 +58,16 @@ local write_atomic = lib.write_secure
 -- per build; every cross-version difference in the output branches on it.
 local SB = lib.singbox_caps(lib.singbox_version_line())
 
+-- Items this build leaves out because the installed sing-box cannot run
+-- them, by feature key; written to lib.COMPAT_PATH at the end of a build so
+-- the Status page can say what to upgrade. A feature gated on a capability
+-- flag records what it skips here.
+local UNSUPPORTED = {}
+local function note_unsupported(key, item)
+	UNSUPPORTED[key] = UNSUPPORTED[key] or {}
+	table.insert(UNSUPPORTED[key], tostring(item))
+end
+
 -- Set by the watchdog after a rule-set download failed at startup: for a
 -- while, download rule-sets by the other route than configured. A restart on
 -- the same route would repeat the failure, because a urltest default starts
@@ -319,6 +329,42 @@ end
 
 -- ─── inbounds ────────────────────────────────────────────────────────────
 
+-- MAC bypass entries for the tun inbound's `exclude_mac_address` (sing-box
+-- 1.14+). sing-tun applies it only in its auto_redirect nftables rules, as a
+-- return ahead of the redirect, so a listed client's traffic never reaches
+-- sing-box, as with firewall.sh's `accept` in tproxy. Without auto_route
+-- (and so auto_redirect) the field would be silently ignored, and before 1.14
+-- sing-box does not know it: in both cases nothing is emitted and the entries
+-- are named in a warning. A malformed MAC fails sing-box's parse and with it
+-- the whole config, so one is skipped here instead. Nil when empty.
+local function tun_bypass_macs(c, auto_route)
+	local macs = {}
+	c:foreach("treadle", "bypass", function(s)
+		if s.enabled ~= "0" and s.kind == "mac" and s.value and s.value ~= "" then
+			local v = s.value:lower()
+			if v:match("^%x%x:%x%x:%x%x:%x%x:%x%x:%x%x$") then
+				macs[#macs + 1] = v
+			else
+				io.stderr:write("treadle build-config: bypass MAC '" .. s.value
+					.. "' is not a MAC address; skipping\n")
+			end
+		end
+	end)
+	if #macs == 0 then return nil end
+	if not SB.tun_mac then
+		io.stderr:write("treadle build-config: MAC bypass in tun mode needs sing-box 1.14+; "
+			.. #macs .. " entr" .. (#macs == 1 and "y" or "ies") .. " ignored\n")
+		for _, m in ipairs(macs) do note_unsupported("tun_mac", m) end
+		return nil
+	end
+	if not auto_route then
+		io.stderr:write("treadle build-config: MAC bypass in tun mode needs auto-route; "
+			.. #macs .. " entr" .. (#macs == 1 and "y" or "ies") .. " ignored\n")
+		return nil
+	end
+	return macs
+end
+
 local function build_inbounds(c)
 	local inbounds = {}
 	local mode  = c:get("treadle", "inbounds", "mode") or "tun"
@@ -363,6 +409,7 @@ local function build_inbounds(c)
 		if read_mode(c) == "basic" and auto_route then
 			tun.exclude_uid_range = { "0:65535" }
 		end
+		tun.exclude_mac_address = tun_bypass_macs(c, auto_route)
 		inbounds[#inbounds + 1] = tun
 	end
 
@@ -503,16 +550,6 @@ local QUIC_PROTOCOLS = {
 	hysteria2 = true,
 	tuic      = true,
 }
-
--- Items this build leaves out because the installed sing-box cannot run
--- them, by feature key; written to lib.COMPAT_PATH at the end of a build so
--- the Status page can say what to upgrade. A feature gated on a capability
--- flag records what it skips here.
-local UNSUPPORTED = {}
-local function note_unsupported(key, item)
-	UNSUPPORTED[key] = UNSUPPORTED[key] or {}
-	table.insert(UNSUPPORTED[key], tostring(item))
-end
 
 -- True when a node asks for ECH that the installed sing-box cannot do
 -- (SB.ech: built with Go older than 1.24), which would fail the whole
@@ -1975,7 +2012,32 @@ local function build_dns(c, prepared)
 		final   = final_server
 	}
 	if strategy ~= "" then dns.strategy = strategy end
-	if fakeip_on then dns.independent_cache = true end
+	-- Before 1.14 the cache is shared across servers unless told otherwise,
+	-- and a fake-IP answer must not be served for a query routed elsewhere.
+	-- From 1.14 it is always per server and the field is deprecated.
+	if fakeip_on and not SB.dns_cache_per_server then dns.independent_cache = true end
+
+	-- Optimistic cache (opt-in): an expired answer is returned at once and
+	-- refreshed in the background, for up to `optimistic_timeout` past its
+	-- TTL (sing-box's own default, 3 days, when blank). An older sing-box
+	-- gets no optimistic cache and a Status warning, nothing else changes.
+	if c:get("treadle", "dns", "optimistic") == "1" then
+		if SB.dns_optimistic then
+			local timeout = c:get("treadle", "dns", "optimistic_timeout") or ""
+			if valid_duration(timeout) then
+				dns.optimistic = { enabled = true, timeout = timeout }
+			else
+				if timeout ~= "" then
+					io.stderr:write("treadle build-config: optimistic_timeout '" .. timeout
+						.. "' is not a duration; using sing-box's default\n")
+				end
+				dns.optimistic = true
+			end
+		else
+			io.stderr:write("treadle build-config: optimistic DNS cache needs sing-box 1.14+; left off\n")
+			note_unsupported("dns_optimistic", "DNS")
+		end
+	end
 
 	return dns
 end
@@ -2223,9 +2285,8 @@ local function build_route(c, prepared)
 	-- in tproxy via an `accept` rule at the head of the
 	-- prerouting chain; here we get the same effect at the routing layer
 	-- so a bypassed source_ip lands on the `direct` outbound before any
-	-- user rule can claim it. MAC bypasses are inert in tun mode (the L2
-	-- address is not visible at the IP layer the TUN device exposes) — the
-	-- UI surfaces a warning row for those entries.
+	-- user rule can claim it. MAC bypasses are not route rules: the tun
+	-- inbound excludes them before sing-box (tun_bypass_macs).
 	if imode == "tun" then
 		local cidrs = {}
 		c:foreach("treadle", "bypass", function(s)

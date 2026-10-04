@@ -298,6 +298,30 @@ return baseclass.extend({
 		oFakeipV6.datatype = 'cidr6';
 		oFakeipV6.depends('fakeip_enabled', '1');
 
+		var oOptimistic = advance(sDns.option(form.Flag, 'optimistic',
+			_('Optimistic DNS cache'),
+			_('Answer from an expired cache entry at once and refresh it in the ' +
+			  'background, so a repeat lookup never waits on the upstream ' +
+			  'resolver. A record that has really changed is served stale once. ' +
+			  'Needs sing-box 1.14 or later.')));
+		oOptimistic.rmempty = false;
+
+		// No default: empty emits no timeout, leaving sing-box's own 3 days.
+		var oOptimisticTimeout = advance(sDns.option(form.Value, 'optimistic_timeout',
+			_('Optimistic cache window'),
+			_('How long past its TTL an entry may still be served. Leave empty ' +
+			  'for sing-box\'s own 3 days (72h).')));
+		oOptimisticTimeout.placeholder = '72h';
+		oOptimisticTimeout.optional    = true;
+		oOptimisticTimeout.depends('optimistic', '1');
+		oOptimisticTimeout.validate = function(section_id, value) {
+			if (value == null || value === '')
+				return true;
+			if (!/^(\d+(\.\d+)?(ns|us|ms|s|m|h))+$/.test(value))
+				return _('Expected a duration such as "1h" or "24h"');
+			return true;
+		};
+
 		// ── Rule-sets ────────────────────────────────────────────────────
 		// Two visually distinct sections (Rule-sets, Logging) both bind to
 		// the same `global` UCI section. The only DOM-id collision this
