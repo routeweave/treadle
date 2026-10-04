@@ -188,7 +188,8 @@ root/
 │   └── treadle/extra.json       # Advanced overrides (conffile)
 └── usr/
     ├── libexec/treadle/         # build-config, firewall.sh, fetch-catalog,
-    │                            #   sync-subscriptions, watchdog, hourly, treadlelib.lua
+    │                            #   sync-subscriptions, watchdog, hourly, treadlelib.lua,
+    │                            #   subparse.lua (the handler's subscription parser)
     ├── libexec/rpcd/luci.treadle  # rpcd handler
     └── share/
         ├── luci/menu.d/luci-app-treadle.json

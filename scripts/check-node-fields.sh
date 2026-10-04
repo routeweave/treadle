@@ -4,7 +4,7 @@
 #
 # A manual node's settings travel two ways: the node editor writes them to UCI
 # and build_node_from_uci (build-config) reads them back; a pasted share link goes
-# the other way, through outbound_to_uci (luci.treadle). Decision 0133 says the
+# the other way, through outbound_to_uci (subparse.lua). Decision 0133 says the
 # second must gain a line whenever the first gains a field. This makes the rule
 # fail a build instead of relying on someone remembering it:
 #
@@ -26,7 +26,7 @@ set -u
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # The two paths can be overridden to try the check against a modified copy.
 BUILDER="${NODE_FIELDS_BUILDER:-$REPO_DIR/root/usr/libexec/treadle/build-config}"
-HANDLER="${NODE_FIELDS_HANDLER:-$REPO_DIR/root/usr/libexec/rpcd/luci.treadle}"
+HANDLER="${NODE_FIELDS_HANDLER:-$REPO_DIR/root/usr/libexec/treadle/subparse.lua}"
 
 # Field names (or prefixes ending in `_`) read by the builder with no share-link
 # form to map from. Add to this only for a node kind a link cannot describe, and
