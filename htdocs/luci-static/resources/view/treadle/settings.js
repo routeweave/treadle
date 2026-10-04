@@ -359,15 +359,17 @@ return baseclass.extend({
 			  'and moving on.'));
 		sDial.addremove = false;
 
+		// Whole section is Advanced, like Latency testing and Logging: its
+		// only field is, and tagging the row alone left an empty heading.
 		// No default: an empty field is the usual case and emits nothing,
 		// leaving sing-box's own 5 s. The placeholder shows that figure.
-		var oConnTimeout = advance(sDial.option(form.Value, 'connect_timeout',
+		var oConnTimeout = sDial.option(form.Value, 'connect_timeout',
 			_('Connect timeout'),
 			_('How long to wait for a node\'s TCP connection before giving up ' +
 			  'on it. Leave empty for sing-box\'s own limit of 5 seconds; raise ' +
 			  'it on a very slow link whose connection takes longer, or lower ' +
 			  'it to fail over sooner. Hysteria2 and TUIC ignore it and always ' +
-			  'give up after 5 seconds.')));
+			  'give up after 5 seconds.'));
 		oConnTimeout.placeholder = '5s';
 		oConnTimeout.optional    = true;
 		oConnTimeout.validate = function(section_id, value) {
@@ -440,7 +442,7 @@ return baseclass.extend({
 		// Sections whose whole content is Advanced. _postRender tags their
 		// wrapper div with treadle-advanced so the section header + every row
 		// hides as one unit when the toggle is off.
-		this._advSections = [sLatency, sLogging];
+		this._advSections = [sDial, sLatency, sLogging];
 
 		return m.render().then(L.bind(this._postRender, this, extraText));
 	},
