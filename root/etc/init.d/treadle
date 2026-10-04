@@ -216,9 +216,11 @@ treadle_declare_active_watch() {
 
 # Build the sing-box config into $1 and validate it there. Returns non-zero
 # when build-config fails or `sing-box check` rejects the result; the
-# diagnostics go to syslog either way.
+# diagnostics go to syslog either way. $2 is the live config: a build
+# identical to it, stamp included, was checked when it was promoted, so the
+# check (~120 ms) is skipped for the Saves and reloads that change nothing.
 treadle_build_checked() {
-	local out="$1" cfg_warn chk level ok=0
+	local out="$1" live="$2" cfg_warn chk level ok=0
 	if [ -x "$BUILD_CONFIG" ]; then
 		# build-config's diagnostics go to stderr; route them into syslog so
 		# degraded states (invalid extra.json, dropped DNS rules, WAN-down
@@ -249,6 +251,11 @@ treadle_build_checked() {
 		return 1
 	fi
 	[ "$ok" = "0" ] || return 1
+
+	if [ -n "$live" ] && cmp -s "$out" "$live" \
+	   && cmp -s "$out.sbver" "$live.sbver"; then
+		return 0
+	fi
 
 	# Validate the generated config before handing it to procd. sing-box runs
 	# under procd `respawn`, so a config it rejects (e.g. a malformed DNS
@@ -466,7 +473,7 @@ start_service() {
 	fi
 
 	config_ok=1
-	treadle_build_checked "$tmp_cfg" || config_ok=0
+	treadle_build_checked "$tmp_cfg" "$config_path" || config_ok=0
 
 	if [ "$config_ok" = "1" ] && [ "$rotates" = "1" ] && [ -f "$config_path" ] \
 	   && ! cmp -s "$tmp_cfg" "$config_path"; then
@@ -477,7 +484,7 @@ start_service() {
 		mv -f "$tmp_cfg" "$tmp_cfg.first"
 		mv -f "$tmp_cfg.sbver" "$tmp_cfg.first.sbver" 2>/dev/null
 		[ -f "$order_snap" ] && cp -p "$order_snap" "$order_snap.prev"
-		if treadle_order_snapshot && treadle_build_checked "$tmp_cfg"; then
+		if treadle_order_snapshot && treadle_build_checked "$tmp_cfg" "$config_path"; then
 			rm -f "$tmp_cfg.first" "$tmp_cfg.first.sbver" "$order_snap.prev"
 		else
 			treadle_log warn "config: rebuild with a new member order failed, keeping the previous order"
