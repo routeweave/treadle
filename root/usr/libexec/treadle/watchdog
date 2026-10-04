@@ -41,12 +41,15 @@ config_get_bool enabled global enabled 0
 # That's the LAN-blackhole this watchdog exists to recover from.
 ubus_out=$(ubus call service list '{"name":"treadle"}' 2>/dev/null)
 running=
+pid=
 if [ -n "$ubus_out" ]; then
 	json_load "$ubus_out"
 	if json_select treadle >/dev/null 2>&1 && \
 	   json_select instances >/dev/null 2>&1 && \
 	   json_select singbox >/dev/null 2>&1; then
 		json_get_var running running
+		# The start wrapper execs sing-box, so procd's pid is sing-box's.
+		json_get_var pid pid
 	fi
 fi
 # ── Rule-set downloads that failed at startup ─────────────────────────────
@@ -62,7 +65,6 @@ fi
 # A run that got through its first minutes without such a failure resets the
 # backoff. Only failures within that window count, so a failed daily refresh
 # (the cached copy still works) never triggers a restart.
-config_get cfg global config_path /var/etc/treadle/sing-box.json
 FLIP=/var/run/treadle.ruleset-flip
 RETRY=/var/run/treadle.ruleset-retry
 WINDOW=900
@@ -114,8 +116,6 @@ rs_retry() {
 }
 
 if [ "$running" = "1" ]; then
-	# shellcheck disable=SC2154  # set by config_get
-	pid=$(pgrep -f "^/usr/bin/sing-box run -c $cfg" | head -n 1)
 	[ -n "$pid" ] || exit 0
 	# The run's start as an epoch. Not /proc/<pid>'s own timestamp: that is
 	# when the entry was first looked up, which can be long after the start.
@@ -126,6 +126,11 @@ if [ "$running" = "1" ]; then
 	[ -n "$ticks" ] || exit 0
 	epoch=$(date +%s)
 	start=$(( epoch - $(cut -d. -f1 /proc/uptime) + ticks / 100 ))
+	# Long past the window with no retry pending, there is nothing left to
+	# find: every tick in the two cron periods after the window scanned it,
+	# and a failure would have left $RETRY behind. Skip dumping the whole
+	# syslog for the rest of the run, which is nearly every tick.
+	[ $(( epoch - start )) -gt $(( WINDOW + 600 )) ] && [ ! -f "$RETRY" ] && exit 0
 	# Failed downloads this run logged within WINDOW of its start. Lines from
 	# before the start belong to an earlier process that had the same pid.
 	# logread -t puts the epoch in the first [...] of each line; one second
