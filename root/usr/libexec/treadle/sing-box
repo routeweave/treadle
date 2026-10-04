@@ -33,17 +33,8 @@ LOCK=/var/lock/treadle-start.lock
 cfg="$1"
 [ -n "$cfg" ] || { echo "usage: $0 <config>" >&2; exit 2; }
 
-log() { logger -p "daemon.$1" -t treadle "$2"; }
-
-# build-config's stderr, split as start_service splits it: `info:` lines at
-# daemon.info, the rest at the given level. busybox logger logs nothing on
-# empty input, so an absent stream needs no guard.
-log_build_output() {
-	echo "$err" | grep '^treadle build-config: info: ' \
-		| sed 's/^treadle build-config: info: /config: /' | logger -p daemon.info -t treadle
-	echo "$err" | grep -v '^treadle build-config: info: ' \
-		| sed 's/^treadle build-config: /config: /' | logger -p "daemon.$1" -t treadle
-}
+# treadle_log and treadle_build_checked, shared with the init script.
+. /usr/libexec/treadle/common.sh
 
 # The stamp is the version line plus the Go release when the output names one:
 # the ech capability follows the Go release, so a same-version reinstall built
@@ -54,7 +45,7 @@ io.write(lib.singbox_stamp(lib.singbox_caps(lib.singbox_version_line())))' 2>/de
 built=$(cat "$cfg.sbver" 2>/dev/null)
 
 if [ -n "$have" ] && [ "$have" != "$built" ]; then
-	log notice "config: built for '${built:-unknown}', installed is '$have'"
+	treadle_log notice "config: built for '${built:-unknown}', installed is '$have'"
 	# Rebuild only while holding the start lock: the init script writes the
 	# same <cfg>.next and .next.sbver. After 30 s, give up as the init script
 	# does and start on the existing config rather than race whoever holds it.
@@ -70,26 +61,17 @@ if [ -n "$have" ] && [ "$have" != "$built" ]; then
 		# The status-page footer caches the version; a new binary makes it stale.
 		rm -f /var/etc/treadle/.singbox-version
 		next="$cfg.next"
-		built_ok=0
-		checked_ok=0
-		err=$("$BUILD_CONFIG" "$next" 2>&1 >/dev/null) && built_ok=1
-		[ "$built_ok" = 1 ] && chk=$("$SINGBOX" check -c "$next" 2>&1) && checked_ok=1
-		if [ "$checked_ok" = 1 ]; then
+		if treadle_build_checked "$next"; then
 			mv -f "$next" "$cfg"
 			mv -f "$next.sbver" "$cfg.sbver"
-			log_build_output warn
-			log notice "config: rebuilt for '$have'"
+			treadle_log notice "config: rebuilt for '$have'"
 		else
 			rm -f "$next" "$next.sbver"
-			# As start_service does: the builder's own lines are warnings when
-			# it succeeded and only the check rejected its output.
-			if [ "$built_ok" = 1 ]; then log_build_output warn; else log_build_output err; fi
-			[ -n "$chk" ] && echo "$chk" | logger -p daemon.err -t treadle
-			log err "config: rebuild for '$have' failed, starting on the existing config"
+			treadle_log err "config: rebuild for '$have' failed, starting on the existing config"
 		fi
 		lock -u "$LOCK" 2>/dev/null
 	else
-		log err "config: start lock held for 30 s, not rebuilding; starting on the existing config"
+		treadle_log err "config: start lock held for 30 s, not rebuilding; starting on the existing config"
 	fi
 fi
 
