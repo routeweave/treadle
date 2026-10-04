@@ -123,6 +123,14 @@ echo '{}' | "$HANDLER" call get_dashboard > "$OUT/dash-nolog.json"
 jsonfilter -i "$OUT/dash-nolog.json" -e '@.logs' >/dev/null 2>&1 \
 	&& bad "get_dashboard read the logs without being asked" \
 	|| ok "get_dashboard skips the logs unless asked"
+# The package version is read once per page load, not on every tick.
+[ -z "$(jsonfilter -i "$OUT/dash-nolog.json" -e '@.status.package_version' 2>/dev/null)" ] \
+	&& ok "get_dashboard skips the package version unless asked" \
+	|| bad "get_dashboard read the package version without being asked"
+echo '{"versions":true}' | "$HANDLER" call get_dashboard > "$OUT/dash-ver.json"
+[ "$(jsonfilter -i "$OUT/dash-ver.json" -e '@.status.package_version')" = "$want_pv" ] \
+	&& ok "get_dashboard reports the package version when asked" \
+	|| bad "get_dashboard versions: $(head -c 300 "$OUT/dash-ver.json")"
 
 # The Status box shows every sing-box line, unfiltered, including the ICMP
 # echo session timeout that sing-box 1.13 logs at error level (decision 0150).

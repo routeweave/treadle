@@ -775,15 +775,19 @@ end
 
 local methods = {
 
+	-- `cur` (and `no_package`) only come from get_dashboard, which shares one
+	-- UCI cursor between its parts and reads the package version only when
+	-- the page asks for it; rpcd itself passes just the args table.
 	get_status = {
-		call = function()
+		call = function(_, cur, no_package)
 			-- Wrap UCI in pcall: luci.model.uci may not be present on all
 			-- builds; a thrown error here would propagate through the outer
 			-- pcall, causing os.exit(1) and an UBUS_STATUS_NOT_FOUND reply.
 			local enabled = false
 			local mode = "basic"
 			local standalone = false
-			local c_ok, c = pcall(uci_cursor)
+			local c_ok, c = true, cur
+			if not c then c_ok, c = pcall(uci_cursor) end
 			if c_ok then
 				local val = c:get("treadle", "global", "enabled")
 				local m   = c:get("treadle", "global", "mode")
@@ -791,7 +795,7 @@ local methods = {
 				-- uses. SagerNet's package ships it enabled with a demo
 				-- Shadowsocks server (decision 0153), so say so if it is on.
 				standalone = (c:get("sing-box", "main", "enabled") == "1")
-				c:close()
+				if not cur then c:close() end
 				enabled = (val == "1")
 				-- Anything but the two known values reads as the shipped
 				-- default, matching build-config's read_mode.
@@ -825,7 +829,7 @@ local methods = {
 				running = running,
 				paused = paused,
 				version = version,
-				package_version = treadle_version(),
+				package_version = (not no_package) and treadle_version() or nil,
 				mode    = mode,
 				compat  = compat,
 				standalone_singbox = standalone
@@ -993,7 +997,7 @@ local methods = {
 	-- level controls what *it* emits, so no filtering happens here for it.
 	get_logs = {
 		args = { lines = 20 },
-		call = function(args)
+		call = function(args, cur)
 			local n = tonumber(args.lines) or 20
 			if n > 500 then n = 500 end
 
@@ -1010,9 +1014,9 @@ local methods = {
 				warning = 4, notice = 5, info = 6, debug = 7,
 				error = 3, warn = 4
 			}
-			local c = uci_cursor()
+			local c = cur or uci_cursor()
 			local threshold = SEV[c:get("treadle", "global", "treadle_log_level") or "info"] or 6
-			c:close()
+			if not cur then c:close() end
 
 			-- Retain only the last n lines of each category while
 			-- scanning, in a fixed-size ring buffer, instead of appending
@@ -1323,11 +1327,11 @@ local methods = {
 	-- Reports the same `error = "clash API disabled"` as get_clash_stats
 	-- when the feature flag is off, so the UI can render a consistent hint.
 	get_active_groups = {
-		call = function()
-			local c = uci_cursor()
+		call = function(_, cur)
+			local c = cur or uci_cursor()
 			local enabled = c:get("treadle", "global", "clash_api_enabled")
 			if enabled ~= "1" then
-				c:close()
+				if not cur then c:close() end
 				return { error = "clash API disabled", groups = {} }
 			end
 
@@ -1344,7 +1348,7 @@ local methods = {
 					end
 				end
 			end)
-			c:close()
+			if not cur then c:close() end
 
 			local snap = read_file("/var/etc/treadle/.active-nodes.json")
 			if not snap or snap == "" or not _jsonc_ok then
@@ -1407,10 +1411,10 @@ local methods = {
 	-- returns the same shape with zero values so the UI just renders
 	-- dashes rather than a special case.
 	get_clash_stats = {
-		call = function()
-			local c = uci_cursor()
+		call = function(_, cur)
+			local c = cur or uci_cursor()
 			local enabled = c:get("treadle", "global", "clash_api_enabled")
-			c:close()
+			if not cur then c:close() end
 			if enabled ~= "1" then
 				return { error = "clash API disabled" }
 			end
@@ -1600,17 +1604,22 @@ local methods = {
 -- whole handler) for every call, so four separate calls cost four times
 -- over. Log tails are the expensive part; the page asks for them only on
 -- some ticks by passing `logs` (the tail length), and omits it otherwise.
+-- The installed Treadle version (a scan of the package database) changes
+-- only on an upgrade, so it is included only when `versions` is set, which
+-- the page does once on load. The parts share one UCI cursor.
 -- Added after the table so the call can reach the other methods.
 methods.get_dashboard = {
-	args = { logs = 0 },
+	args = { logs = 0, versions = false },
 	call = function(args)
+		local c_ok, c = pcall(uci_cursor)
+		if not c_ok then c = nil end
 		-- One failing part must not blank the others.
-		local function part(name, a, fallback)
-			local ok, r = pcall(methods[name].call, a or {})
+		local function part(name, a, fallback, ...)
+			local ok, r = pcall(methods[name].call, a or {}, c, ...)
 			return (ok and type(r) == "table") and r or fallback
 		end
 		local out = {
-			status = part("get_status", nil, {}),
+			status = part("get_status", nil, {}, args.versions ~= true),
 			groups = part("get_active_groups", nil, { groups = {} }),
 			stats  = part("get_clash_stats", nil, {})
 		}
@@ -1618,6 +1627,7 @@ methods.get_dashboard = {
 		if n > 0 then
 			out.logs = part("get_logs", { lines = n }, {})
 		end
+		if c then c:close() end
 		return out
 	end
 }

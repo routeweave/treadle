@@ -48,7 +48,10 @@
 'require view.treadle.lib.badges as badges';
 
 // Everything a poll tick needs, from one handler process:
-//   status — enabled / running / paused / version / package_version / mode
+//   status — enabled / running / paused / version / mode, plus
+//            package_version only when `versions` is passed (page load):
+//            it changes only on an upgrade, and reading it scans the
+//            package database
 //   groups — each urltest group's active member (clash `now`) from the
 //            snapshot the active-watch daemon writes every 10 s, the same
 //            view that backs the syslog change-log; { error: "clash API
@@ -62,7 +65,7 @@
 var callGetDashboard = rpc.declare({
 	object: 'luci.treadle',
 	method: 'get_dashboard',
-	params: ['logs'],
+	params: ['logs', 'versions'],
 	expect: { '': {} }
 });
 
@@ -305,13 +308,14 @@ function downloadConfig(json) {
 return baseclass.extend({
 	_statusTimer: null,
 	_onVisible: null,
+	_packageVersion: null,
 	_tick: 0,
 
 	load: function() {
 		// All RPCs degrade gracefully — a missing one leaves the relevant
 		// row blank rather than blanking the tab.
 		return Promise.all([
-			callGetDashboard(TAIL_LINES).catch(function() { return {}; }),
+			callGetDashboard(TAIL_LINES, true).catch(function() { return {}; }),
 			callListOutbounds().catch(function() { return {}; }),
 			uci.load('treadle').catch(function() { return null; })
 		]).then(function(r) {
@@ -338,6 +342,8 @@ return baseclass.extend({
 		// rarely changes mid-session, so a snapshot at load time is fine;
 		// the user has to leave the tab to add a node anyway.
 		this._outbounds = outbounds;
+		// Only the load call asks for it; ticks reuse it for the footer.
+		this._packageVersion = status.package_version;
 		this._running   = !!status.running;
 
 		var info     = runtimeInfo(outbounds);
@@ -522,8 +528,9 @@ return baseclass.extend({
 		// are not shown elsewhere on the page. Treadle's own version comes
 		// first, as it is the one a bug report has to name.
 		var versions = [ shortVersion(status.version) ];
-		if (status.package_version)
-			versions.unshift('Treadle ' + status.package_version);
+		var pkg = status.package_version || this._packageVersion;
+		if (pkg)
+			versions.unshift('Treadle ' + pkg);
 		return _('%s · Mode: %s').format(versions.join(' · '), mode);
 	},
 
