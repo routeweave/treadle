@@ -179,10 +179,7 @@ local function save_snapshot(state)
 end
 
 local function load_snapshot()
-	local raw = read_file(SNAPSHOT)
-	if not raw or raw == "" then return {} end
-	local ok, parsed = pcall(jsonc.parse, raw)
-	if not ok or type(parsed) ~= "table" then return {} end
+	local parsed = lib.read_json(jsonc, SNAPSHOT) or {}
 	return (type(parsed.groups) == "table") and parsed.groups or {}
 end
 

@@ -187,6 +187,18 @@ function M.read_file(path)
 	return s
 end
 
+-- Read and parse a JSON file. Returns the parsed value when it is a table,
+-- else nil: a missing, empty or malformed file reads as absent, which is what
+-- every snapshot, cache and status-file reader here wants. `jsonc` is the
+-- caller's luci.jsonc (passed in so this library stays require-free).
+function M.read_json(jsonc, path)
+	local raw = M.read_file(path)
+	if not jsonc or not raw or raw == "" then return nil end
+	local ok, v = pcall(jsonc.parse, raw)
+	if ok and type(v) == "table" then return v end
+	return nil
+end
+
 -- True when the path exists and is readable.
 function M.file_exists(path)
 	local f = io.open(path, "r")

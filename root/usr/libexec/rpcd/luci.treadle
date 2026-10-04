@@ -15,6 +15,11 @@ local _jsonc_ok, _jsonc = pcall(require, "luci.jsonc")
 local lib = dofile("/usr/libexec/treadle/treadlelib.lua")
 local read_file = lib.read_file
 
+-- A JSON file's table, or nil when it is missing, empty or malformed.
+local function read_json(path)
+	return lib.read_json(_jsonc_ok and _jsonc or nil, path)
+end
+
 -- Minimal JSON serialiser. It always serves the `list` reply and all-empty
 -- replies (both must encode an empty table as {}; see json_stringify_reply),
 -- and everything else only when luci.jsonc is unavailable.
@@ -127,11 +132,7 @@ local LATENCY_CACHE_PATH  = "/var/etc/treadle/latency.json"
 -- Read the current latency cache. Empty object when the file is missing or
 -- malformed — both are normal first-run states.
 local function read_latency_cache()
-	local raw = read_file(LATENCY_CACHE_PATH)
-	if not raw or raw == "" then return { results = {} } end
-	if not _jsonc_ok then return { results = {} } end
-	local ok, parsed = pcall(_jsonc.parse, raw)
-	if not ok or type(parsed) ~= "table" then return { results = {} } end
+	local parsed = read_json(LATENCY_CACHE_PATH) or {}
 	if type(parsed.results) ~= "table" then parsed.results = {} end
 	return parsed
 end
@@ -148,10 +149,8 @@ local TEST_RUNNER      = "/usr/libexec/treadle/test-all-runner"
 -- running=true from a SIGKILL'd runner is treated as idle after 60 s
 -- without an updated_at advance.
 local function test_runner_busy()
-	local raw = read_file(TEST_STATUS_PATH)
-	if not raw or raw == "" or not _jsonc_ok then return false end
-	local ok, st = pcall(_jsonc.parse, raw)
-	if not ok or type(st) ~= "table" or not st.running then return false end
+	local st = read_json(TEST_STATUS_PATH)
+	if not st or not st.running then return false end
 	if type(st.updated_at) == "number"
 	   and (os.time() - st.updated_at) < 60 then
 		return true
@@ -299,15 +298,7 @@ local function reload_if_config_changed()
 end
 
 local function read_nodes_file(uid)
-	if not _jsonc_ok then return {} end
-	local f = io.open(nodes_file(uid), "r")
-	if not f then return {} end
-	local content = f:read("*a")
-	f:close()
-	if not content or content == "" then return {} end
-	local ok, parsed = pcall(_jsonc.parse, content)
-	if not ok or type(parsed) ~= "table" then return {} end
-	return parsed
+	return read_json(nodes_file(uid)) or {}
 end
 
 -- write_secure: nodes file contains every subscription node's payload,
@@ -556,8 +547,7 @@ local SBU_STATUS = "/var/etc/treadle/singbox-update.json"
 local SBU_HELPER = "/usr/libexec/treadle/singbox-update"
 
 local function sbu_status()
-	local st = json_parse(read_file(SBU_STATUS) or "")
-	return type(st) == "table" and st or {}
+	return read_json(SBU_STATUS) or {}
 end
 
 -- A check, install or revert is in progress. The helper rewrites the file at
@@ -818,12 +808,8 @@ local methods = {
 
 			-- What the last build left out because this sing-box cannot run
 			-- it (build-config writes it; absent when nothing was).
-			local compat
-			local raw = lib.read_file(lib.COMPAT_PATH)
-			if raw and _jsonc_ok then
-				local ok, v = pcall(_jsonc.parse, raw)
-				if ok and type(v) == "table" and #v > 0 then compat = v end
-			end
+			local compat = read_json(lib.COMPAT_PATH)
+			if compat and #compat == 0 then compat = nil end
 
 			return {
 				enabled = enabled,
@@ -1351,12 +1337,8 @@ local methods = {
 			end)
 			if not cur then c:close() end
 
-			local snap = read_file("/var/etc/treadle/.active-nodes.json")
-			if not snap or snap == "" or not _jsonc_ok then
-				return { groups = {}, updated_at = 0 }
-			end
-			local ok, parsed = pcall(_jsonc.parse, snap)
-			if not ok or type(parsed) ~= "table" or type(parsed.groups) ~= "table" then
+			local parsed = read_json("/var/etc/treadle/.active-nodes.json")
+			if not parsed or type(parsed.groups) ~= "table" then
 				return { groups = {}, updated_at = 0 }
 			end
 
@@ -1424,12 +1406,8 @@ local methods = {
 			-- timestamp, no fork: the only side effect of this read.
 			local vf = io.open("/var/etc/treadle/.status-viewed", "w")
 			if vf then vf:write(os.time()); vf:close() end
-			local snap = read_file("/var/etc/treadle/.clash-stats.json")
-			if not snap or snap == "" or not _jsonc_ok then
-				return { updated_at = 0 }
-			end
-			local ok, parsed = pcall(_jsonc.parse, snap)
-			if not ok or type(parsed) ~= "table" then
+			local parsed = read_json("/var/etc/treadle/.clash-stats.json")
+			if not parsed then
 				return { updated_at = 0 }
 			end
 			return {
@@ -1496,12 +1474,7 @@ local methods = {
 	-- Absent file = no run has happened since boot.
 	test_all_status = {
 		call = function()
-			local raw = read_file("/var/etc/treadle/.test-all-status")
-			if not raw or raw == "" then return { running = false } end
-			if not _jsonc_ok then return { running = false } end
-			local ok, st = pcall(_jsonc.parse, raw)
-			if not ok or type(st) ~= "table" then return { running = false } end
-			return st
+			return read_json(TEST_STATUS_PATH) or { running = false }
 		end
 	},
 
@@ -1542,9 +1515,8 @@ local methods = {
 	-- network fetch is the separate refresh_rulesets RPC (write side).
 	list_rulesets = {
 		call = function()
-			local s = read_file("/etc/treadle/rulesets-cache.json")
-			local obj = s and json_parse(s) or nil
-			if type(obj) ~= "table" then
+			local obj = read_json("/etc/treadle/rulesets-cache.json")
+			if not obj then
 				return { names = {}, age = nil }
 			end
 			local age = (type(obj.ts) == "number") and (os.time() - obj.ts) or nil

@@ -93,10 +93,7 @@ local function save()
 end
 
 local function load()
-	local raw = lib.read_file(STATUS)
-	local okp, st = pcall(jsonc.parse, raw or "")
-	if okp and type(st) == "table" then return st end
-	return {}
+	return lib.read_json(jsonc, STATUS) or {}
 end
 
 local function step(msg)
@@ -448,8 +445,8 @@ local function cmd_check()
 			fail("could not reach the GitHub API (api.github.com)")
 		end
 	end
-	local okp, rel = pcall(jsonc.parse, lib.read_file(file) or "")
-	if not okp or type(rel) ~= "table" or type(rel.tag_name) ~= "string" then
+	local rel = lib.read_json(jsonc, file)
+	if not rel or type(rel.tag_name) ~= "string" then
 		fail("GitHub's reply was not a release (rate-limited or blocked?)")
 	end
 	if rel.prerelease or rel.draft then

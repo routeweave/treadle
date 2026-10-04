@@ -1362,8 +1362,7 @@ end
 local _order_snapshot
 local function order_snapshot()
 	if _order_snapshot == nil then
-		local ok, t = pcall(jsonc.parse, read_file(ORDER_SNAPSHOT) or "")
-		_order_snapshot = (ok and type(t) == "table") and t or false
+		_order_snapshot = lib.read_json(jsonc, ORDER_SNAPSHOT) or false
 	end
 	return _order_snapshot or nil
 end
@@ -1381,8 +1380,8 @@ local function write_order_snapshot()
 	end
 	seed = (seed or os.time()) % (PM_M - 1) + 1
 	local latency = {}
-	local ok, t = pcall(jsonc.parse, read_file(LATENCY_CACHE) or "")
-	if ok and type(t) == "table" and type(t.results) == "table" then
+	local t = lib.read_json(jsonc, LATENCY_CACHE)
+	if t and type(t.results) == "table" then
 		for tag, r in pairs(t.results) do
 			if type(r) == "table" then
 				latency[tag] = {

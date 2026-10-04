@@ -245,9 +245,8 @@ end
 -- The probe config is the authoritative node universe: every entry in
 -- `outbounds` except the builtin direct, plus every endpoint (WireGuard).
 if #tags == 0 then
-	local craw = read_file(PROBE_CONFIG)
-	local cok, cfg = pcall(jsonc.parse, craw or "")
-	if not cok or type(cfg) ~= "table" then
+	local cfg = lib.read_json(jsonc, PROBE_CONFIG)
+	if not cfg then
 		bail("cannot parse probe config")
 	end
 	if type(cfg.outbounds) == "table" then
@@ -306,15 +305,8 @@ update_status({
 })
 
 -- ─── read the existing cache so per-row results survive a batch run ─────
-local cache = { results = {} }
-local raw_cache = read_file(LATENCY)
-if raw_cache and raw_cache ~= "" then
-	local cok, cparsed = pcall(jsonc.parse, raw_cache)
-	if cok and type(cparsed) == "table" then
-		cache = cparsed
-		if type(cache.results) ~= "table" then cache.results = {} end
-	end
-end
+local cache = lib.read_json(jsonc, LATENCY) or {}
+if type(cache.results) ~= "table" then cache.results = {} end
 
 -- ─── classify a probe that produced no body ─────────────────────────────
 -- uclient-fetch drops the response body on any non-2xx status, so the
