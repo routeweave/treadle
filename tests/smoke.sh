@@ -206,6 +206,14 @@ after=$(date -r "$nf" +%s)
 	&& ok "unchanged re-sync left the node file untouched" \
 	|| bad "re-sync: status=$(jsonfilter -i "$OUT/resync.json" -e '@.status') mtime $before -> $after"
 
+# Each node's payload is stored as the outbound object itself. (Files from an
+# older Treadle hold it as a JSON string; the ECH fixture below is one, and
+# build-config must still read it.)
+[ -n "$(jsonfilter -i "$nf" -e '@[0].payload.type')" ] \
+	&& [ "$(jsonfilter -i "$nf" -e '@[0].payload.tag')" = "$(jsonfilter -i "$nf" -e '@[0].tag')" ] \
+	&& ok "synced node payloads are stored as objects" \
+	|| bad "node payload is not an object: $(head -c 200 "$nf")"
+
 # --- routing fixture ---------------------------------------------------------
 
 # A regex urltest group over every imported node as the final outbound,

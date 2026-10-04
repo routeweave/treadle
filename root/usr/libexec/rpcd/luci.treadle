@@ -208,8 +208,9 @@ end
 --     at config-generation time. form.Map handles all UCI CRUD automatically.
 --   Subscription nodes: /etc/treadle/nodes/<uid>.json (one file per sub).
 --     These come from remote URLs and can number in the hundreds, making UCI
---     storage impractical. Each entry has a payload field with the full
---     sing-box outbound JSON (needed by build-config).
+--     storage impractical. Each entry has a payload field holding the full
+--     sing-box outbound object (needed by build-config; files written by an
+--     older Treadle hold it as a JSON string).
 --
 -- A subscription's uid IS its UCI section name (a 16-hex random id assigned
 -- at create time). Section names are persisted to disk by libuci, so the id
@@ -1286,8 +1287,8 @@ local methods = {
 
 	-- Return the node list of one subscription, projected to the fields the
 	-- Subscriptions tab's "Nodes" modal renders (tag, type, server, port). The
-	-- on-disk file also carries a `payload` blob per node — the full sing-box
-	-- outbound JSON used by build-config — which is many KB per node and not
+	-- on-disk file also carries a `payload` per node — the full sing-box
+	-- outbound used by build-config — which is many KB per node and not
 	-- needed in the UI; stripping it here keeps the response small.
 	list_subscription_nodes = {
 		args = { id = "" },

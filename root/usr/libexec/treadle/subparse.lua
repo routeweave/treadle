@@ -875,7 +875,9 @@ end
 
 -- ─── node extraction ─────────────────────────────────────────────────────
 -- Each extractor turns one subscription format into a flat list of
--- { tag, type, server, server_port, payload } node tables. parse_subscription
+-- { tag, type, server, server_port, payload } node tables, `payload` being the
+-- whole sing-box outbound as a table (older files hold it as a JSON string,
+-- which build-config still reads). parse_subscription
 -- routes a body to exactly one extractor, so the body is parsed a single time.
 
 -- Reserved tags are dropped at parse time so they never reach the nodes
@@ -902,8 +904,8 @@ local function extract_singbox(body)
 			-- the node rather than import an outbound that cannot connect.
 			local ttype = type(ob.transport) == "table" and ob.transport.type or nil
 			-- An xhttp block here maps onto `http` exactly as it does in the
-			-- other two formats; rewrite it in place before the payload is
-			-- stringified so the stored node is already dialable.
+			-- other two formats; rewrite it in place before it is stored as
+			-- the payload, so the stored node is already dialable.
 			local xreason
 			if ttype == "xhttp" then
 				local tr
@@ -922,7 +924,7 @@ local function extract_singbox(body)
 					type        = ob.type or "",
 					server      = ob.server and tostring(ob.server) or "",
 					server_port = tonumber(ob.server_port) or 0,
-					payload     = _jsonc.stringify(ob)
+					payload     = ob
 				}
 			end
 		end
@@ -981,13 +983,12 @@ local function extract_clash(body)
 			skipped[#skipped + 1] = reject
 		end
 		if ob then
-			local payload = _jsonc.stringify(ob)
 			nodes[#nodes + 1] = {
 				tag         = ob.tag,
 				type        = ob.type,
 				server      = ob.server,
 				server_port = ob.server_port,
-				payload     = payload
+				payload     = ob
 			}
 		end
 		fields = {}
@@ -1093,7 +1094,7 @@ local function extract_uris(text)
 				type        = ob.type,
 				server      = ob.server,
 				server_port = ob.server_port,
-				payload     = _jsonc.stringify(ob)
+				payload     = ob
 			}
 		end
 	end

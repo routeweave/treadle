@@ -1089,7 +1089,12 @@ local function load_subscription_nodes(c, all_ordered, all_map, seen)
 			if ok and type(nodes) == "table" then
 				for _, n in ipairs(nodes) do
 					if type(n) == "table" and n.payload then
-						local ok2, raw = pcall(jsonc.parse, n.payload)
+						-- The outbound itself; a file written by an older
+						-- Treadle holds it as a JSON string until its next sync.
+						local ok2, raw = true, n.payload
+						if type(raw) == "string" then
+							ok2, raw = pcall(jsonc.parse, raw)
+						end
 						local p = ok2 and sanitize_subscription_node(raw) or nil
 						if p then
 							if OUTBOUND_RESERVED_TAGS[p.tag] then
