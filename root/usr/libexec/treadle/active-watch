@@ -251,16 +251,23 @@ end
 
 -- Failover nudge. When a group's active member has lost its test result
 -- (it failed a real connection), sing-box keeps using it until the next
--- scheduled test pass. One GET /group/<tag>/delay re-tests exactly the
--- members without a fresh result (the dead one) and re-selects when the pass
--- ends, so traffic moves within seconds instead of up to `interval`. At most
--- one nudge per group per NUDGE_COOLDOWN_S: with the whole network down
--- every member is lost and every pass fails, so repeating it faster only
--- adds load. The request blocks until the slowest tested member answers or
--- times out; NUDGE_FETCH_S bounds the fetch above sing-box's 15 s per-member
--- timeout. Only the first nudge of a streak is logged.
+-- scheduled test pass. One GET /group/<tag>/delay re-tests the group and
+-- re-selects when the pass ends, so traffic moves within seconds instead of
+-- up to `interval`. The dead member is always in the pass, and a server that
+-- drops packets never answers, so how long the pass lasts depends on the
+-- version:
+--   1.14 forces a test of every member, 10 at a time, each bounded by the
+--        request's `timeout`. Live members answer in well under a second, so
+--        NUDGE_TIMEOUT_MS is mostly time spent waiting on the dead one: it
+--        is kept short. A member cut off keeps its previous result.
+--   Before 1.14 only the members without a fresh result are re-tested, each
+--        under sing-box's own 15 s limit; `timeout` does not shorten that, and
+--        NUDGE_FETCH_S bounds the fetch above it.
+-- At most one nudge per group per NUDGE_COOLDOWN_S: with the whole network
+-- down every member is lost and every pass fails, so repeating it faster only
+-- adds load. Only the first nudge of a streak is logged.
 local NUDGE_COOLDOWN_S = 60
-local NUDGE_TIMEOUT_MS = 10000
+local NUDGE_TIMEOUT_MS = 3000
 local NUDGE_FETCH_S    = 20
 local nudge_state = {}   -- tag -> { last = os.time(), logged = bool }
 
