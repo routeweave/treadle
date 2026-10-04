@@ -304,6 +304,7 @@ function downloadConfig(json) {
 
 return baseclass.extend({
 	_statusTimer: null,
+	_onVisible: null,
 	_tick: 0,
 
 	load: function() {
@@ -1181,6 +1182,15 @@ return baseclass.extend({
 		if (this._statusTimer)
 			clearTimeout(this._statusTimer);
 		this._statusTimer = setTimeout(L.bind(function() {
+			this._statusTimer = null;
+			// A hidden browser tab skips its ticks: a LuCI tab left open in
+			// the background would otherwise keep a handler process (and a
+			// whole-syslog scan every 10 s) running on the router for as
+			// long as the session lasts. Resume when it is shown again.
+			if (document.hidden) {
+				this._resumeWhenVisible();
+				return;
+			}
 			// Errors are swallowed by design: a transient WAN outage or a
 			// brief rpcd hiccup should not pile error notifications onto
 			// the user every 2 seconds — visible failure modes (sing-box
@@ -1282,11 +1292,37 @@ return baseclass.extend({
 	},
 
 	// Called by the host shell when this panel's tab is switched away.
+	// One listener at most. On becoming visible it refreshes everything at
+	// once, logs included, since a tab shown after a long absence is stale;
+	// that refresh reschedules the normal poll.
+	_resumeWhenVisible: function() {
+		if (this._onVisible)
+			return;
+		this._onVisible = L.bind(function() {
+			if (document.hidden)
+				return;
+			this._stopWaitingVisible();
+			if (!document.getElementById('treadle-status-badge'))
+				return;
+			this._refreshStatusNow(true)
+				.catch(L.bind(this._scheduleStatusRefresh, this));
+		}, this);
+		document.addEventListener('visibilitychange', this._onVisible);
+	},
+
+	_stopWaitingVisible: function() {
+		if (this._onVisible) {
+			document.removeEventListener('visibilitychange', this._onVisible);
+			this._onVisible = null;
+		}
+	},
+
 	_teardown: function() {
 		if (this._statusTimer) {
 			clearTimeout(this._statusTimer);
 			this._statusTimer = null;
 		}
+		this._stopWaitingVisible();
 	},
 
 	handleSave:      null,
