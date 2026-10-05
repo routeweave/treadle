@@ -283,7 +283,7 @@ strip_comments() {
 			# JS: line comments only (no // mid-line strip — strings).
 			sed -i -e '/^[[:space:]]*\/\//{/SPDX\|Copyright/!d;}' "$dst"
 			;;
-		*.lua|*/luci.treadle|*/build-config|*/active-watch|*/test-all-runner|*/fetch-catalog|*/singbox-update)
+		*.lua|*/luci.treadle|*/build-config|*/active-watch|*/test-all-runner|*/fetch-catalog|*/singbox-update|*/migrate-basic)
 			# Lua: -- line comments. No --[[ ]] blocks in this repo.
 			sed -i -e '/^[[:space:]]*--/{/SPDX\|Copyright/!d;}' "$dst"
 			;;

@@ -600,11 +600,12 @@ msgstr ""
 msgid "Proxy router traffic"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/settings.js:147
+#: htdocs/luci-static/resources/view/treadle/settings.js:184
 msgid ""
 "Also send traffic originated by the router itself through sing-box (needed "
 "for subscription / rule-set downloads when the source is blocked). Disable "
-"only to keep admin traffic (SSH out, opkg, ntp) untunneled for debugging."
+"to keep the router's own traffic (SSH out, opkg, ntp) direct; LAN clients "
+"are still proxied."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/settings.js:155
@@ -908,10 +909,6 @@ msgstr ""
 msgid "unknown version"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:202
-msgid "Auto"
-msgstr ""
-
 #: htdocs/luci-static/resources/view/treadle/status.js:210
 #: htdocs/luci-static/resources/view/treadle/routing.js:474
 msgid "direct (no proxy)"
@@ -1032,10 +1029,6 @@ msgstr ""
 msgid "via"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:694
-msgid "— no default"
-msgstr ""
-
 #: htdocs/luci-static/resources/view/treadle/status.js:706
 msgid "Paused for testing — will resume on next reboot."
 msgstr ""
@@ -1130,76 +1123,13 @@ msgstr ""
 msgid "Failed to load the generated config."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/basic.js:122
-msgid "Lists of nodes Treadle downloads on a schedule."
-msgstr ""
-
 #: htdocs/luci-static/resources/view/treadle/basic.js:125
 msgid "Add subscription"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/basic.js:135
-msgid "My subscription"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/basic.js:202
-msgid "Default server(s)"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/basic.js:203
-msgid ""
-"Pick one server, or several. With several, sing-box auto-routes through "
-"whichever has the lowest latency."
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/basic.js:212
-msgid "— pick one or more —"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/basic.js:214
-msgid "No nodes yet. Add a subscription and sync it first."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/basic.js:222
 #: htdocs/luci-static/resources/view/treadle/main.js:25
 msgid "Routing"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/basic.js:226
-msgid "Proxy everything"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/basic.js:227
-msgid "Proxy everything except this country"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/basic.js:230
-msgid "Country to bypass"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/basic.js:236
-msgid "Ports"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/basic.js:240
-msgid "Proxy all ports"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/basic.js:241
-msgid "Proxy only common ports (SSH, mail, DNS, web, messengers)"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/basic.js:271
-msgid "Need more control? "
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/basic.js:278
-msgid "Switch to Advanced mode →"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/basic.js:290
-#: htdocs/luci-static/resources/view/treadle/main.js:224
-msgid "Mode switch failed: "
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/routing.js:43
@@ -1458,63 +1388,8 @@ msgstr ""
 msgid "Settings"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/main.js:31
-msgid "Basic"
-msgstr ""
-
 #: htdocs/luci-static/resources/view/treadle/main.js:76
 msgid "Treadle"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/main.js:152
-msgid "Advanced mode →"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/main.js:152
-msgid "Basic mode →"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/main.js:157
-msgid "Show every Treadle setting (Nodes, Routing, Settings tabs)."
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/main.js:158
-msgid ""
-"Hide advanced settings. Your advanced configuration is kept on disk and "
-"returns when you switch back."
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/main.js:179
-msgid "Switch to Basic mode?"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/main.js:180
-msgid ""
-"Basic mode hides Nodes, Routing and Settings and builds the running sing-box "
-"config from the Basic tab only. Your advanced configuration is kept on disk "
-"and will be active again when you switch back to Advanced."
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/main.js:183
-msgid "Switch to Basic"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/main.js:185
-msgid "Switch to Advanced mode?"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/main.js:186
-msgid "Advanced mode exposes Nodes, Routing and Settings."
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/main.js:187
-msgid "Switch to Advanced"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/main.js:193
-msgid ""
-"You have unsaved changes on this page. Switching mode reloads the page and "
-"discards them."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/main.js:249

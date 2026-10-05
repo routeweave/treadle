@@ -415,8 +415,8 @@ return baseclass.extend({
 		// A rename would therefore dangle every reference to the old tag,
 		// and build-config's validation pass would silently fall the
 		// affected rules back to direct. Propagate the rename instead:
-		// rewrite rule.outbound, routing.final_outbound, urltest member
-		// lists and Basic's server picks inside the same staged save, so
+		// rewrite rule.outbound, routing.final_outbound and urltest member
+		// lists inside the same staged save, so
 		// Save & Apply commits the rename and the rewires atomically and
 		// Reset reverts both together. Skipped when the old tag is not
 		// unique among outbounds: with a duplicate tag the references
@@ -1402,7 +1402,7 @@ return baseclass.extend({
 			changed++;
 		}
 
-		// List-typed references (urltest members, Basic server picks). UCI
+		// List-typed references (urltest members). UCI
 		// hands back an array for lists and a string for a single value;
 		// tags legitimately contain spaces, so only exact-element matches
 		// are rewritten — never substring or split-on-whitespace.
@@ -1423,8 +1423,6 @@ return baseclass.extend({
 			if (n.type === 'urltest')
 				renameInList(n['.name'], 'urltest_outbounds');
 		});
-		if (uci.get('treadle', 'basic'))
-			renameInList('basic', 'server');
 
 		if (changed > 0)
 			ui.addNotification(null, E('p',

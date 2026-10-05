@@ -189,7 +189,8 @@ root/
 └── usr/
     ├── libexec/treadle/         # build-config, firewall.sh, fetch-catalog,
     │                            #   sync-subscriptions, watchdog, hourly, treadlelib.lua,
-    │                            #   subparse.lua (the handler's subscription parser)
+    │                            #   subparse.lua (the handler's subscription parser),
+    │                            #   migrate-basic (one-time Basic mode conversion)
     ├── libexec/rpcd/luci.treadle  # rpcd handler
     └── share/
         ├── luci/menu.d/luci-app-treadle.json
@@ -241,7 +242,7 @@ limits are hard requirements, not preferences.
 
 ### UCI sections
 
-Every section except the fixed ones (`global`, `basic`, `inbounds`, `dns`,
+Every section except the fixed ones (`global`, `inbounds`, `dns`,
 `routing`) is a named section whose name is a random 16-hex id — the only
 id, used by every cross-reference (see docs/design.md). When creating one:
 

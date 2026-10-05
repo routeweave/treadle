@@ -224,18 +224,6 @@ local function nodes_file(uid)
 	return NODES_DIR .. "/" .. safe .. ".json"
 end
 
--- 16 hex chars from /dev/urandom (= 64 bits). Used by the cfg-rename
--- backstop below for sections created outside the UI (e.g. someone ran
--- `uci add treadle subscription` over SSH).
-local function generate_uid()
-	local f = io.open("/dev/urandom", "rb")
-	if not f then return nil end
-	local bytes = f:read(8)
-	f:close()
-	if not bytes or #bytes < 8 then return nil end
-	return (bytes:gsub(".", function(c) return string.format("%02x", string.byte(c)) end))
-end
-
 -- Promote a `^cfg…` anonymous section to a stable uid section name, in
 -- place. This covers hand-rolled `uci add treadle …` sections, which
 -- would otherwise inherit a volatile cfgXXXX name and lose their on-disk
@@ -245,7 +233,7 @@ local function stabilise_section_name(c, section_id)
 	if type(section_id) ~= "string" or not section_id:match("^cfg") then
 		return section_id
 	end
-	local new_id = generate_uid()
+	local new_id = lib.generate_uid()
 	if not new_id then return nil end
 	c:rename("treadle", section_id, new_id)
 	c:commit("treadle")
@@ -775,22 +763,17 @@ local methods = {
 			-- builds; a thrown error here would propagate through the outer
 			-- pcall, causing os.exit(1) and an UBUS_STATUS_NOT_FOUND reply.
 			local enabled = false
-			local mode = "basic"
 			local standalone = false
 			local c_ok, c = true, cur
 			if not c then c_ok, c = pcall(uci_cursor) end
 			if c_ok then
 				local val = c:get("treadle", "global", "enabled")
-				local m   = c:get("treadle", "global", "mode")
 				-- The sing-box package's own service, which Treadle never
 				-- uses. SagerNet's package ships it enabled with a demo
 				-- Shadowsocks server (decision 0153), so say so if it is on.
 				standalone = (c:get("sing-box", "main", "enabled") == "1")
 				if not cur then c:close() end
 				enabled = (val == "1")
-				-- Anything but the two known values reads as the shipped
-				-- default, matching build-config's read_mode.
-				if m == "basic" or m == "advanced" then mode = m end
 			end
 
 			local running = service_running()
@@ -817,45 +800,9 @@ local methods = {
 				paused = paused,
 				version = version,
 				package_version = (not no_package) and treadle_version() or nil,
-				mode    = mode,
 				compat  = compat,
 				standalone_singbox = standalone
 			}
-		end
-	},
-
-	-- UI-mode switch. Basic mode hides Nodes / Routing / Settings and builds
-	-- the running config from `treadle.basic` only; Advanced is today's full UI.
-	-- The flag is purely a builder gate — switching modes does not touch any
-	-- other UCI section, so going Advanced → Basic → Advanced is non-destructive.
-	-- Routing through here (rather than a plain `uci set` from JS) keeps the
-	-- commit + service reload atomic so the running sing-box config always
-	-- matches the mode the UI is showing.
-	set_mode = {
-		args = { mode = "" },
-		call = function(args)
-			local m = args.mode
-			if m ~= "basic" and m ~= "advanced" then
-				return { ok = false, error = "invalid mode" }
-			end
-			local c = uci_cursor()
-			c:set("treadle", "global", "mode", m)
-			-- The shipped config has a `config treadle 'basic'` section, but a
-			-- hand-edited one may not. Without it, form.NamedSection on the
-			-- Basic panel renders the section title but skips every option
-			-- underneath, and build_basic_route reads all-empty defaults.
-			-- Recreate it with the shipped defaults when missing; idempotent.
-			if not c:get("treadle", "basic") then
-				c:set("treadle", "basic", "treadle")
-				c:set("treadle", "basic", "routing", "all")
-				c:set("treadle", "basic", "bypass_country", "cn")
-				c:set("treadle", "basic", "ports", "all")
-			end
-			c:commit("treadle")
-			c:close()
-			log_treadle("notice", "ui: switched to " .. m .. " mode")
-			os.execute("/etc/init.d/treadle reload >/dev/null 2>&1")
-			return { ok = true, mode = m }
 		end
 	},
 
@@ -1342,20 +1289,9 @@ local methods = {
 				return { groups = {}, updated_at = 0 }
 			end
 
-			-- Synthesised groups have no UCI section. basic-auto is the
-			-- Basic-mode urltest emitted by build-config when the user
-			-- picks more than one server; it carries fixed tuning, so
-			-- surface it with the same shape the urltest's UCI peers
-			-- would. build-config omits its interval (sing-box's own
-			-- default applies), so it is blank here as for a UCI group
-			-- whose Interval field is empty.
-			local SYNTHESISED = {
-				["basic-auto"] = { interval = "", tolerance = "50" },
-			}
-
 			local out = {}
 			for tag, entry in pairs(parsed.groups) do
-				local u = uci_groups[tag] or SYNTHESISED[tag]
+				local u = uci_groups[tag]
 				-- Skip rows whose group has been deleted from UCI but
 				-- still lingers in the snapshot until sing-box's next
 				-- reload. Without this filter the UI would render a

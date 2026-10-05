@@ -104,16 +104,6 @@ local function set_ruleset_download(rs, via)
 	return rs
 end
 
--- ─── mode ────────────────────────────────────────────────────────────────
---
--- treadle.global.mode = "basic" | "advanced". "basic" hides Nodes / Routing /
--- Settings in the UI and synthesises a small running config from
--- treadle.basic + subscriptions only — manual nodes, treadle.rule entries and
--- /etc/treadle/extra.json are kept on disk but not compiled in. An unset or
--- unknown value reads as "basic", the shipped default.
-
-local BASIC_AUTO_TAG = "basic-auto"
-
 -- --preview / -n on the command line: pure-read mode for the get_config
 -- RPC. Suppresses the side effects (orphan node-file deletion in
 -- load_subscription_nodes, dnsmasq drop-in rewrite at end of main) so a
@@ -126,29 +116,11 @@ local PREVIEW_MODE = false
 local PROBE_MODE = false
 local BOOTSTRAP_MODE = false
 
-local function read_mode(c)
-	local m = c:get("treadle", "global", "mode")
-	if m == "basic" or m == "advanced" then return m end
-	return "basic"
-end
-
 -- The tag of the outbound traffic falls back to when no earlier rule matched.
 -- Used by build_dns to decide whether the `remote` DNS server is detoured
 -- through a proxy (so the lookup exits the same way the connection will) and
--- whether the DNS `final` resolves via remote or local. Advanced reads it from
--- treadle.routing.final_outbound; Basic derives it from treadle.basic.server via
--- resolve_basic_members so a stale selection (subscription removed, node
--- renamed) is filtered out before it can leak into route.final as a dangling
--- tag — defined below load_subscription_nodes so it can do the resolution.
-local resolve_basic_members  -- forward declaration, defined after load_subscription_nodes
-
+-- whether the DNS `final` resolves via remote or local.
 local function compute_default_outbound(c)
-	if read_mode(c) == "basic" then
-		local members = resolve_basic_members(c)
-		if #members == 0 then return "direct" end
-		if #members == 1 then return members[1] end
-		return BASIC_AUTO_TAG
-	end
 	local fin = c:get("treadle", "routing", "final_outbound") or ""
 	if fin == "" then return "direct" end
 	return fin
@@ -278,13 +250,6 @@ end
 -- build_dns both consume this list, so the rule/condition foreach passes, the
 -- sorts and the per-condition resolution run a single time per build.
 local function prepare_rules(c)
-	-- Basic mode synthesises its routing inside build_route from treadle.basic
-	-- and never reads treadle.rule, so the prepared list is empty. build_dns'
-	-- build_routing_dns_rules loop iterates this list and so produces no
-	-- per-rule DNS rules — exactly what Basic wants (the default outbound's
-	-- detour handles every proxied lookup via `remote`).
-	if read_mode(c) == "basic" then return {} end
-
 	local ctx = {
 		delivery = c:get("treadle", "global", "ruleset_delivery") or "github",
 		custom   = load_custom_rulesets(c)
@@ -402,11 +367,11 @@ local function build_inbounds(c)
 			strict_route  = false,
 			stack         = c:get("treadle", "inbounds", "tun_stack") or "system"
 		}
-		-- Basic mode never proxies the router's own traffic (firewall.sh forces
-		-- tproxy_self off for it), but auto_route captures local output too.
-		-- Forwarded LAN traffic has no local user, so excluding every local uid
-		-- keeps only the LAN in the tunnel.
-		if read_mode(c) == "basic" and auto_route then
+		-- "Proxy router traffic" off (inbounds.tproxy_self = 0): firewall.sh
+		-- leaves router output alone in tproxy, but auto_route captures local
+		-- output too. Forwarded LAN traffic has no local user, so excluding
+		-- every local uid keeps only the LAN in the tunnel.
+		if c:get("treadle", "inbounds", "tproxy_self") == "0" and auto_route then
 			tun.exclude_uid_range = { "0:65535" }
 		end
 		tun.exclude_mac_address = tun_bypass_macs(c, auto_route)
@@ -895,9 +860,9 @@ local function sub_display_names(c)
 	return _sub_names
 end
 
--- direct / block are builtin outbounds added at emission. basic-auto is
--- the synthesised Basic-mode group; a node — manual or from a (possibly
--- hostile) subscription — carrying one of those tags would collide and
+-- direct / block are builtin outbounds added at emission; a node — manual
+-- or from a (possibly hostile) subscription — carrying one of those tags
+-- would collide and
 -- make sing-box reject the whole config, so drop it before it reaches
 -- all_map. Shared with luci.treadle's parse-time filter via treadlelib.
 local OUTBOUND_RESERVED_TAGS = lib.RESERVED_TAGS
@@ -1043,8 +1008,7 @@ end
 -- Scan /etc/treadle/nodes/*.json, prune any orphan file whose subscription
 -- section was deleted, and import the remaining nodes into all_ordered /
 -- all_map / seen (mutated in place). First-seen-wins, so manual nodes loaded
--- before this call take precedence in Advanced mode; Basic skips manual and
--- calls this with empty tables. Each imported node is tagged with `_source`
+-- before this call take precedence. Each imported node is tagged with `_source`
 -- = the subscription's uid (matches the basename of its on-disk JSON file,
 -- and the value urltest_regex_sources stores to scope a regex group to
 -- specific subscriptions).
@@ -1108,7 +1072,7 @@ local function load_subscription_nodes(c, all_ordered, all_map, seen)
 								-- defined locally — the only realistic
 								-- tag-hijack vector. Tags merely referenced
 								-- elsewhere (urltest_outbounds, rule.outbound,
-								-- basic.server, …) are EXPECTED to be filled
+								-- …) are EXPECTED to be filled
 								-- by subscription nodes; gating those would
 								-- break the primary urltest workflow.
 								p._source      = uid
@@ -1195,8 +1159,8 @@ end
 -- Treadle-internal `_source` marker, divert `_is_endpoint` nodes (Treadle-built
 -- WireGuard) into the top-level endpoints array, and warn on subscription
 -- WireGuard outbounds, which still use the legacy schema (they work on
--- 1.12 but will not load on sing-box 1.13). Shared by build_basic_outbounds,
--- build_outbounds and build_probe_config.
+-- 1.12 but will not load on sing-box 1.13). Shared by build_outbounds and
+-- build_probe_config.
 local function place_node(ob, outbounds, endpoints, timeout)
 	ob._source = nil
 	if ob._is_endpoint then
@@ -1219,78 +1183,6 @@ local function place_node(ob, outbounds, endpoints, timeout)
 		end
 		outbounds[#outbounds + 1] = ob
 	end
-end
-
--- Load subscriptions and resolve the Basic-mode server selection in one pass,
--- memoized for the lifetime of the build. compute_default_outbound (called
--- from build_dns and build_basic_route) and build_basic_outbounds all need
--- the same filtered member list — without the shared filter, the default
--- could refer to a tag that build_basic_outbounds drops, leaving route.final
--- dangling and sing-box rejecting the config.
-local _basic_cache
-resolve_basic_members = function(c)
-	if _basic_cache then return _basic_cache.members, _basic_cache.all_map, _basic_cache.all_ordered end
-	local all_ordered, all_map, seen = {}, {}, {}
-	load_subscription_nodes(c, all_ordered, all_map, seen)
-	local basic = c:get_all("treadle", "basic") or {}
-	local selected = uci_list_or_string(basic, "server")
-	-- Drop selections that no longer resolve (subscription removed, node
-	-- renamed) and dedupe. Stable order preserves the user's pick sequence.
-	local members, member_set = {}, {}
-	for _, t in ipairs(selected) do
-		if all_map[t] and not member_set[t] then
-			members[#members + 1] = t
-			member_set[t] = true
-		end
-	end
-	_basic_cache = { members = members, all_map = all_map, all_ordered = all_ordered }
-	return members, all_map, all_ordered
-end
-
--- Basic mode: import subscription nodes + synthesise a default outbound from
--- treadle.basic.server (single → that node is the default, N>1 → wrap in a
--- urltest tagged BASIC_AUTO_TAG, zero → no proxy default and build_route's
--- `final` stays "direct"). Manual nodes (treadle.node), custom rules
--- (treadle.rule) and group regexes are ignored — they stay on disk for an
--- Advanced switch-back but are not compiled in.
-local function build_basic_outbounds(c)
-	local members, all_map, all_ordered = resolve_basic_members(c)
-
-	if #members > 1 then
-		-- `interval` is deliberately omitted so sing-box applies its own 3m
-		-- default. Basic mode exposes no Interval box, so a value hard-coded
-		-- here is one no Basic user can reach, and the 5m this carried was
-		-- simply slower than upstream at leaving a degraded-but-alive node.
-		-- Omitting it also matches what Advanced emits for an empty Interval
-		-- field. `tolerance` is set to sing-box's own default purely to keep
-		-- the synthesised group self-documenting.
-		local group = {
-			type      = "urltest",
-			tag       = BASIC_AUTO_TAG,
-			outbounds = members,
-			url       = "https://www.gstatic.com/generate_204",
-			tolerance = 50
-		}
-		all_map[BASIC_AUTO_TAG] = group
-		all_ordered[#all_ordered + 1] = group
-	end
-
-	-- Emit: direct first, then only the selected members + the synthesised
-	-- group. Unselected subscription nodes stay on disk — latency testing
-	-- probes them through the ephemeral --probe instance, so the running
-	-- config no longer needs to carry unreferenced nodes.
-	local member_set = {}
-	for _, t in ipairs(members) do member_set[t] = true end
-	local timeout   = connect_timeout(c)
-	local outbounds = { direct_outbound() }
-	local endpoints = {}
-	for _, ob in ipairs(all_ordered) do
-		if member_set[ob.tag] or ob.tag == BASIC_AUTO_TAG then
-			place_node(ob, outbounds, endpoints, timeout)
-		end
-	end
-
-	return outbounds, endpoints
 end
 
 -- Load every node Treadle knows about, preserving order, deduping by tag.
@@ -1320,7 +1212,7 @@ local function load_all_nodes(c)
 		end
 	end)
 
-	-- Subscription nodes (orphan-prune + parse) — same loader Basic uses.
+	-- Subscription nodes (orphan-prune + parse).
 	load_subscription_nodes(c, all_ordered, all_map, seen)
 	return all_ordered, all_map
 end
@@ -1398,8 +1290,6 @@ local function write_order_snapshot()
 end
 
 local function build_outbounds(c)
-	if read_mode(c) == "basic" then return build_basic_outbounds(c) end
-
 	-- ── Step 1: load every node, preserving order, deduping by tag ────────
 	local all_ordered, all_map = load_all_nodes(c)
 
@@ -1869,30 +1759,8 @@ local function build_local_dns_servers(c)
 	} }
 end
 
--- Basic mode's country bypass: the geosite rule-set tag that build_basic_route
--- emits, or nil when there is none. Sagernet's geoip catalog covers ~all ISO
--- codes, but their geosite catalog ships only a handful of per-country lists
--- — at the time of writing, only `cn`. Emitting geosite-<cc> for every
--- country produces 404s on the .srs fetch, sing-box logs the failure and the
--- rule is half-effective, so geosite is gated on this known-good set. Shared
--- by build_dns and build_basic_route so the DNS rule and the route rule can
--- never name different rule-sets.
-local SAGERNET_GEOSITES = { cn = true }
-local function basic_bypass_geosite(c)
-	if read_mode(c) ~= "basic" then return nil end
-	local basic = c:get_all("treadle", "basic") or {}
-	local cc    = string.lower(basic.bypass_country or "")
-	if basic.routing ~= "bypass_country" or not SAGERNET_GEOSITES[cc] then
-		return nil
-	end
-	return "sagernet-geosite-" .. cc, "geosite-" .. cc
-end
-
 local function build_dns(c, prepared)
 	local strategy         = c:get("treadle", "dns", "strategy") or ""
-	-- Mode-aware: Advanced reads the user's final-outbound knob, Basic derives
-	-- it from treadle.basic.server so the remote DNS server still detours
-	-- through the active proxy.
 	local default_outbound = compute_default_outbound(c)
 	if default_outbound == "direct" then default_outbound = "" end
 
@@ -1908,8 +1776,8 @@ local function build_dns(c, prepared)
 
 	-- ── remote: resolver for proxied traffic; blank user value falls back to
 	-- Cloudflare DoT. Detoured through the default outbound so the lookup
-	-- exits where the proxied traffic does. With no proxy default (Basic
-	-- with no live server, or an Advanced final of direct / block) it goes
+	-- exits where the proxied traffic does. With no proxy default (a final
+	-- of direct / block) it goes
 	-- out `direct`, like `local`: a server with no detour and a hostname
 	-- address has no domain resolver, and sing-box rejects the whole config
 	-- ("missing domain resolver for domain server address"). Through
@@ -1969,24 +1837,6 @@ local function build_dns(c, prepared)
 
 	local routing_rules, per_outbound = build_routing_dns_rules(prepared, fakeip_on)
 	for _, r in ipairs(routing_rules) do rules[#rules + 1] = r end
-
-	-- Basic mode synthesises no routing rules (prepare_rules returns {}), so
-	-- mirror its one domain-bearing route rule by hand: domains in the bypassed
-	-- country's geosite resolve via `local`, so a CDN geolocalises to the
-	-- router's own network and hands back nearby endpoints for the direct
-	-- connection. Without it they would go to `remote` (or `fakeip`) like
-	-- everything else. Nothing to mirror when the default is not a proxy:
-	-- `final` is already `local`.
-	if default_is_proxy then
-		local geosite_tag = basic_bypass_geosite(c)
-		if geosite_tag then
-			rules[#rules + 1] = {
-				action   = "route",
-				server   = "local",
-				rule_set = { geosite_tag }
-			}
-		end
-	end
 
 	-- Per-outbound DNS servers: one `remote-<tag>` per outbound flagged via
 	-- `rule.dns_via_outbound`, so the DNS lookup for a domain exits through
@@ -2137,15 +1987,6 @@ local function join_nodes(nodes, mode)
 	return { type = "logical", mode = mode, rules = nodes }
 end
 
--- Common-ports preset for Basic mode's "proxy only common ports" choice.
--- SSH / mail / DNS / HTTP(S) / DoT / IMAP / POP3 / XMPP-fallback / alt-web.
--- Modern messengers (WhatsApp, Telegram, Signal) run over 443 and are
--- already covered by HTTPS; 5222 / 5223 are kept for legacy fallback.
-local BASIC_COMMON_PORTS = {
-	22, 25, 53, 80, 110, 143, 443, 465, 587, 853,
-	993, 995, 5222, 5223, 8080, 8443
-}
-
 -- Pings go direct in tun mode, as they do in tproxy mode, where firewall.sh
 -- never hands ICMP to sing-box. A tun captures ICMP, and only direct (and
 -- WireGuard/Tailscale endpoints) can carry it: a ping that reaches a rule
@@ -2159,107 +2000,7 @@ local function add_icmp_direct(c, route)
 	route.rules[#route.rules + 1] = { network = { "icmp" }, outbound = "direct" }
 end
 
--- Basic mode route block. Fixed structure: sniff → DNS hijack → private-IP
--- bypass → optional country bypass (geoip + geosite for the picked country
--- ISO code → direct) → optional common-ports proxy rule → final routes to
--- the synthesised default outbound (or stays direct when no server is
--- selected, leaving sing-box as a configured but transparent forwarder).
-local function build_basic_route(c)
-	local route = {
-		rules = {},
-		auto_detect_interface = true,
-		default_domain_resolver = { server = "local" }
-	}
-
-	local imode = c:get("treadle", "inbounds", "mode") or "tun"
-	if imode == "tproxy" then
-		route.default_mark = 255
-	end
-
-	route.rules[#route.rules + 1] = { action = "sniff" }
-	route.rules[#route.rules + 1] = { protocol = "dns", action = "hijack-dns" }
-	if c:get("treadle", "dns", "managed_dns") ~= "0" then
-		route.rules[#route.rules + 1] = { inbound = "dns-in", action = "hijack-dns" }
-	end
-	-- Private and CGNAT destinations go direct; see build_route.
-	route.rules[#route.rules + 1] = { ip_is_private = true, outbound = "direct" }
-	route.rules[#route.rules + 1] = { ip_cidr = { "100.64.0.0/10" }, outbound = "direct" }
-	add_icmp_direct(c, route)
-
-	local basic        = c:get_all("treadle", "basic") or {}
-	local routing_mode = basic.routing or "all"
-	local cc           = string.lower(basic.bypass_country or "")
-	local ports_mode   = basic.ports   or "all"
-	local delivery     = c:get("treadle", "global", "ruleset_delivery") or "github"
-
-	-- Basic always fetches rule-sets directly via WAN, regardless of the
-	-- Advanced ruleset_download_detour knob. The default-outbound path is a
-	-- chicken-and-egg trap at startup: sing-box initialises rule-sets before
-	-- the urltest has picked a member, so dialling through `basic-auto`
-	-- times out and the whole service aborts with a FATAL. WAN is always
-	-- reachable at this point (the treadle init script gates start_service on
-	-- WAN being up); once one fetch succeeds, experimental.cache_file lets
-	-- subsequent boots load rule-sets from flash regardless of the network.
-	local rule_sets = {}
-	local function emit_rs(tag, url)
-		rule_sets[#rule_sets + 1] = set_ruleset_download({
-			type = "remote", tag = tag, format = "binary", url = url
-		}, "direct")
-	end
-
-	-- Country bypass — geoip catches direct-IP destinations, geosite catches
-	-- domain-routed ones. `rule_set` on a route rule is OR-matched in
-	-- sing-box, so one rule with both tags suffices. Provider is hardcoded
-	-- to sagernet to match the rule-set Advanced mode emits by default.
-	-- Their DNS lookups are steered to `local` by a matching rule in build_dns.
-	-- Sagernet's geoip catalog covers ~all ISO codes (every Basic-mode
-	-- option resolves), but geosite is gated on a known-good set — see
-	-- basic_bypass_geosite. geoip stays unconditional so the bypass at least
-	-- catches IP-routed packets everywhere.
-	if routing_mode == "bypass_country" and cc ~= "" then
-		local geoip_name = "geoip-" .. cc
-		local geoip_tag  = "sagernet-" .. geoip_name
-		emit_rs(geoip_tag, provider_url("sagernet", delivery, geoip_name))
-		local rs_tags = { geoip_tag }
-		local geosite_tag, geosite_name = basic_bypass_geosite(c)
-		if geosite_tag then
-			emit_rs(geosite_tag, provider_url("sagernet", delivery, geosite_name))
-			rs_tags[#rs_tags + 1] = geosite_tag
-		end
-		route.rules[#route.rules + 1] = {
-			rule_set = rs_tags,
-			outbound = "direct"
-		}
-	end
-
-	local default_outbound = compute_default_outbound(c)
-
-	if ports_mode == "common" then
-		-- Match common ports → proxy; everything else falls through to final
-		-- = direct. The rule is skipped when no server is selected (the
-		-- default outbound resolves to "direct" and the rule would be a
-		-- no-op anyway).
-		if default_outbound ~= "direct" then
-			route.rules[#route.rules + 1] = {
-				port     = BASIC_COMMON_PORTS,
-				outbound = default_outbound
-			}
-		end
-		route["final"] = "direct"
-	else
-		route["final"] = default_outbound
-	end
-
-	if #rule_sets > 0 then
-		route.rule_set = rule_sets
-	end
-
-	return route
-end
-
 local function build_route(c, prepared)
-	if read_mode(c) == "basic" then return build_basic_route(c) end
-
 	local route = {
 		rules = {},
 		auto_detect_interface = true,
@@ -2357,8 +2098,8 @@ local function build_route(c, prepared)
 	-- Settings dropdown do. Known weakness of that default: before its first
 	-- latency test a urltest uses its first member, so with a cold cache
 	-- (fresh install, wiped cache.db) and that member down, the fetch times
-	-- out and sing-box FATALs at start — the trap Basic sidesteps by always
-	-- fetching direct (see build_basic_route).
+	-- out and sing-box FATALs at start. Setting the detour to direct
+	-- sidesteps it.
 	local detour    = c:get("treadle", "global", "ruleset_download_detour") or "default"
 	local seen_tags = {}
 	local rule_sets = {}
@@ -2655,10 +2396,7 @@ local function build_config(c)
 	return config
 end
 
-local function apply_extra(c, config)
-	-- Basic mode ignores extra.json — the file is kept on disk for an
-	-- Advanced switch-back, but the merge is a builder gate, not data.
-	if read_mode(c) == "basic" then return config end
+local function apply_extra(config)
 	local raw = read_file(EXTRA_PATH)
 	if not raw or raw:match("^%s*$") then return config end
 	local ok, extra = pcall(jsonc.parse, raw)
@@ -2744,7 +2482,7 @@ end
 -- without touching the network, whatever the download route. Derived from the
 -- real built config, so the tags, URLs, formats and cache path are those the
 -- real instance will look up. Returns nil when there is nothing to warm: no
--- remote rule-set, or every one already downloads direct (Basic, the `direct`
+-- remote rule-set, or every one already downloads direct (the `direct`
 -- route, a flipped retry), where the warm-up would repeat the same download.
 local function build_bootstrap_config(c, full)
 	local cache_file = full.experimental and full.experimental.cache_file
@@ -2831,7 +2569,7 @@ local config
 if PROBE_MODE then
 	config = build_probe_config(c)
 elseif BOOTSTRAP_MODE then
-	config = build_bootstrap_config(c, apply_extra(c, build_config(c)))
+	config = build_bootstrap_config(c, apply_extra(build_config(c)))
 	if config == nil then
 		-- Nothing to warm: leave no config behind for the caller to run.
 		c:close()
@@ -2839,7 +2577,7 @@ elseif BOOTSTRAP_MODE then
 		os.exit(0)
 	end
 else
-	config = apply_extra(c, build_config(c))
+	config = apply_extra(build_config(c))
 end
 c:close()
 

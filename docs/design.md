@@ -83,14 +83,6 @@ only an allow-listed set of fields per protocol into the config, drops
 nodes whose transport sing-box cannot dial, and removes uTLS from
 QUIC-carried protocols, where sing-box cannot use it.
 
-### Basic and Advanced mode
-
-Basic mode builds a small config from subscriptions only: the chosen
-servers (wrapped in an automatic latency-based group when there are
-several), an optional "bypass one country" rule, and a port filter. Manual
-nodes, rules and `extra.json` stay on disk but are not compiled in, so
-switching modes never loses settings.
-
 ## Getting traffic into sing-box
 
 `inbounds.mode` picks the method:
@@ -106,6 +98,11 @@ switching modes never loses settings.
   back in.
 - **`mixed_enabled`** — independent of the mode: adds a sing-box `mixed`
   (HTTP + SOCKS5) inbound next to either `tun` or `tproxy`.
+
+`inbounds.tproxy_self` ("Proxy router traffic", on by default) decides
+whether the router's own traffic is captured too, in both modes. Off, tproxy
+installs no output chain and the tun inbound excludes every local uid
+(`exclude_uid_range`), so only forwarded LAN traffic enters the tunnel.
 
 On every reload the ruleset is **replaced atomically**: the generated
 file declares, deletes and redefines the table, and one `nft -f` applies

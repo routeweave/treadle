@@ -174,18 +174,21 @@ return baseclass.extend({
 		oMode.value('tproxy',       _('TProxy only — transparent TCP + UDP via nftables'));
 		oMode['default'] = 'tun';
 
-		// tproxy group — sits directly below Mode so the
-		// mode-dependent rows are visually adjacent to the selector that
-		// reveals them.
+		// Applies to both modes: firewall.sh skips the OUTPUT-chain rules in
+		// tproxy, build-config excludes local uids from the tun. The UCI name
+		// predates TUN support.
 		var oTproxySelf = sNet.option(form.Flag, 'tproxy_self',
 			_('Proxy router traffic'),
 			_('Also send traffic originated by the router itself through sing-box ' +
 			  '(needed for subscription / rule-set downloads when the source is blocked). ' +
-			  'Disable only to keep admin traffic (SSH out, opkg, ntp) untunneled for debugging.'));
+			  'Disable to keep the router\'s own traffic (SSH out, opkg, ntp) direct; ' +
+			  'LAN clients are still proxied.'));
 		oTproxySelf['default'] = '1';
 		oTproxySelf.rmempty = false;
-		oTproxySelf.depends('mode', 'tproxy');
 
+		// tproxy group — sits directly below Mode so the
+		// mode-dependent rows are visually adjacent to the selector that
+		// reveals them.
 		var oTproxyPort = advance(sNet.option(form.Value, 'tproxy_port', _('TProxy port')));
 		oTproxyPort.datatype = 'port';
 		oTproxyPort.placeholder = '7895';

@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 RouteWeave
 
-// Per-row subscription Sync button handler shared by the Nodes and Basic
-// panels — both render the same Sync column over the same UCI sections,
-// and the two hand-rolled copies had already drifted (one restored the
-// button's spinner class in `finally`, the other did not).
+// Per-row subscription Sync button handler for the Nodes panel's Sync
+// column.
 
 'use strict';
 'require baseclass';

@@ -333,6 +333,12 @@ start_service() {
 
 	local enabled config_path mode tmp_cfg config_ok rotates order_snap
 
+	# Basic mode was removed; convert a config still carrying it (an old
+	# backup restored after the package upgrade migrated the live one).
+	if uci -q get treadle.global.mode >/dev/null || uci -q get treadle.basic >/dev/null; then
+		/usr/libexec/treadle/migrate-basic
+	fi
+
 	if [ "$(uci -q get treadle.inbounds.mode)" = "tproxy_mixed" ]; then
 		uci -q set treadle.inbounds.mode='tproxy'
 		uci -q set treadle.inbounds.mixed_enabled='1'

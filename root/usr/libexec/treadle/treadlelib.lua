@@ -15,9 +15,8 @@ local M = {}
 -- luci.treadle (drops them at subscription-parse time) and build-config
 -- (drops them at emission time) so the two filters cannot drift.
 M.RESERVED_TAGS = {
-	direct          = true,
-	block           = true,
-	["basic-auto"]  = true,
+	direct = true,
+	block  = true,
 }
 
 -- Outbound protocols Treadle accepts from subscription payloads. Anything
@@ -204,6 +203,17 @@ function M.file_exists(path)
 	local f = io.open(path, "r")
 	if f then f:close(); return true end
 	return false
+end
+
+-- A new section name: 16 hex chars from /dev/urandom (= 64 bits), the
+-- same shape the UI's uid.js mints. Nil when /dev/urandom is unreadable.
+function M.generate_uid()
+	local f = io.open("/dev/urandom", "rb")
+	if not f then return nil end
+	local bytes = f:read(8)
+	f:close()
+	if not bytes or #bytes < 8 then return nil end
+	return (bytes:gsub(".", function(c) return string.format("%02x", string.byte(c)) end))
 end
 
 -- Normalise a UCI option that may be a list, a scalar or absent into an

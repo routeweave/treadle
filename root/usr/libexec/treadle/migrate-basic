@@ -1,0 +1,184 @@
+#!/usr/bin/env lua
+-- SPDX-License-Identifier: GPL-3.0-only
+-- Copyright (C) 2026 RouteWeave
+--
+-- migrate-basic: one-time conversion of a config from the removed Basic mode.
+--
+-- Basic built its config from `treadle.basic` (server list, country bypass,
+-- common ports) and ignored rules, manual nodes and extra.json. This writes
+-- the same behaviour as ordinary Advanced sections, so the running config
+-- does not change on upgrade:
+--
+--   one server      → routing.final_outbound
+--   several servers → a manual urltest group, made the final outbound
+--   country bypass  → a rule: sagernet geoip (+ geosite where it exists) → direct
+--   common ports    → a rule: those ports → the server(s); final → direct
+--   router traffic  → inbounds.tproxy_self = 0 (Basic never proxied it)
+--
+-- Rules that were on disk but ignored are disabled, not deleted, and a
+-- non-empty extra.json is moved aside, so nothing the user wrote is lost.
+-- Then global.mode and the basic section are removed, which makes the run
+-- idempotent: without either there is nothing to migrate. An Advanced
+-- config only loses those two leftovers.
+--
+-- Run by the package postinst and by the init script before every start.
+
+local uci = require("uci")
+local jsonc = require("luci.jsonc")
+local lib = dofile("/usr/libexec/treadle/treadlelib.lua")
+
+local EXTRA_PATH = "/etc/treadle/extra.json"
+
+-- Sagernet ships a per-country geosite list only for these codes; geoip
+-- covers every code. Same gate the Basic builder used.
+local SAGERNET_GEOSITES = { cn = true }
+
+-- Basic's "proxy only common ports" preset.
+local COMMON_PORTS = {
+	"22", "25", "53", "80", "110", "143", "443", "465", "587", "853",
+	"993", "995", "5222", "5223", "8080", "8443"
+}
+
+local function log(level, msg)
+	os.execute("logger -p daemon." .. level .. " -t treadle '"
+		.. msg:gsub("'", "'\\''") .. "' 2>/dev/null")
+end
+
+local c = uci.cursor()
+local mode = c:get("treadle", "global", "mode")
+local basic = c:get_all("treadle", "basic")
+
+if mode == nil and basic == nil then
+	c:close()
+	os.exit(0)
+end
+
+local function drop_leftovers()
+	c:delete("treadle", "global", "mode")
+	if basic then c:delete("treadle", "basic") end
+end
+
+if mode == "advanced" then
+	drop_leftovers()
+	c:commit("treadle")
+	c:close()
+	os.exit(0)
+end
+
+-- Anything but "advanced" was Basic: an unset mode was its shipped default.
+basic = basic or {}
+
+-- Every node tag the config can resolve, to drop saved servers a
+-- subscription refresh removed (Basic ignored them too) and to keep the
+-- new group's tag unique.
+local known = {}
+c:foreach("treadle", "node", function(s)
+	if s.tag and s.tag ~= "" then known[s.tag] = true end
+end)
+for _, nf in ipairs(lib.node_files()) do
+	for _, n in ipairs(lib.read_json(jsonc, nf.path) or {}) do
+		if type(n) == "table" and type(n.tag) == "string" then known[n.tag] = true end
+	end
+end
+
+local members, seen = {}, {}
+for _, t in ipairs(lib.uci_list(basic, "server")) do
+	if known[t] and not seen[t] then
+		members[#members + 1] = t
+		seen[t] = true
+	end
+end
+
+-- Rules Basic ignored stay on disk, disabled, after the migrated ones.
+local new_rules = {}
+local function add_rule(name, outbound, kind, values)
+	new_rules[#new_rules + 1] = { name = name, outbound = outbound, kind = kind, values = values }
+end
+
+local default = "direct"
+if #members == 1 then
+	default = members[1]
+elseif #members > 1 then
+	local tag, n = "Auto", 1
+	while known[tag] do
+		n = n + 1
+		tag = "Auto-" .. n
+	end
+	local nodes = 0
+	c:foreach("treadle", "node", function() nodes = nodes + 1 end)
+	local id = lib.generate_uid()
+	c:set("treadle", id, "node")
+	c:set("treadle", id, "tag", tag)
+	c:set("treadle", id, "type", "urltest")
+	c:set("treadle", id, "order", tostring(nodes))
+	c:set("treadle", id, "urltest_mode", "manual")
+	c:set("treadle", id, "urltest_outbounds", members)
+	c:set("treadle", id, "urltest_url", "https://www.gstatic.com/generate_204")
+	c:set("treadle", id, "urltest_tolerance", "50")
+	default = tag
+end
+
+local cc = string.lower(basic.bypass_country or "")
+if basic.routing == "bypass_country" and cc:match("^%a%a$") then
+	local sets = { "sagernet/geoip-" .. cc }
+	if SAGERNET_GEOSITES[cc] then sets[#sets + 1] = "sagernet/geosite-" .. cc end
+	add_rule("Bypass " .. string.upper(cc), "direct", "ruleset", sets)
+end
+
+local old_final = c:get("treadle", "routing", "final_outbound")
+local final = default
+if basic.ports == "common" then
+	if default ~= "direct" then
+		add_rule("Common ports", default, "port", COMMON_PORTS)
+	end
+	final = "direct"
+end
+
+local disabled = 0
+c:foreach("treadle", "rule", function(s)
+	if s.enabled ~= "0" then
+		c:set("treadle", s[".name"], "enabled", "0")
+		disabled = disabled + 1
+	end
+	c:set("treadle", s[".name"], "order", tostring((tonumber(s.order) or 0) + #new_rules))
+end)
+
+for i, r in ipairs(new_rules) do
+	local rid = lib.generate_uid()
+	c:set("treadle", rid, "rule")
+	c:set("treadle", rid, "name", r.name)
+	c:set("treadle", rid, "enabled", "1")
+	c:set("treadle", rid, "order", tostring(i - 1))
+	c:set("treadle", rid, "outbound", r.outbound)
+	local cid = lib.generate_uid()
+	c:set("treadle", cid, "condition")
+	c:set("treadle", cid, "rule", rid)
+	c:set("treadle", cid, "order", "0")
+	c:set("treadle", cid, "kind", r.kind)
+	c:set("treadle", cid, "value", r.values)
+end
+
+if not c:get("treadle", "routing") then c:set("treadle", "routing", "treadle") end
+c:set("treadle", "routing", "final_outbound", final)
+
+if not c:get("treadle", "inbounds") then c:set("treadle", "inbounds", "treadle") end
+c:set("treadle", "inbounds", "tproxy_self", "0")
+
+drop_leftovers()
+c:commit("treadle")
+c:close()
+
+local extra = lib.read_file(EXTRA_PATH)
+local moved = false
+if extra and not extra:match("^%s*$") and not extra:match("^%s*{%s*}%s*$") then
+	moved = os.rename(EXTRA_PATH, EXTRA_PATH .. ".pre-migration") and true or false
+	if moved then lib.write_secure(EXTRA_PATH, "{}\n") end
+end
+
+log("notice", string.format(
+	"config: Basic mode removed; migrated %d server(s), %d rule(s), final '%s'; "
+	.. "%d earlier rule(s) disabled%s%s",
+	#members, #new_rules, final, disabled,
+	(old_final and old_final ~= "" and old_final ~= final)
+		and ", earlier final '" .. old_final .. "' replaced" or "",
+	moved and ", extra.json moved to extra.json.pre-migration" or ""))

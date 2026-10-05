@@ -6,10 +6,8 @@ page — no JSON to hand-edit.
 
 ## Features
 
-- **One LuCI page** at *Services → Treadle*. A Basic/Advanced toggle in
-  the tab bar swaps between a tight surface (Status + Basic) and the
-  full one (Status, Nodes, Routing, Settings). Switching is
-  non-destructive — your Advanced config stays on disk.
+- **One LuCI page** at *Services → Treadle*, with Status, Nodes, Routing
+  and Settings tabs.
 - **Subscriptions and manual nodes.** Fetch and refresh remote node
   lists; hand-add nodes for VLESS, VMess, Trojan, Shadowsocks,
   Hysteria2, TUIC, AnyTLS, WireGuard, and SOCKS.

@@ -34,9 +34,8 @@
 // node here). Subscription nodes render as "<subscription>/<tag>" so two
 // nodes that happen to share a tag across subscriptions can be told apart;
 // manual nodes and groups render as the bare tag. Same formatting as the
-// Routing tab's dropdown. In Advanced mode it is an inline switcher (see
-// _renderNodeSwitcher); Basic mode keeps the read-only text — its server
-// picker lives on the Basic tab.
+// Routing tab's dropdown. It is an inline switcher (see
+// _renderNodeSwitcher).
 
 'use strict';
 'require baseclass';
@@ -181,66 +180,9 @@ function formatRate(bps) {
 	return formatBytes(bps) + '/s';
 }
 
-// Format the active-outbound tag for display: "<subscription>/<tag>" for a
-// subscription node, just "<tag>" for a manual node or a group (groups don't
-// appear in list_outbounds, so the lookup misses and falls through to the
-// raw tag — which is what we want, a group is a single named entity). Same
-// shape as the Routing tab's dropdown labels (routing.js:addServers).
-// Map an internal outbound tag to a friendlier label for the Status UI. The
-// only special case today is the Basic-mode synthesised urltest: its tag has
-// to stay stable (it appears in sing-box logs, the clash cache file and the
-// /proxies API), so the rename happens at display time only.
-var TAG_DISPLAY = { 'basic-auto': _('Auto') };
-
-function displayTag(tag) {
-	return (tag != null && TAG_DISPLAY[tag]) || tag;
-}
-
-function formatActiveNode(tag, outbounds) {
-	if (!tag) return '';
-	if (tag === 'direct') return _('direct (no proxy)');
-	if (tag === 'block')  return _('block (drop)');
-	if (TAG_DISPLAY[tag])  return TAG_DISPLAY[tag];
-	var subName = subs.nameMap();
-	for (var i = 0; i < (outbounds || []).length; i++) {
-		var ob = outbounds[i];
-		if (ob.tag !== tag) continue;
-		return subs.labelFor(ob.tag, ob.subscription, subName);
-	}
-	return tag;
-}
-
-// Active outbound for the runtime header. Advanced reads
-// treadle.routing.final_outbound; Basic synthesises from treadle.basic.server
-// after filtering picks that no longer resolve against the live outbound
-// set (subscription removed, node renamed). Same filter the builder applies,
-// otherwise Status displays "via Auto" for a config that doesn't have a
-// basic-auto group. Rule count stays plain in both modes — Basic just hides
-// the row that would display it (along with the sing-box/mode footer).
-function runtimeInfo(outbounds) {
-	var uiMode = uci.get('treadle', 'global', 'mode');
-	// Anything but the two known values reads as the shipped default,
-	// as in main.js and build-config.
-	if (uiMode !== 'basic' && uiMode !== 'advanced') uiMode = 'basic';
-
-	var tag;
-	if (uiMode === 'basic') {
-		var servers = uci.get('treadle', 'basic', 'server');
-		if (!Array.isArray(servers))
-			servers = servers ? [ servers ] : [];
-		var live = {};
-		(outbounds || []).forEach(function(ob) { if (ob && ob.tag) live[ob.tag] = true; });
-		var members = [];
-		var seen = {};
-		servers.forEach(function(t) {
-			if (live[t] && !seen[t]) { members.push(t); seen[t] = true; }
-		});
-		if (members.length === 1)      tag = members[0];
-		else if (members.length > 1)   tag = 'basic-auto';
-		else                           tag = '';
-	} else {
-		tag = uci.get('treadle', 'routing', 'final_outbound') || '';
-	}
+// Active outbound for the runtime header, from treadle.routing.final_outbound.
+function runtimeInfo() {
+	var tag = uci.get('treadle', 'routing', 'final_outbound') || '';
 
 	var ruleCount = uci.sections('treadle', 'rule').filter(function(r) {
 		return r.enabled !== '0';
@@ -248,9 +190,7 @@ function runtimeInfo(outbounds) {
 
 	return {
 		tag:       tag,
-		active:    formatActiveNode(tag, outbounds),
-		ruleCount: ruleCount,
-		uiMode:    uiMode
+		ruleCount: ruleCount
 	};
 }
 
@@ -346,8 +286,7 @@ return baseclass.extend({
 		this._packageVersion = status.package_version;
 		this._running   = !!status.running;
 
-		var info     = runtimeInfo(outbounds);
-		var active   = info.active;
+		var info     = runtimeInfo();
 		var mode     = uci.get('treadle', 'inbounds', 'mode') || 'tun';
 		var subCount = uci.sections('treadle', 'subscription').length;
 		var manualCount = uci.sections('treadle', 'node').length;
@@ -378,12 +317,11 @@ return baseclass.extend({
 			// First-run checklist, shown only while nothing at all is
 			// configured (no subscriptions, no nodes of any kind). It
 			// disappears after the first subscription or node exists; the
-			// later steps are then covered by the inline pointers (the
-			// no-default switcher placeholder, the Basic no-server
-			// warning). Static per render — adding a node happens on
+			// later steps are then covered by the no-default switcher
+			// placeholder. Static per render — adding a node happens on
 			// another tab, and returning here re-renders the panel.
 			(subCount === 0 && manualCount === 0 && outbounds.length === 0)
-				? this._renderGetStarted(info.uiMode)
+				? this._renderGetStarted()
 				: '',
 
 			// ── Runtime row ────────────────────────────────────────────
@@ -396,7 +334,7 @@ return baseclass.extend({
 				'id': 'treadle-runtime-section',
 				'class': 'cbi-section',
 				'style': status.enabled ? '' : 'display:none;'
-			}, this._renderRuntime(status, active, subCount, info, mode)),
+			}, this._renderRuntime(status, subCount, info, mode)),
 
 			// ── Traffic ────────────────────────────────────────────────
 			// One-row digest of /connections from the daemon snapshot:
@@ -454,13 +392,8 @@ return baseclass.extend({
 					         'font-family:monospace; font-size:0.8em; ' +
 					         'line-height:1.35; background:rgba(128,128,128,0.05);'
 				}, [ singboxText ]),
-				// "View full log" and "View generated config" are debug
-				// surfaces hidden in Basic mode, consistent with hiding the
-				// Subscriptions/Rules count row and the sing-box version
-				// footer (commit 2afeb47).
 				E('div', {
-					'style': 'margin:0.5em 0 2em; display:flex; gap:0.4em;' +
-					         (info.uiMode === 'basic' ? ' display:none;' : '')
+					'style': 'margin:0.5em 0 2em; display:flex; gap:0.4em;'
 				}, [
 					E('button', {
 						'class': 'btn cbi-button cbi-button-neutral',
@@ -594,8 +527,7 @@ return baseclass.extend({
 
 	// Clickable pointer to another Treadle tab — routes through the host's
 	// _activate so it behaves exactly like clicking the tab itself
-	// (panel teardown, session-store update). Same host-delegation
-	// pattern as basic.js _switchToAdvanced.
+	// (panel teardown, session-store update).
 	_tabLink: function(tabId, label) {
 		var self = this;
 		return E('a', {
@@ -609,37 +541,21 @@ return baseclass.extend({
 	},
 
 	// First-run checklist — the three steps from a fresh install to
-	// traffic flowing, with the tab names as live links. Mode-aware:
-	// Basic does everything on one tab, Advanced spans Nodes + Routing.
-	_renderGetStarted: function(uiMode) {
-		var steps;
-		if (uiMode === 'basic') {
-			steps = [
-				E('li', {}, [
-					_('Add a subscription on the '),
-					this._tabLink('basic', _('Basic')),
-					_(' tab and press Sync.')
-				]),
-				E('li', {}, [
-					_('Pick one or more servers under "Default server(s)" on the same tab.')
-				]),
-				E('li', {}, [ _('Tick "Enable Treadle" above.') ])
-			];
-		} else {
-			steps = [
-				E('li', {}, [
-					_('Add a subscription on the '),
-					this._tabLink('nodes', _('Nodes')),
-					_(' tab and press Sync — or configure a node manually there.')
-				]),
-				E('li', {}, [
-					_('Pick the default node on the '),
-					this._tabLink('routing', _('Routing')),
-					_(' tab — or right here on the runtime row, once nodes exist.')
-				]),
-				E('li', {}, [ _('Tick "Enable Treadle" above.') ])
-			];
-		}
+	// traffic flowing, with the tab names as live links.
+	_renderGetStarted: function() {
+		var steps = [
+			E('li', {}, [
+				_('Add a subscription on the '),
+				this._tabLink('nodes', _('Nodes')),
+				_(' tab and press Sync — or configure a node manually there.')
+			]),
+			E('li', {}, [
+				_('Pick the default node on the '),
+				this._tabLink('routing', _('Routing')),
+				_(' tab — or right here on the runtime row, once nodes exist.')
+			]),
+			E('li', {}, [ _('Tick "Enable Treadle" above.') ])
+		];
 		return E('div', { 'class': 'cbi-section' }, [
 			E('h4', { 'style': 'margin:0.4em 0 0.3em;' }, [ _('Get started') ]),
 			E('div', { 'class': 'cbi-section-descr' }, [
@@ -649,7 +565,7 @@ return baseclass.extend({
 		]);
 	},
 
-	// Inline default-node switcher (Advanced mode only). Offers the same
+	// Inline default-node switcher. Offers the same
 	// choice list as the Routing tab's "Default node" dropdown — both come
 	// from subs.serverEntries, so the two controls cannot diverge.
 	// Changing it commits and applies immediately: Status is the
@@ -843,7 +759,7 @@ return baseclass.extend({
 		var self = this;
 		groups.forEach(function(g) {
 			rows.push(E('tr', { 'class': 'tr cbi-section-table-row' }, [
-				E('td', { 'class': 'td', 'style': 'font-weight:bold;' }, [ displayTag(g.tag) ]),
+				E('td', { 'class': 'td', 'style': 'font-weight:bold;' }, [ g.tag ]),
 				E('td', { 'class': 'td', 'style': 'opacity:0.6;' }, [ '→' ]),
 				E('td', { 'class': 'td' }, [ g.now || E('span', { 'style': 'opacity:0.5;' }, [ '—' ]) ]),
 				E('td', { 'class': 'td' }, [ self._renderLatency(g.delay_ms) ]),
@@ -874,17 +790,13 @@ return baseclass.extend({
 		];
 	},
 
-	_renderRuntime: function(status, active, subCount, info, mode) {
+	_renderRuntime: function(status, subCount, info, mode) {
 		// The whole runtime section (badge row, counts, footer). Called
 		// from render() to build the initial DOM, and again from
 		// _updateStatus when the enable state flips on so the contents
 		// appear without a full re-render.
 		var state = this._runtimeState(status);
-		// Basic mode hides the subscriptions/rules count and the
-		// sing-box-version/network-mode footer — those signals are aimed at
-		// power users debugging a config, not the Basic audience.
-		var isBasic = (info.uiMode === 'basic');
-		var rows = [
+		return [
 			E('div', {
 				'style': 'display:flex; flex-wrap:wrap; align-items:center; ' +
 				         'gap:0.7em; padding:0.2em 0; font-size:1.15em; line-height:1.3;'
@@ -895,17 +807,9 @@ return baseclass.extend({
 				E('span', { 'style': 'opacity:0.6; font-weight:normal;' }, [
 					_('via')
 				]),
-				// Advanced: inline default-node switcher. Basic: read-only
-				// text — the server pick is a multi-select that lives on
-				// the Basic tab, and the synthesised basic-auto tag is not
-				// a thing the user should rebind from here.
-				isBasic
-					? E('strong', { 'id': 'treadle-active-node' }, [
-						active || _('— no default')
-					])
-					: E('span', { 'id': 'treadle-active-node' }, [
-						this._renderNodeSwitcher(info.tag)
-					]),
+				E('span', { 'id': 'treadle-active-node' }, [
+					this._renderNodeSwitcher(info.tag)
+				]),
 				E('span', {
 					'id': 'treadle-status-actions',
 					'style': 'margin-left:auto; display:flex; gap:0.3em; font-size:0.88em;'
@@ -916,37 +820,19 @@ return baseclass.extend({
 				'style': state === 'paused'
 					? 'margin-top:0.4em; font-size:0.9em; opacity:0.7;'
 					: 'display:none;'
-			}, [ _('Paused for testing — will resume on next reboot.') ])
-		];
-		// Basic-mode first-run trap: service is enabled and running, but
-		// no servers are picked. compute_default_outbound returns "direct"
-		// so sing-box runs as a transparent forwarder and no traffic is
-		// actually proxied — the user has no signal that nothing is
-		// happening. Show an inline pointer to the Basic tab.
-		if (isBasic && state === 'running' && !active) {
-			rows.push(E('div', {
-				'class': 'alert-message warning',
-				'style': 'margin-top:0.6em;'
-			}, [
-				_('No server selected — open the '),
-				this._tabLink('basic', _('Basic tab')),
-				_(' and pick at least one server, otherwise traffic bypasses the proxy.')
-			]));
-		}
-		if (!isBasic) {
-			rows.push(E('div', { 'style': 'margin-top:0.5em;' }, [
+			}, [ _('Paused for testing — will resume on next reboot.') ]),
+			E('div', { 'style': 'margin-top:0.5em;' }, [
 				_('Subscriptions: %d').format(subCount),
 				' · ',
 				_('Active rules: %d').format(info.ruleCount)
-			]));
-			rows.push(E('div', {
+			]),
+			E('div', {
 				'id': 'treadle-status-footer',
 				'style': 'margin-top:0.25em;'
 			}, [
 				this._renderFooter(status, mode)
-			]));
-		}
-		return rows;
+			])
+		];
 	},
 
 	// ── Status controls + polling ─────────────────────────────────────────
@@ -1050,12 +936,11 @@ return baseclass.extend({
 			if (status.enabled) {
 				runtime.style.display = '';
 				if (!document.getElementById('treadle-status-badge')) {
-					var info     = runtimeInfo(this._outbounds);
-					var active   = info.active;
+					var info     = runtimeInfo();
 					var mode     = uci.get('treadle', 'inbounds', 'mode') || 'tun';
 					var subCount = uci.sections('treadle', 'subscription').length;
 					while (runtime.firstChild) runtime.removeChild(runtime.firstChild);
-					this._renderRuntime(status, active, subCount, info, mode)
+					this._renderRuntime(status, subCount, info, mode)
 						.forEach(function(n) { runtime.appendChild(n); });
 					return;
 				}

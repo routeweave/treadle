@@ -47,6 +47,8 @@ define Package/luci-app-treadle/postinst
 [ -n "$${IPKG_INSTROOT}" ] || {
 	grep -qsF "/etc/treadle/nodes/" /etc/sysupgrade.conf || echo "/etc/treadle/nodes/" >> /etc/sysupgrade.conf
 	/etc/init.d/treadle enable
+	# Convert a config from the removed Basic mode before anything reads it.
+	/usr/libexec/treadle/migrate-basic
 	service rpcd reload
 	# An upgrade swaps the files under a running service, and the old
 	# sing-box keeps its old command and config until something reloads it.

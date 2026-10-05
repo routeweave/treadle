@@ -242,7 +242,6 @@ set treadle.0123456789abcd41=condition
 set treadle.0123456789abcd41.rule=0123456789abcd40
 set treadle.0123456789abcd41.kind=ruleset
 add_list treadle.0123456789abcd41.value=sagernet/geosite-cn
-set treadle.global.mode=advanced
 commit treadle
 EOF
 
@@ -436,48 +435,33 @@ probed=$(jsonfilter -i "$OUT/probe.json" -e '@.outbounds[@.type!="direct"].tag' 
 [ "$probed" -eq "$NODES" ] && ok "probe config dials all $NODES nodes" \
 	|| bad "probe config has $probed nodes, want $NODES"
 uci set treadle.global.clash_api_enabled=0
-uci set treadle.global.mode=basic
 uci commit treadle
-build "basic"
-cgnat=$(jsonfilter -i "$OUT/basic.json" \
-	-e '@.route.rules[@.ip_cidr[0]="100.64.0.0/10"].outbound')
-[ "$cgnat" = "direct" ] && ok "basic route sends CGNAT direct" \
-	|| bad "basic route CGNAT outbound is '$cgnat', want direct"
 
-# Basic never proxies the router's own traffic. tproxy gets that from
-# firewall.sh; a tun inbound captures local output too, so Basic excludes
-# every local uid there. Advanced keeps the router's traffic in the tunnel.
+# With "Proxy router traffic" off, the router's own traffic stays out of the
+# tunnel. tproxy gets that from firewall.sh; a tun inbound captures local
+# output too, so every local uid is excluded there. On (the default), the
+# router's traffic stays in the tunnel.
 uci set treadle.inbounds.mode=tun
+uci set treadle.inbounds.tproxy_self=0
 uci commit treadle
-build "basic / tun"
-uid_basic=$(jsonfilter -i "$OUT/basic___tun.json" \
+build "tun / router direct"
+uid_off=$(jsonfilter -i "$OUT/tun___router_direct.json" \
 	-e '@.inbounds[@.type="tun"].exclude_uid_range[0]')
-[ "$uid_basic" = "0:65535" ] && ok "basic tun inbound excludes local uids" \
-	|| bad "basic tun inbound exclude_uid_range is '$uid_basic', want 0:65535"
-uid_adv=$(jsonfilter -i "$OUT/advanced___tun.json" \
+[ "$uid_off" = "0:65535" ] && ok "tun inbound excludes local uids when router traffic goes direct" \
+	|| bad "tun inbound exclude_uid_range is '$uid_off', want 0:65535"
+uid_on=$(jsonfilter -i "$OUT/advanced___tun.json" \
 	-e '@.inbounds[@.type="tun"].exclude_uid_range[0]')
-[ -z "$uid_adv" ] && ok "advanced tun inbound keeps local uids" \
-	|| bad "advanced tun inbound has exclude_uid_range '$uid_adv'"
-icmp_basic=$(jsonfilter -i "$OUT/basic___tun.json" \
-	-e '@.route.rules[@.network[0]="icmp"].outbound')
-if [ "$SB_ICMP" = 1 ]; then
-	[ "$icmp_basic" = "direct" ] && ok "basic tun route sends ICMP direct" \
-		|| bad "basic tun route ICMP outbound is '$icmp_basic', want direct"
-else
-	[ -z "$icmp_basic" ] && ok "basic: no ICMP rule before sing-box 1.13" \
-		|| bad "basic: ICMP rule emitted for $SB_VERSION"
-fi
+[ -z "$uid_on" ] && ok "tun inbound keeps local uids when router traffic is proxied" \
+	|| bad "tun inbound has exclude_uid_range '$uid_on' with router traffic proxied"
+uci set treadle.inbounds.tproxy_self=1
 uci set treadle.inbounds.mode=tproxy
 uci commit treadle
 
 # With no proxy default, a remote DNS server given by hostname must still
 # get a detour, or sing-box finds no resolver for its address and rejects
-# the config. Basic here has no server selected; Advanced is set to direct.
+# the config.
 remote_was=$(uci -q get treadle.dns.remote_server)
 uci set treadle.dns.remote_server=https://dns.example.com/dns-query
-uci commit treadle
-build "basic / remote DNS by hostname"
-uci set treadle.global.mode=advanced
 uci set treadle.routing.final_outbound=direct
 uci commit treadle
 build "advanced direct / remote DNS by hostname"
@@ -485,7 +469,6 @@ detour=$(jsonfilter -i "$OUT/advanced_direct___remote_DNS_by_hostname.json" \
 	-e '@.dns.servers[@.tag="remote"].detour')
 [ "$detour" = "direct" ] && ok "remote DNS goes out direct with no proxy default" \
 	|| bad "remote DNS detour is '$detour', want direct"
-uci set treadle.global.mode=basic
 uci set treadle.routing.final_outbound=ALL
 uci set treadle.dns.remote_server="$remote_was"
 uci commit treadle
@@ -536,7 +519,6 @@ snapshot() {
   "SG-05": { "delay_ms": 60, "tested_at": $((now - 86400)) } } }
 EOF
 }
-uci set treadle.global.mode=advanced
 uci set treadle.0123456789abcd10.urltest_member_order=latency
 uci set treadle.0123456789abcd10.urltest_max_members=6
 uci commit treadle
@@ -599,7 +581,6 @@ fi
 
 rm -f "$SNAP" "$LAT"
 uci delete treadle.0123456789abcd10.urltest_member_order
-uci set treadle.global.mode=basic
 uci commit treadle
 
 # --- manual nodes ------------------------------------------------------------
@@ -710,7 +691,6 @@ add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-WS
 add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-SS
 add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-ECH
 add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-ECH-PEM
-set treadle.global.mode=advanced
 set treadle.routing.final_outbound=MANUAL
 commit treadle
 EOF
@@ -977,7 +957,6 @@ delete treadle.0123456789abcd68
 delete treadle.0123456789abcd69
 delete treadle.0123456789abcd6f
 set treadle.routing.final_outbound=ALL
-set treadle.global.mode=basic
 commit treadle
 EOF
 rm -f /etc/treadle/nodes/0123456789abcd69.json
@@ -1002,7 +981,6 @@ set treadle.0123456789abcd51.type=urltest
 set treadle.0123456789abcd51.tag=LARGE
 set treadle.0123456789abcd51.urltest_mode=regex
 set treadle.0123456789abcd51.urltest_regex=^LARGE-TEST-
-set treadle.global.mode=advanced
 set treadle.routing.final_outbound=LARGE
 commit treadle
 EOF
@@ -1021,7 +999,6 @@ uci batch <<'EOF'
 delete treadle.0123456789abcd50
 delete treadle.0123456789abcd51
 set treadle.routing.final_outbound=ALL
-set treadle.global.mode=basic
 commit treadle
 EOF
 rm -f /etc/treadle/nodes/0123456789abcd50.json
@@ -1053,32 +1030,6 @@ fi
 [ -n "$(jsonfilter -i "$adv" -e '@.route.rule_set[*].tag')" ] \
 	&& ok "advanced config has a remote rule-set" || bad "advanced config has no rule-set"
 
-uci set treadle.global.mode=basic
-uci set treadle.basic.routing=bypass_country
-uci set treadle.basic.bypass_country=cn
-uci set treadle.basic.server=HK-05
-uci commit treadle
-build "basic / bypass country"
-bas="$OUT/basic___bypass_country.json"
-if [ "$SB_HTTP_CLIENT" = "1" ]; then
-	d=$(jsonfilter -i "$bas" -e '@.route.rule_set[*].http_client.detour' | sort -u)
-else
-	d=$(jsonfilter -i "$bas" -e '@.route.rule_set[*].download_detour' | sort -u)
-fi
-[ "$d" = "direct" ] && ok "basic rule-sets download direct" \
-	|| bad "basic rule-set download detour '$d', fields: $(rs_fields "$bas")"
-# The bypassed country's geosite resolves via `local`, mirroring its route rule.
-[ "$(jsonfilter -i "$bas" -e '@.dns.rules[@.rule_set[0]="sagernet-geosite-cn"].server')" = "local" ] \
-	&& ok "basic bypass country resolves its geosite via local" \
-	|| bad "basic bypass country: no local DNS rule for the geosite: $(jsonfilter -i "$bas" -e '@.dns.final' -e '@.dns.rules[*]' -e '@.route.final')"
-uci set treadle.basic.routing=all
-uci delete treadle.basic.server
-uci commit treadle
-build "basic / no bypass"
-[ -z "$(jsonfilter -i "$OUT/basic___no_bypass.json" -e '@.dns.rules[*].rule_set')" ] \
-	&& ok "basic without bypass has no geosite DNS rule" \
-	|| bad "basic without bypass still has a rule-set DNS rule"
-
 # From 1.14 every remote rule-set starts from an empty placeholder when
 # nothing is cached, so startup never waits on (or dies of) a first download.
 EMPTY=/var/etc/treadle/empty.srs
@@ -1093,7 +1044,6 @@ else
 fi
 
 # The watchdog's flag flips the download route until the uptime it holds.
-uci set treadle.global.mode=advanced
 uci commit treadle
 echo "$(( $(cut -d. -f1 /proc/uptime) + 600 ))" > /var/run/treadle.ruleset-flip
 build "advanced / flipped download route"
@@ -1112,12 +1062,11 @@ for case in "flipped_download_route direct" "expired_flip default"; do
 	[ "$got" = "$want" ] && ok "${case% *}: rule-sets download via $want" \
 		|| bad "${case% *}: rule-sets download via '$got', want $want"
 done
-uci set treadle.global.mode=basic
 uci commit treadle
 
-[ "$(cat "$bas.sbver" 2>/dev/null)" = "$SB_STAMP" ] \
+[ "$(cat "$adv.sbver" 2>/dev/null)" = "$SB_STAMP" ] \
 	&& ok "build-config stamps the config with the sing-box version and Go release" \
-	|| bad "stamp is '$(cat "$bas.sbver" 2>/dev/null)', want '$SB_STAMP'"
+	|| bad "stamp is '$(cat "$adv.sbver" 2>/dev/null)', want '$SB_STAMP'"
 
 # `sing-box version` is cached under a key naming the binary (size, mtime).
 # A hit must be used; a replaced binary (here: a new mtime) must miss.
@@ -1197,7 +1146,6 @@ set treadle.0123456789abcd62=condition
 set treadle.0123456789abcd62.rule=0123456789abcd61
 set treadle.0123456789abcd62.kind=ruleset
 add_list treadle.0123456789abcd62.value=warmtest
-set treadle.global.mode=advanced
 commit treadle
 EOF
 build "warm real"
@@ -1228,15 +1176,6 @@ rm -f "$RSD/boot.json"
 [ ! -e "$RSD/boot.json" ] && ok "nothing to warm when rule-sets already download direct" \
 	|| bad "a warm-up config was written for a direct download route"
 uci delete treadle.global.ruleset_download_detour
-uci set treadle.global.mode=basic
-uci set treadle.basic.routing=bypass_country
-uci set treadle.basic.bypass_country=cn
-uci commit treadle
-"$BUILD" --bootstrap "$RSD/boot.json" >/dev/null 2>&1
-[ ! -e "$RSD/boot.json" ] && ok "nothing to warm in Basic mode (it always downloads direct)" \
-	|| bad "a warm-up config was written in Basic mode"
-uci set treadle.basic.routing=all
-uci set treadle.global.mode=advanced
 uci commit treadle
 
 # The real config with its tun/tproxy inbound swapped for a plain listener, so
@@ -1306,7 +1245,6 @@ delete treadle.0123456789abcd60
 delete treadle.0123456789abcd61
 delete treadle.0123456789abcd62
 set treadle.0123456789abcd40.enabled=1
-set treadle.global.mode=basic
 commit treadle
 EOF
 
@@ -1316,7 +1254,6 @@ EOF
 # sets a different limit (decision 0142). Proxy outbounds carry it, groups and
 # direct do not.
 step "connect timeout"
-uci set treadle.global.mode=advanced
 uci delete treadle.global.connect_timeout 2>/dev/null
 uci commit treadle
 ct_fields() { jsonfilter -i "$1" -e '@.outbounds[*].connect_timeout' | sort -u | tr '\n' ' '; }
@@ -1388,7 +1325,6 @@ fi
 uci set treadle.dns.fakeip_enabled=0
 uci set treadle.dns.optimistic=0
 uci delete treadle.dns.optimistic_timeout
-uci set treadle.global.mode=basic
 uci commit treadle
 
 # --- failover nudge ---------------------------------------------------------
@@ -1543,6 +1479,82 @@ echo '{}' | "$HANDLER" call get_status > "$OUT/status-sa.json"
 	&& ok "get_status flags the standalone sing-box service" \
 	|| bad "standalone_singbox not set: $(cat "$OUT/status-sa.json")"
 uci -q set sing-box.main.enabled=0 && uci commit sing-box
+
+# --- Basic mode migration ---------------------------------------------------
+
+# Basic mode was removed; migrate-basic rewrites its settings as ordinary
+# sections so the running behaviour does not change. Rules Basic ignored are
+# disabled, a non-empty extra.json is moved aside, and a second run is a no-op.
+step "basic migration"
+MIG=/usr/libexec/treadle/migrate-basic
+printf '{ "log": { "level": "debug" } }\n' > /etc/treadle/extra.json
+uci batch <<'EOF'
+set treadle.global.mode=basic
+set treadle.basic=treadle
+add_list treadle.basic.server=HK-05
+add_list treadle.basic.server=SG-01
+add_list treadle.basic.server=GONE-01
+set treadle.basic.routing=bypass_country
+set treadle.basic.bypass_country=cn
+set treadle.basic.ports=common
+commit treadle
+EOF
+"$MIG"
+[ -z "$(uci -q get treadle.global.mode)" ] && [ -z "$(uci -q get treadle.basic)" ] \
+	&& ok "migration removes the mode flag and the basic section" \
+	|| bad "after migration: mode '$(uci -q get treadle.global.mode)', basic '$(uci -q get treadle.basic)'"
+sec_by() { uci show treadle | sed -n "s/^treadle\.\([0-9a-f]*\)\.$1='$2'\$/\1/p"; }
+grp=$(sec_by tag Auto)
+[ -n "$grp" ] && [ "$(uci -q get "treadle.$grp.type")" = urltest ] \
+	&& [ "$(uci -q get "treadle.$grp.urltest_outbounds")" = "HK-05 SG-01" ] \
+	&& ok "several servers become an Auto urltest group, missing ones dropped" \
+	|| bad "Auto group '$grp': $(uci -q show "treadle.$grp")"
+r_cc=$(sec_by name 'Bypass CN'); r_pt=$(sec_by name 'Common ports')
+c_cc=$(sec_by rule "$r_cc"); c_pt=$(sec_by rule "$r_pt")
+[ "$(uci -q get "treadle.$r_cc.order")" = 0 ] && [ "$(uci -q get "treadle.$r_cc.outbound")" = direct ] \
+	&& [ "$(uci -q get "treadle.$c_cc.value")" = "sagernet/geoip-cn sagernet/geosite-cn" ] \
+	&& ok "country bypass becomes the first rule, geoip and geosite to direct" \
+	|| bad "bypass rule: $(uci -q show "treadle.$r_cc") $(uci -q show "treadle.$c_cc")"
+[ "$(uci -q get "treadle.$r_pt.order")" = 1 ] && [ "$(uci -q get "treadle.$r_pt.outbound")" = Auto ] \
+	&& [ "$(uci -q get "treadle.$c_pt.kind")" = port ] \
+	&& [ "$(uci -q get treadle.routing.final_outbound)" = direct ] \
+	&& ok "common ports become a port rule to the group, with a direct final" \
+	|| bad "ports rule: $(uci -q show "treadle.$r_pt"), final '$(uci -q get treadle.routing.final_outbound)'"
+[ "$(uci -q get treadle.0123456789abcd20.enabled)" = 0 ] \
+	&& [ "$(uci -q get treadle.0123456789abcd40.enabled)" = 0 ] \
+	&& [ "$(uci -q get treadle.0123456789abcd20.order)" = 3 ] \
+	&& ok "rules Basic ignored are disabled and moved after the migrated ones" \
+	|| bad "old rules: $(uci -q show treadle.0123456789abcd20)"
+[ "$(uci -q get treadle.inbounds.tproxy_self)" = 0 ] \
+	&& ok "router traffic stays direct, as in Basic" \
+	|| bad "tproxy_self is '$(uci -q get treadle.inbounds.tproxy_self)', want 0"
+grep -q debug /etc/treadle/extra.json.pre-migration 2>/dev/null \
+	&& [ "$(tr -d ' \n' < /etc/treadle/extra.json)" = "{}" ] \
+	&& ok "a non-empty extra.json is moved aside" \
+	|| bad "extra.json not moved aside: $(cat /etc/treadle/extra.json)"
+build "migrated basic"
+mb="$OUT/migrated_basic.json"
+[ "$(jsonfilter -i "$mb" -e '@.route.rules[@.port].outbound')" = Auto ] \
+	&& [ "$(jsonfilter -i "$mb" -e '@.route.final')" = direct ] \
+	&& [ "$(jsonfilter -i "$mb" -e '@.route.rules[@.rule_set[0]="sagernet-geoip-cn"].outbound')" = direct ] \
+	&& ok "the migrated config routes as Basic did" \
+	|| bad "migrated route: $(jsonfilter -i "$mb" -e '@.route.rules[*]' | tr '\n' ' ')"
+before=$(uci export treadle | md5sum)
+"$MIG"
+[ "$(uci export treadle | md5sum)" = "$before" ] \
+	&& ok "a second migration run changes nothing" \
+	|| bad "a second migration run changed the config"
+# An Advanced config only loses the two leftovers.
+uci set treadle.global.mode=advanced
+uci set treadle.basic=treadle
+uci set treadle.basic.routing=all
+uci commit treadle
+"$MIG"
+[ -z "$(uci -q get treadle.global.mode)" ] && [ -z "$(uci -q get treadle.basic)" ] \
+	&& [ "$(uci export treadle | md5sum)" = "$before" ] \
+	&& ok "an Advanced config only loses the mode flag and the basic section" \
+	|| bad "advanced migration changed more than the leftovers"
+rm -f /etc/treadle/extra.json.pre-migration
 
 # --- removal -----------------------------------------------------------------
 

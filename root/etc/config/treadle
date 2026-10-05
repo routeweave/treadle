@@ -1,6 +1,5 @@
 config treadle 'global'
 	option enabled '0'
-	option mode 'basic'
 	option config_path '/var/etc/treadle/sing-box.json'
 	option log_level 'warn'
 	option treadle_log_level 'info'
@@ -8,11 +7,6 @@ config treadle 'global'
 	option ruleset_download_detour 'default'
 	option clash_api_enabled '0'
 	option auto_test_hours '0'
-
-config treadle 'basic'
-	option routing 'all'
-	option bypass_country 'cn'
-	option ports 'all'
 
 config treadle 'inbounds'
 	option mode 'tun'

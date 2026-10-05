@@ -10,33 +10,19 @@
 'require view';
 'require ui';
 'require dom';
-'require rpc';
 'require uci';
 'require session';
 'require view.treadle.status as statusPanel';
 'require view.treadle.nodes as nodesPanel';
 'require view.treadle.routing as routingPanel';
 'require view.treadle.settings as settingsPanel';
-'require view.treadle.basic as basicPanel';
 
-var TABS_ADVANCED = [
+var TABS = [
 	{ id: 'status',   label: _('Status'),   panel: statusPanel },
 	{ id: 'nodes',    label: _('Nodes'),    panel: nodesPanel },
 	{ id: 'routing',  label: _('Routing'),  panel: routingPanel },
 	{ id: 'settings', label: _('Settings'), panel: settingsPanel }
 ];
-
-var TABS_BASIC = [
-	{ id: 'status', label: _('Status'), panel: statusPanel },
-	{ id: 'basic',  label: _('Basic'),  panel: basicPanel  }
-];
-
-var callSetMode = rpc.declare({
-	object: 'luci.treadle',
-	method: 'set_mode',
-	params: ['mode'],
-	expect: { '': {} }
-});
 
 // Count the staged UCI operations in the dict uci.changes() resolves to.
 // Shape is { configName: [ [op, section, option, value?], … ] }; an empty
@@ -57,9 +43,8 @@ return view.extend({
 	handleReset:     null,
 
 	load: function() {
-		// The host owns the mode flag; each panel is mode-agnostic and just
-		// renders. uci.load('treadle') round-trips through rpcd once, then
-		// every panel that reads UCI hits the cache.
+		// uci.load('treadle') round-trips through rpcd once, then every
+		// panel that reads UCI hits the cache.
 		return uci.load('treadle');
 	},
 
@@ -71,15 +56,13 @@ return view.extend({
 		// page reload an apply/revert performs.
 		this._dirtyTabs = {};
 		this._stagedBaseline = 0;
-		this._mode = this._readMode();
-		this._tabs = (this._mode === 'basic') ? TABS_BASIC : TABS_ADVANCED;
+		this._tabs = TABS;
 		this._topMenu = E('ul', { 'class': 'cbi-tabmenu' }, []);
 		this._content = E('div', { 'class': 'treadle-tab-content' }, []);
 		this._shell = E('div', { 'class': 'cbi-map' }, [
 			E('h2', {}, [ _('Treadle') ]),
 			this._topMenu,
-			this._content,
-			this._renderModeStyles()
+			this._content
 		]);
 
 		var self = this;
@@ -88,39 +71,17 @@ return view.extend({
 		});
 	},
 
-	_readMode: function() {
-		// Anything but 'advanced' is the shipped default, as in build-config.
-		var m = uci.get('treadle', 'global', 'mode');
-		return (m === 'advanced') ? 'advanced' : 'basic';
-	},
-
-	// Tabs that don't exist in the current mode get folded onto the closest
-	// equivalent so a stored session id from the other mode still lands on
-	// something sensible after a Save & Apply reload.
-	_redirectForMode: function(id) {
-		if (this._mode === 'basic') {
-			if (id === 'nodes' || id === 'routing' || id === 'settings')
-				return 'basic';
-		} else {
-			if (id === 'basic')
-				return 'status';
-		}
-		return id;
-	},
-
 	// Save & Apply reloads the page; restore the last active tab from LuCI's
 	// session store — the same mechanism the stock form-tab pages use to
-	// survive an apply. No URL hash is involved. `basic` exists only in Basic
-	// mode and `nodes / routing / settings` only in Advanced, so a stored id
-	// from the other mode is folded onto its closest equivalent.
+	// survive an apply. No URL hash is involved. An unknown stored id (the
+	// removed Basic tab) falls back to the first tab in _activate.
 	_initialRoute: function() {
-		var group = session.getLocalData('treadle.activeTab') || this._tabs[0].id;
-		return this._redirectForMode(group);
+		return session.getLocalData('treadle.activeTab') || this._tabs[0].id;
 	},
 
 	_buildMenu: function(items, activeId, onClick) {
 		var self = this;
-		var els = items.map(function(it) {
+		return items.map(function(it) {
 			return E('li', { 'class': it.id === activeId ? 'cbi-tab' : 'cbi-tab-disabled' }, [
 				E('a', {
 					'href': '#',
@@ -137,8 +98,6 @@ return view.extend({
 				])
 			]);
 		});
-		els.push(this._buildModeChip());
-		return els;
 	},
 
 	// (Re)render the top tab bar from current state — called on every tab
@@ -176,127 +135,6 @@ return view.extend({
 				}
 			}
 		}).catch(function() {});
-	},
-
-	// Right-aligned mode toggle that lives inside the top tab bar (margin-left:
-	// auto pushes it past the regular tabs). Text changes per mode: in Basic
-	// it offers "Advanced mode →", in Advanced it offers "Basic mode →".
-	// Switching back to Advanced is non-destructive (no confirm); switching to
-	// Basic is also non-destructive — advanced config is kept on disk — but a
-	// modal explains the new builder behaviour the first time the user flips
-	// it from Advanced, so the change is never silent.
-	_buildModeChip: function() {
-		var self = this;
-		var target = (this._mode === 'basic') ? 'advanced' : 'basic';
-		var label  = (target === 'advanced')
-			? _('Advanced mode →') : _('Basic mode →');
-		return E('li', { 'class': 'treadle-mode-chip' }, [
-			E('a', {
-				'href':  '#',
-				'title': (target === 'advanced')
-					? _('Show every Treadle setting (Nodes, Routing, Settings tabs).')
-					: _('Hide advanced settings. Your advanced configuration is kept on disk and returns when you switch back.'),
-				'click': function(ev) {
-					ev.preventDefault();
-					self._handleModeSwitch(target);
-				}
-			}, [ label ])
-		]);
-	},
-
-	_handleModeSwitch: function(target) {
-		// The switch finishes with window.location.reload(), which drops any
-		// staged-but-not-applied UCI changes on the floor. Warn the user
-		// rather than silently throwing their edits away. uci.changes() is
-		// an rpc.declare() in LuCI's JS API and returns a Promise resolving
-		// to { config: [ [op, section, option, value?], … ] } — calling
-		// Object.keys on the Promise itself silently yields [], so we have
-		// to await the resolution before counting.
-		var self = this;
-		return uci.changes().then(function(changes) {
-			return self._showModeSwitchModal(target, _changeCount(changes));
-		});
-	},
-
-	_showModeSwitchModal: function(target, dirty) {
-		if (target === 'advanced' && !dirty) {
-			return this._applyModeSwitch(target);
-		}
-
-		var title, body, confirm;
-		if (target === 'basic') {
-			title = _('Switch to Basic mode?');
-			body  = _('Basic mode hides Nodes, Routing and Settings and builds the running ' +
-				'sing-box config from the Basic tab only. Your advanced configuration ' +
-				'is kept on disk and will be active again when you switch back to Advanced.');
-			confirm = _('Switch to Basic');
-		} else {
-			title = _('Switch to Advanced mode?');
-			body  = _('Advanced mode exposes Nodes, Routing and Settings.');
-			confirm = _('Switch to Advanced');
-		}
-
-		var children = [ E('p', {}, [ body ]) ];
-		if (dirty) {
-			children.push(E('p', { 'class': 'alert-message warning' }, [
-				_('You have unsaved changes on this page. Switching mode reloads ' +
-				  'the page and discards them.')
-			]));
-		}
-		children.push(E('div', { 'class': 'right' }, [
-			E('button', { 'class': 'btn', 'click': ui.hideModal }, [ _('Cancel') ]),
-			' ',
-			E('button', {
-				'class': 'btn cbi-button-apply',
-				'click': ui.createHandlerFn(this, '_applyModeSwitch', target)
-			}, [ confirm ])
-		]));
-		ui.showModal(title, children);
-	},
-
-	_applyModeSwitch: function(target) {
-		ui.hideModal();
-		// ui.changes.revert() is fire-and-forget: it kicks off a UCI revert
-		// request, shows the "Changes have been reverted" toast, and reloads
-		// the page itself via window.location = … after L.env.apply_display
-		// seconds. It returns undefined, so chaining .then() on it either
-		// throws or races with the reload — which is why the old order
-		// (revert → set_mode) silently dropped the mode write and bounced
-		// the user back into Advanced.
-		//
-		// Commit the mode through rpcd first. Then, only if staged changes
-		// exist, hand off to ui.changes.revert() so the new mode's tab
-		// doesn't inherit the "apply pending changes" banner for sections
-		// it may not expose. Otherwise just reload — that keeps a misleading
-		// "Changes have been reverted" toast from appearing on a clean switch.
-		return callSetMode(target).then(function() {
-			// Drop the stored tab id so the new mode lands on its first tab
-			// cleanly instead of being redirected through the cross-mode map.
-			session.setLocalData('treadle.activeTab', '');
-			return uci.changes();
-		}).then(function(changes) {
-			if (_changeCount(changes) > 0) {
-				ui.changes.revert();
-			} else {
-				window.location.reload();
-			}
-		}).catch(function(err) {
-			ui.addNotification(null, E('p', _('Mode switch failed: ') +
-				((err && err.message) ? err.message : err)), 'error');
-		});
-	},
-
-	_renderModeStyles: function() {
-		// Theme variables with literal fallbacks (same pattern as
-		// lib/badges.js) — hardcoded #666/#000 disappeared against the
-		// dark Material theme's background.
-		return E('style', {}, [
-			'.cbi-tabmenu .treadle-mode-chip{margin-left:auto;border:none;background:none}' +
-			'.cbi-tabmenu .treadle-mode-chip a{padding:0.4em 0.6em;' +
-				'color:var(--text-color-medium, #666);' +
-				'font-size:0.85em;text-decoration:none}' +
-			'.cbi-tabmenu .treadle-mode-chip a:hover{color:var(--text-color-high, #000)}'
-		]);
 	},
 
 	_buildFooter: function(panel) {
@@ -353,7 +191,7 @@ return view.extend({
 		if (this._panel && typeof this._panel._teardown === 'function') {
 			// Swallowed by design: _teardown's job is to clear timers
 			// and abort polls. A throw here cannot meaningfully block
-			// the mode/tab switch the user just initiated — but it
+			// the tab switch the user just initiated — but it
 			// must not crash _activate either, leaving the host in
 			// an inconsistent state with the new panel half-mounted.
 			try { this._panel._teardown(); } catch (e) {}
