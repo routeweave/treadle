@@ -408,9 +408,9 @@ hop() {
 	jsonfilter -i "$OUT/advanced___tproxy.json" \
 		-e "@.outbounds[@.tag=\"$1\"].$2" | tr '\n' ' '
 }
-got="$(hop EU-France-04 'server_ports[*]')/$(hop EU-France-04 hop_interval)"
+got="$(hop NODE-04 'server_ports[*]')/$(hop NODE-04 hop_interval)"
 [ "$got" = "20000:30000 /30s " ] && ok "sing-box hysteria2 keeps valid server_ports" \
-	|| bad "EU-France-04 server_ports/hop_interval are '$got'"
+	|| bad "NODE-04 server_ports/hop_interval are '$got'"
 got="$(hop SG-05 'server_ports[*]')/$(hop SG-05 hop_interval)"
 [ "$got" = "443:443 20000:30000 /30s " ] && ok "clash hysteria2 ports map to server_ports" \
 	|| bad "SG-05 server_ports/hop_interval are '$got'"
@@ -530,7 +530,7 @@ snapshot() {
 { "version": 1, "seed": $1, "created_at": $now, "latency": {
   "HK-05": { "delay_ms": 70, "tested_at": $((now - 60)) },
   "SG-01": { "delay_ms": 80, "tested_at": $((now - 60)) },
-  "EU-France-03": { "delay_ms": 90, "tested_at": $((now - 60)) },
+  "NODE-03": { "delay_ms": 90, "tested_at": $((now - 60)) },
   "HK-06": { "delay_ms": 260, "tested_at": $((now - 60)) },
   "HK-07": { "failed": true, "tested_at": $((now - 60)) },
   "SG-05": { "delay_ms": 60, "tested_at": $((now - 86400)) } } }
@@ -552,7 +552,7 @@ cmp -s "$OUT/order_latency.json" "$OUT/order_latency_again.json" \
 set -- $(members order_latency)
 [ "$#" -eq 6 ] && ok "max_members keeps 6 members" || bad "ALL has $# members, want 6: $*"
 first3=$(printf '%s\n' "${1:-}" "${2:-}" "${3:-}" | sort | tr '\n' ' ')
-[ "$first3" = "EU-France-03 HK-05 SG-01 " ] && ok "fastest bucket leads the group" \
+[ "$first3" = "HK-05 NODE-03 SG-01 " ] && ok "fastest bucket leads the group" \
 	|| bad "first three members are '$first3'"
 [ "${4:-}" = "HK-06" ] && ok "slower result ranks after the fast bucket" \
 	|| bad "fourth member is '${4:-}', want HK-06"
@@ -810,7 +810,7 @@ link "vless://00000000-0000-0000-0000-000000000000@example.com:443?security=real
 	&& [ -z "$(jsonfilter -i "$OUT/link.json" -e '@.dropped[*]')" ] \
 	&& ok "link import: VLESS REALITY link fills the editor fields" \
 	|| bad "link import (REALITY): $(cat "$OUT/link.json")"
-link "trojan://pw@example.com:443?type=ws&path=%2Fws&host=example.org&alpn=h2#EU-France-01"
+link "trojan://pw@example.com:443?type=ws&path=%2Fws&host=example.org&alpn=h2#NODE-01"
 [ "$(lf transport_type)" = ws ] && [ "$(lf transport_ws_path)" = /ws ] \
 	&& [ "$(lf transport_ws_host)" = example.org ] \
 	&& [ "$(lf 'tls_alpn[0]')" = h2 ] \
