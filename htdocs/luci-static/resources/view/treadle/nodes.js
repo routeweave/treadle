@@ -839,7 +839,7 @@ return baseclass.extend({
 			  '<code>\\d</code> / <code>\\w</code> are not supported; ' +
 			  'write <code>[0-9]</code> / <code>[A-Za-z0-9_]</code> instead.'));
 		o.modalonly = true;
-		o.placeholder = 'ASIA-Singapore-[0-9]{2}|EU-.*';
+		o.placeholder = _('e.g. ^HK-|^SG-');
 		o.depends({ type: 'urltest', urltest_mode: 'regex' });
 
 		// Restrict regex matching to nodes from selected sources. Empty =

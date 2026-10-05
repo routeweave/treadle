@@ -191,6 +191,10 @@ msgstr ""
 msgid "e.g. MY-VPS-HK"
 msgstr ""
 
+#: htdocs/luci-static/resources/view/treadle/nodes.js:842
+msgid "e.g. ^HK-|^SG-"
+msgstr ""
+
 #: htdocs/luci-static/resources/view/treadle/nodes.js:411
 #: htdocs/luci-static/resources/view/treadle/nodes.js:821
 #: htdocs/luci-static/resources/view/treadle/routing.js:649
