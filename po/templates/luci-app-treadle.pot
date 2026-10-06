@@ -539,28 +539,12 @@ msgid ""
 "listener for app clients."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/settings.js:137
-msgid "TProxy only — transparent TCP + UDP via nftables"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:138
-msgid "TUN only — virtual L3 interface, sing-box manages routing"
-msgstr ""
-
 #: htdocs/luci-static/resources/view/treadle/settings.js:139
 msgid "TProxy + Mixed — transparent proxy and explicit HTTP/SOCKS5"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/settings.js:146
 msgid "Proxy router traffic"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:184
-msgid ""
-"Also send traffic originated by the router itself through sing-box (needed "
-"for subscription / rule-set downloads when the source is blocked). Disable "
-"to keep the router's own traffic (SSH out, opkg, ntp) direct; LAN clients "
-"are still proxied."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/settings.js:155
@@ -596,10 +580,6 @@ msgid "Set system routes to capture all traffic"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/settings.js:196
-msgid "Enable IPv6"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:196
 msgid "Proxy IPv6 traffic"
 msgstr ""
 
@@ -607,65 +587,16 @@ msgstr ""
 msgid "DNS"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/settings.js:201
-msgid ""
-"DNS server selection follows your routing rules: a domain routed directly "
-"resolves via the Local DNS, a proxied domain via the Remote DNS. Local and "
-"reserved domains always use the on-router resolver."
-msgstr ""
-
 #: htdocs/luci-static/resources/view/treadle/settings.js:206
 msgid "Managed DNS"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:207
-msgid ""
-"Point dnsmasq at sing-box so all LAN clients are resolved through it. When "
-"off, only clients with a hardcoded public resolver are intercepted. Leave on "
-"unless you know you need dnsmasq to keep resolving directly."
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:214
-msgid "Local DNS"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:216
-#, javascript-format
-msgid ""
-"Resolver for directly-routed traffic and for proxy node hostnames. Pick "
-"\"WAN DNS\" to follow the WAN-assigned resolver (currently %s), or type an "
-"explicit address."
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:217
-msgid ""
-"Resolver for directly-routed traffic and for proxy node hostnames. Pick "
-"\"WAN DNS\" to follow the WAN-assigned resolver, or type an explicit address."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/settings.js:218
 msgid "WAN DNS (auto-detected)"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/settings.js:225
-msgid "Remote DNS"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:226
-msgid ""
-"Resolver for proxied traffic. Leave blank to use Cloudflare DNS-over-TLS "
-"(tls://1.1.1.1)."
-msgstr ""
-
 #: htdocs/luci-static/resources/view/treadle/settings.js:235
 msgid "Fake-IP for proxied domains"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:236
-msgid ""
-"Resolve every proxied domain to a synthetic IP so routing happens by domain "
-"without an upstream DNS round-trip. Directly-routed and local domains always "
-"resolve normally."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/settings.js:241
@@ -688,37 +619,12 @@ msgstr ""
 msgid "Rule-sets"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/settings.js:270
-msgid "Rule-set delivery"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:271
-msgid ""
-"Where sing-box fetches the rule-sets referenced by routing rules. GitHub "
-"raw, or the jsDelivr CDN for GitHub-blocked regions."
-msgstr ""
-
 #: htdocs/luci-static/resources/view/treadle/settings.js:273
 msgid "GitHub (raw)"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/settings.js:274
 msgid "jsDelivr CDN"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:278
-msgid "Rule-set download via"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:279
-msgid ""
-"How sing-box fetches rule-sets: through the default outbound (the proxy) so "
-"the fetch follows the user's routing choice, or straight out the WAN when "
-"the proxy is unreachable."
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:282
-msgid "Default outbound (proxy)"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/settings.js:283
@@ -729,26 +635,12 @@ msgstr ""
 msgid "Auto-test interval (hours)"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/settings.js:308
-msgid ""
-"Probe every node automatically each N hours, so the Latency column stays "
-"fresh without clicking Test all. Runs from the hourly maintenance tick "
-"after due subscription syncs, so newly imported nodes are included. 0 "
-"disables."
-msgstr ""
-
 #: htdocs/luci-static/resources/view/treadle/settings.js:316
 msgid "Logging"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/settings.js:320
 msgid "sing-box log level"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:321
-msgid ""
-"Verbosity of the sing-box service log. Info logs every connection; warning "
-"is recommended for normal use."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/settings.js:322
@@ -775,67 +667,12 @@ msgstr ""
 msgid "Treadle log level"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/settings.js:330
-msgid ""
-"Which Treadle control-plane events (service / config / firewall / DNS / sync) "
-"appear in the Treadle log on the Status page. Filters display only — syslog "
-"still accumulates everything."
-msgstr ""
-
 #: htdocs/luci-static/resources/view/treadle/settings.js:333
 msgid "Notice"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/settings.js:389
 msgid "Raw sing-box overrides"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:391
-msgid ""
-"Optional JSON object stored at /etc/treadle/extra.json. Top-level keys here "
-"shallow-merge into the generated config (arrays are replaced wholesale). Use "
-"sparingly — most settings have a dedicated field above."
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:405
-msgid "Clear overrides"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:409
-msgid "Save overrides"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:435
-msgid "Show all fields"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:456
-msgid "Overrides must be a JSON object."
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:460
-msgid "Invalid JSON: "
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:466
-#: htdocs/luci-static/resources/view/treadle/settings.js:471
-msgid "Save failed."
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:469
-msgid "Overrides saved. Regenerate to see them applied."
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:476
-msgid "Clear /etc/treadle/extra.json?"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:480
-msgid "Overrides cleared."
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:482
-msgid "Clear failed."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/status.js:163
@@ -1232,27 +1069,8 @@ msgstr ""
 msgid "Failed to load this tab: "
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/settings.js:169
-msgid ""
-"How LAN traffic enters sing-box: through a TUN virtual interface "
-"(recommended), or transparently via TProxy. An explicit HTTP/SOCKS5 "
-"listener can be added to either."
-msgstr ""
-
 #: htdocs/luci-static/resources/view/treadle/settings.js:391
 msgid "Live stats and latency testing"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:395
-msgid "Enable live stats and latency testing"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:396
-msgid ""
-"Shows live traffic and the active node of each group on the Status "
-"tab, and adds a Test button next to each node on the Nodes tab. Uses "
-"sing-box's clash API, which listens on 127.0.0.1 only and is never "
-"exposed on the LAN."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/status.js:285
@@ -1842,4 +1660,208 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/routing.js:1048
 msgid "— traffic no rule above matched"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:169
+msgid "How LAN traffic reaches sing-box."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:170
+msgid "TUN — virtual interface (recommended)"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:171
+msgid "TProxy — transparent TCP + UDP via nftables"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:179
+msgid ""
+"Also send the router's own traffic (opkg, NTP, subscription and "
+"rule-set downloads) through sing-box. Off keeps it direct; LAN "
+"clients are still proxied."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:195
+msgid ""
+"Also accept explicit proxy connections from apps. It has no "
+"authentication, so keep it on loopback unless you need it on the LAN."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:240
+msgid ""
+"Domains routed direct use the first resolver, proxied ones the "
+"second; local names always use the router."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:245
+msgid ""
+"Point the router's resolver (dnsmasq) at sing-box so every LAN client "
+"follows the rules. Off, only clients with a hard-coded public "
+"resolver are intercepted."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:251
+msgid "DNS for direct traffic"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:253
+#, javascript-format
+msgid ""
+"Also resolves node host names. \"WAN DNS\" follows the resolver your "
+"WAN assigns (now %s)."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:254
+msgid ""
+"Also resolves node host names. \"WAN DNS\" follows the resolver your "
+"WAN assigns."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:262
+msgid "DNS for proxied traffic"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:263
+msgid ""
+"Reached through the proxy. Empty uses Cloudflare DNS-over-TLS "
+"(tls://1.1.1.1)."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:273
+msgid ""
+"Answer proxied domains with a placeholder address, so routing needs "
+"no upstream lookup. Direct and local domains resolve normally."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:297
+msgid ""
+"Answer from an expired entry at once and refresh it in the "
+"background. A record that really changed is served stale once. Needs "
+"sing-box 1.14 or later."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:326
+msgid "Where the rule-sets your rules reference come from."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:330
+msgid "Delivery"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:331
+msgid "GitHub, or the jsDelivr CDN where GitHub is blocked."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:337
+msgid "Download via"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:338
+msgid ""
+"Through the default node, or direct over the WAN, which avoids a "
+"failed first download when the proxy is down at start-up."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:340
+msgid "Default node (proxy)"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:353
+msgid "Live stats, latency tests and how long a node gets to answer."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:358
+msgid ""
+"Traffic, nodes in use and the connectivity check on Status; Test "
+"buttons on Nodes. Uses sing-box's clash API, which listens on "
+"127.0.0.1 only."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:365
+msgid ""
+"Test every node every N hours, after due subscription syncs. 0 turns "
+"it off."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:375
+msgid ""
+"How long a node's connection may take before Treadle gives up on it. "
+"Empty uses sing-box's own 5 s. Hysteria2 and TUIC always use 5 s."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:394
+msgid "Info logs every connection; warning suits normal use."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:403
+msgid ""
+"Which Treadle events the Status tab shows. The system log keeps "
+"everything."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:491
+msgid "▾ Fewer options"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:492
+#, javascript-format
+msgid "▸ More options (%d)"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:533
+msgid ""
+"A JSON object merged over the generated config: its top-level keys "
+"replace Treadle's, arrays included. Stored as "
+"/etc/treadle/extra.json, checked when you save. Empty removes it."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:537
+msgid "Advanced"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:538
+msgid "For settings with no field above."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:557
+msgid "▾ Hide raw sing-box overrides"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:558
+msgid "▸ Show raw sing-box overrides"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:598
+msgid "acts immediately"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:601
+msgid ""
+"Installs SagerNet's latest stable OpenWrt package in place of "
+"OpenWrt's. SagerNet's packages are not signed: the download is "
+"checked against the SHA-256 GitHub publishes, test-run, and replaced "
+"by the OpenWrt package again if it does not start. Not part of Save & "
+"Apply."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:771
+#, javascript-format
+msgid "Raw sing-box overrides: invalid JSON: %s. Nothing was saved."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:774
+msgid "Raw sing-box overrides must be a JSON object. Nothing was saved."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:778
+#, javascript-format
+msgid "Raw sing-box overrides: %s"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:778
+msgid "save failed"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:782
+msgid "Raw sing-box overrides: save failed."
 msgstr ""

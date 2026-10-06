@@ -2,19 +2,19 @@
 // Copyright (C) 2026 RouteWeave
 
 // Settings tab: every UCI-backed configuration option lives here, on one
-// scroll page. The form is divided into Basic (always visible) and Advanced
-// (collapsed by default behind a <details> toggle). One form.Map covers all
-// three UCI sections (global, inbounds, dns) so a single Save & Apply commits
-// everything together — the previous five sub-tabs each had their own footer,
-// which is a hopping cost the new layout removes.
+// scroll page, grouped by purpose: Network, DNS, Nodes, Rule-sets, Logging
+// and Advanced. Fields most people never touch sit behind a per-section
+// "More options (n)" toggle. One form.Map covers all three UCI sections
+// (global, inbounds, dns) so a single Save & Apply commits everything.
 //
 // "Enable Treadle" is intentionally NOT in this form: the Status page owns
 // the persistent enable toggle (and the transient Stop/Start/Restart
 // runtime controls), so the master flag has one source of truth.
 //
-// Advanced overrides (/etc/treadle/extra.json) live at the bottom inside the
-// same Advanced expander — they are RPC-backed rather than UCI-backed, so
-// they hang off a sibling panel after the form.
+// The raw sing-box overrides (/etc/treadle/extra.json) are RPC-backed, not
+// UCI-backed, but they save with the same Save / Save & Apply as the form
+// (handleSave below) — one way to save on the page. The sing-box version
+// card acts immediately, so it sits apart, below the save bar.
 
 'use strict';
 'require baseclass';
@@ -166,11 +166,9 @@ return baseclass.extend({
 		sNet.addremove = false;
 
 		var oMode = sNet.option(form.ListValue, 'mode', _('Mode'),
-			_('How LAN traffic enters sing-box: through a TUN virtual ' +
-			  'interface (recommended), or transparently via TProxy. An ' +
-			  'explicit HTTP/SOCKS5 listener can be added to either.'));
-		oMode.value('tun',          _('TUN only — virtual L3 interface, sing-box manages routing'));
-		oMode.value('tproxy',       _('TProxy only — transparent TCP + UDP via nftables'));
+			_('How LAN traffic reaches sing-box.'));
+		oMode.value('tun',          _('TUN — virtual interface (recommended)'));
+		oMode.value('tproxy',       _('TProxy — transparent TCP + UDP via nftables'));
 		oMode['default'] = 'tun';
 
 		// Applies to both modes: firewall.sh skips the OUTPUT-chain rules in
@@ -178,10 +176,9 @@ return baseclass.extend({
 		// predates TUN support.
 		var oTproxySelf = sNet.option(form.Flag, 'tproxy_self',
 			_('Proxy router traffic'),
-			_('Also send traffic originated by the router itself through sing-box ' +
-			  '(needed for subscription / rule-set downloads when the source is blocked). ' +
-			  'Disable to keep the router\'s own traffic (SSH out, opkg, ntp) direct; ' +
-			  'LAN clients are still proxied.'));
+			_('Also send the router\'s own traffic (opkg, NTP, subscription and ' +
+			  'rule-set downloads) through sing-box. Off keeps it direct; LAN ' +
+			  'clients are still proxied.'));
 		oTproxySelf['default'] = '1';
 		oTproxySelf.rmempty = false;
 
@@ -195,9 +192,8 @@ return baseclass.extend({
 
 		var oMixedEnabled = sNet.option(form.Flag, 'mixed_enabled',
 			_('HTTP/SOCKS5 listener'),
-			_('Also accept explicit HTTP and SOCKS5 proxy connections from app clients. ' +
-			  'The default address is loopback; set a LAN address to expose it, ' +
-			  'but the listener has no authentication.'));
+			_('Also accept explicit proxy connections from apps. It has no ' +
+			  'authentication, so keep it on loopback unless you need it on the LAN.'));
 		oMixedEnabled['default'] = '0';
 		oMixedEnabled.rmempty = false;
 		oMixedEnabled.depends('mode', 'tun');
@@ -236,29 +232,26 @@ return baseclass.extend({
 		oTunAutoRoute.depends('mode', 'tun');
 
 		// always-visible Network options at the bottom of the section
-		var oInet6 = sNet.option(form.Flag, 'inet6',
-			_('Enable IPv6'), _('Proxy IPv6 traffic'));
+		var oInet6 = sNet.option(form.Flag, 'inet6', _('Proxy IPv6 traffic'));
 		oInet6.rmempty = false;
 
 		// ── DNS ──────────────────────────────────────────────────────────
 		var sDns = m.section(form.NamedSection, 'dns', 'treadle', _('DNS'),
-			_('DNS server selection follows your routing rules: a domain routed ' +
-			  'directly resolves via the Local DNS, a proxied domain via the ' +
-			  'Remote DNS. Local and reserved domains always use the on-router resolver.'));
+			_('Domains routed direct use the first resolver, proxied ones the ' +
+			  'second; local names always use the router.'));
 		sDns.addremove = false;
 
 		var oManaged = advance(sDns.option(form.Flag, 'managed_dns', _('Managed DNS'),
-			_('Point dnsmasq at sing-box so all LAN clients are resolved ' +
-			  'through it. When off, only clients with a hardcoded public ' +
-			  'resolver are intercepted. Leave on unless you know you need ' +
-			  'dnsmasq to keep resolving directly.')));
+			_('Point the router\'s resolver (dnsmasq) at sing-box so every LAN ' +
+			  'client follows the rules. Off, only clients with a hard-coded ' +
+			  'public resolver are intercepted.')));
 		oManaged.rmempty = false;
 		oManaged.default = '1';
 
-		var oLocal = sDns.option(form.Value, 'local_server', _('Local DNS'),
+		var oLocal = sDns.option(form.Value, 'local_server', _('DNS for direct traffic'),
 			wanDns
-				? _('Resolver for directly-routed traffic and for proxy node hostnames. Pick "WAN DNS" to follow the WAN-assigned resolver (currently %s), or type an explicit address.').format(wanDns)
-				: _('Resolver for directly-routed traffic and for proxy node hostnames. Pick "WAN DNS" to follow the WAN-assigned resolver, or type an explicit address.'));
+				? _('Also resolves node host names. "WAN DNS" follows the resolver your WAN assigns (now %s).').format(wanDns)
+				: _('Also resolves node host names. "WAN DNS" follows the resolver your WAN assigns.'));
 		oLocal.value('wan', _('WAN DNS (auto-detected)'));
 		oLocal.optional = true;
 		oLocal.placeholder = 'wan';
@@ -266,9 +259,9 @@ return baseclass.extend({
 			return validateDnsAddress(value, true);
 		};
 
-		var oRemoteServer = sDns.option(form.Value, 'remote_server', _('Remote DNS'),
-			_('Resolver for proxied traffic. Leave blank to use Cloudflare ' +
-			  'DNS-over-TLS (tls://1.1.1.1).'));
+		var oRemoteServer = sDns.option(form.Value, 'remote_server', _('DNS for proxied traffic'),
+			_('Reached through the proxy. Empty uses Cloudflare DNS-over-TLS ' +
+			  '(tls://1.1.1.1).'));
 		oRemoteServer.optional = true;
 		oRemoteServer.placeholder = 'tls://1.1.1.1';
 		oRemoteServer.validate = function(section_id, value) {
@@ -277,9 +270,8 @@ return baseclass.extend({
 
 		var oFakeipEnabled = sDns.option(form.Flag, 'fakeip_enabled',
 			_('Fake-IP for proxied domains'),
-			_('Resolve every proxied domain to a synthetic IP so routing happens ' +
-			  'by domain without an upstream DNS round-trip. Directly-routed and ' +
-			  'local domains always resolve normally.'));
+			_('Answer proxied domains with a placeholder address, so routing ' +
+			  'needs no upstream lookup. Direct and local domains resolve normally.'));
 		oFakeipEnabled.rmempty = false;
 
 		var oStrategy = advance(sDns.option(form.ListValue, 'strategy', _('Strategy')));
@@ -302,9 +294,8 @@ return baseclass.extend({
 
 		var oOptimistic = advance(sDns.option(form.Flag, 'optimistic',
 			_('Optimistic DNS cache'),
-			_('Answer from an expired cache entry at once and refresh it in the ' +
-			  'background, so a repeat lookup never waits on the upstream ' +
-			  'resolver. A record that has really changed is served stale once. ' +
+			_('Answer from an expired entry at once and refresh it in the ' +
+			  'background. A record that really changed is served stale once. ' +
 			  'Needs sing-box 1.14 or later.')));
 		oOptimistic.rmempty = false;
 
@@ -331,45 +322,58 @@ return baseclass.extend({
 		// id (`cbid.treadle.global.<name>`) stays unique as long as no option
 		// name is reused across the two sections, which form save/load,
 		// validation and getUIElement rely on, not the wrapper id.
-		var sRulesets = m.section(form.NamedSection, 'global', 'treadle', _('Rule-sets'));
+		var sRulesets = m.section(form.NamedSection, 'global', 'treadle', _('Rule-sets'),
+			_('Where the rule-sets your rules reference come from.'));
 		sRulesets.addremove = false;
 
 		var oDelivery = sRulesets.option(form.ListValue, 'ruleset_delivery',
-			_('Rule-set delivery'),
-			_('Where sing-box fetches the rule-sets referenced by routing rules. ' +
-			  'GitHub raw, or the jsDelivr CDN for GitHub-blocked regions.'));
+			_('Delivery'),
+			_('GitHub, or the jsDelivr CDN where GitHub is blocked.'));
 		oDelivery.value('github',   _('GitHub (raw)'));
 		oDelivery.value('jsdelivr', _('jsDelivr CDN'));
 		oDelivery['default'] = 'github';
 
 		var oDetour = advance(sRulesets.option(form.ListValue, 'ruleset_download_detour',
-			_('Rule-set download via'),
-			_('How sing-box fetches rule-sets: through the default outbound ' +
-			  '(the proxy) so the fetch follows the user\'s routing choice, ' +
-			  'or straight out the WAN when the proxy is unreachable.')));
-		oDetour.value('default', _('Default outbound (proxy)'));
+			_('Download via'),
+			_('Through the default node, or direct over the WAN, which avoids ' +
+			  'a failed first download when the proxy is down at start-up.')));
+		oDetour.value('default', _('Default node (proxy)'));
 		oDetour.value('direct',  _('Direct (WAN)'));
 		oDetour['default'] = 'default';
 
-		// ── Node dialling ────────────────────────────────────────────────
-		// Also binds `global` (see the Rule-sets note above on sharing one
-		// UCI section across several form sections — `connect_timeout` is
-		// not reused as an option name anywhere else, which is what keeps
-		// the per-option DOM ids unique).
-		var sDial = m.section(form.NamedSection, 'global', 'treadle', _('Node dialling'));
-		sDial.addremove = false;
+		// ── Nodes ────────────────────────────────────────────────────────
+		// Live stats, latency tests and how long a node gets to answer. Binds
+		// `global` like Rule-sets (see the note there on sharing one UCI
+		// section across several form sections). The flag feeds
+		// build-config's experimental.clash_api, which the Status tab's
+		// traffic, nodes in use and connectivity check read, as do the Nodes
+		// tab's Test buttons. Node probes run on an ephemeral sing-box started
+		// by the test runner, so the running config stays lean.
+		var sNodes = m.section(form.NamedSection, 'global', 'treadle', _('Nodes'),
+			_('Live stats, latency tests and how long a node gets to answer.'));
+		sNodes.addremove = false;
 
-		// Whole section is Advanced, like Logging: its
-		// only field is, and tagging the row alone left an empty heading.
+		var oClashApi = sNodes.option(form.Flag, 'clash_api_enabled',
+			_('Live stats and latency testing'),
+			_('Traffic, nodes in use and the connectivity check on Status; Test ' +
+			  'buttons on Nodes. Uses sing-box\'s clash API, which listens on ' +
+			  '127.0.0.1 only.'));
+		oClashApi.rmempty = false;
+
+		var oAutoTest = advance(sNodes.option(form.Value, 'auto_test_hours',
+			_('Auto-test interval (hours)'),
+			_('Test every node every N hours, after due subscription syncs. 0 turns it off.')));
+		oAutoTest.datatype = 'uinteger';
+		oAutoTest.placeholder = '0';
+		oAutoTest['default'] = '0';
+		oAutoTest.depends('clash_api_enabled', '1');
+
 		// No default: an empty field is the usual case and emits nothing,
 		// leaving sing-box's own 5 s. The placeholder shows that figure.
-		var oConnTimeout = sDial.option(form.Value, 'connect_timeout',
+		var oConnTimeout = advance(sNodes.option(form.Value, 'connect_timeout',
 			_('Connect timeout'),
-			_('How long to wait for a node\'s TCP connection before giving up ' +
-			  'on it. Leave empty for sing-box\'s own limit of 5 seconds; raise ' +
-			  'it on a very slow link whose connection takes longer, or lower ' +
-			  'it to fail over sooner. Hysteria2 and TUIC ignore it and always ' +
-			  'give up after 5 seconds.'));
+			_('How long a node\'s connection may take before Treadle gives up on ' +
+			  'it. Empty uses sing-box\'s own 5 s. Hysteria2 and TUIC always use 5 s.')));
 		oConnTimeout.placeholder = '5s';
 		oConnTimeout.optional    = true;
 		oConnTimeout.validate = function(section_id, value) {
@@ -381,45 +385,13 @@ return baseclass.extend({
 			return true;
 		};
 
-		// ── Live stats and latency testing ───────────────────────────────
-		// Always visible: the flag feeds build-config's
-		// experimental.clash_api emission, which the Status tab's Traffic and
-		// Groups rows read as well as the Nodes tab's Test buttons. Node
-		// probes themselves run on an ephemeral sing-box instance started by
-		// the test runner, so the running config stays lean. Only the
-		// auto-test interval is Advanced.
-		var sLatency = m.section(form.NamedSection, 'global', 'treadle', _('Live stats and latency testing'));
-		sLatency.addremove = false;
-
-		var oClashApi = sLatency.option(form.Flag, 'clash_api_enabled',
-			_('Enable live stats and latency testing'),
-			_('Shows live traffic and the active node of each group on the ' +
-			  'Status tab, and adds a Test button next to each node on the ' +
-			  'Nodes tab. Uses sing-box\'s clash API, which listens on ' +
-			  '127.0.0.1 only and is never exposed on the LAN.'));
-		oClashApi.rmempty = false;
-
-		var oAutoTest = advance(sLatency.option(form.Value, 'auto_test_hours',
-			_('Auto-test interval (hours)'),
-			_('Probe every node automatically each N hours, so the Latency ' +
-			  'column stays fresh without clicking Test all. Runs from the ' +
-			  'hourly maintenance tick after due subscription syncs, so newly ' +
-			  'imported nodes are included. 0 disables.')));
-		oAutoTest.datatype = 'uinteger';
-		oAutoTest.placeholder = '0';
-		oAutoTest['default'] = '0';
-		oAutoTest.depends('clash_api_enabled', '1');
-
 		// ── Logging ──────────────────────────────────────────────────────
-		// Entire section is Advanced — its wrapper div gets the
-		// treadle-advanced class in _postRender, so individual rows do not
-		// need to be tagged via advance().
 		var sLogging = m.section(form.NamedSection, 'global', 'treadle', _('Logging'));
 		sLogging.addremove = false;
 
 		var oLog = sLogging.option(form.ListValue, 'log_level',
 			_('sing-box log level'),
-			_('Verbosity of the sing-box service log. Info logs every connection; warning is recommended for normal use.'));
+			_('Info logs every connection; warning suits normal use.'));
 		oLog.value('error', _('Error'));
 		oLog.value('warn',  _('Warning'));
 		oLog.value('info',  _('Info'));
@@ -428,7 +400,7 @@ return baseclass.extend({
 
 		var oPLog = sLogging.option(form.ListValue, 'treadle_log_level',
 			_('Treadle log level'),
-			_('Which Treadle control-plane events (service / config / firewall / DNS / sync) appear in the Treadle log on the Status page. Filters display only — syslog still accumulates everything.'));
+			_('Which Treadle events the Status tab shows. The system log keeps everything.'));
 		oPLog.value('error',  _('Error'));
 		oPLog.value('warning', _('Warning'));
 		oPLog.value('notice', _('Notice'));
@@ -438,18 +410,39 @@ return baseclass.extend({
 
 		this.map = m;
 		this._advOpts = advOpts;
-		// Sections whose whole content is Advanced. _postRender tags their
-		// wrapper div with treadle-advanced so the section header + every row
-		// hides as one unit when the toggle is off.
-		this._advSections = [sDial, sLogging];
+		// The sections, in page order, with the key their "More options"
+		// state is remembered under.
+		this._sections = [ [ sNet, 'network' ], [ sDns, 'dns' ], [ sNodes, 'nodes' ],
+			[ sRulesets, 'rulesets' ], [ sLogging, 'logging' ] ];
+		this._extraSaved = extraText;
+		this._extraEl = null;
 
-		return m.render().then(L.bind(this._postRender, this, extraText));
+		// LuCI rebuilds the form's contents on render, on Save and on Reset
+		// (Map.save and Map.reset both end in renderContents), which drops
+		// everything added after it. Hook that step so the toggles and the
+		// Advanced section are added again after every rebuild.
+		var self = this;
+		var renderContents = m.renderContents;
+		m.renderContents = function() {
+			return renderContents.apply(this, arguments).then(function(node) {
+				return self._decorate(node);
+			});
+		};
+
+		return m.render().then(function(node) {
+			// A check or install may already be running (another tab, or a
+			// reload mid-install): pick up its progress.
+			if (self._sbu.busy)
+				self._sbuPoll(0);
+			return node;
+		});
 	},
 
-	// Tag every advanced option's row with the treadle-advanced class, install a
-	// <details>-driven CSS toggle on the map root, and append the extra.json
-	// editor (also tagged advanced) below the form.
-	_postRender: function(extraText, formNode) {
+	// Tag each advanced option's row, give every section with such rows its
+	// own "More options (n)" toggle, and add the Advanced section with the
+	// raw overrides below the form. Runs after every rebuild of the form.
+	_decorate: function(formNode) {
+		var self = this;
 		// Each NamedSection-bound option's input id is
 		// `cbid.treadle.<sectionname>.<optionname>`. Find it and walk up to the
 		// wrapping `.cbi-value` row. Depends-hidden rows still have a DOM
@@ -463,98 +456,131 @@ return baseclass.extend({
 			if (row) row.classList.add('treadle-advanced');
 		});
 
-		// Whole-section Advanced: walk up from the section's first option
-		// row to its enclosing .cbi-section. Two NamedSections binding the
-		// same UCI section share a wrapper-div id, but each option's cbid is
-		// still unique, so this lookup lands on the right section.
-		(this._advSections || []).forEach(function(section) {
+		// Which sections are open is remembered in the browser, like the
+		// active tab, so it survives the Save & Apply reload.
+		var open = session.getLocalData('treadle.settingsOpen') || {};
+		var save = function() { session.setLocalData('treadle.settingsOpen', open); };
+		var toggles = [];
+
+		// Several sections bind the same UCI section (`global`) and share a
+		// wrapper id, but each option's cbid is unique, so walking up from a
+		// section's first option finds the right section element.
+		this._sections.forEach(function(pair) {
+			var section = pair[0], key = pair[1];
 			var opts = (section.children || []).filter(function(o) {
 				return typeof o.cbid === 'function';
 			});
 			if (!opts.length) return;
-			var firstOpt = opts[0];
-			var sel = '#' + firstOpt.cbid(section.section).replace(/\./g, '\\.');
-			var input = formNode.querySelector(sel);
-			if (!input) return;
-			var sectionEl = input.closest('.cbi-section');
-			if (sectionEl) sectionEl.classList.add('treadle-advanced');
+			var input = formNode.querySelector('#' + opts[0].cbid(section.section).replace(/\./g, '\\.'));
+			var sectionEl = input && input.closest('.cbi-section');
+			if (!sectionEl || !sectionEl.querySelector('.treadle-advanced')) return;
+			var btn = E('button', {
+				'type': 'button',
+				'class': 'treadle-more',
+				'click': function() {
+					open[key] = !open[key];
+					save();
+					sectionEl.classList.toggle('treadle-open', !!open[key]);
+					update();
+				}
+			});
+			// The count is of the rows this mode can show: a TProxy-only
+			// field does not count while TUN is selected.
+			var update = function() {
+				var n = sectionEl.querySelectorAll('.cbi-value.treadle-advanced:not(.hidden)').length;
+				btn.textContent = open[key] ? _('▾ Fewer options')
+					: _('▸ More options (%d)').format(n);
+				btn.setAttribute('aria-expanded', open[key] ? 'true' : 'false');
+				btn.style.display = n ? '' : 'none';
+			};
+			sectionEl.classList.toggle('treadle-open', !!open[key]);
+			sectionEl.appendChild(btn);
+			toggles.push(update);
+			update();
 		});
+		// A field that shows or hides others (Mode, Fake-IP…) changes the
+		// counts; LuCI applies depends() after the change event, so re-count
+		// one tick later. The map element survives rebuilds, so the listener
+		// is added once and reads the current set of toggles.
+		this._toggles = toggles;
+		if (!formNode._treadleCounts) {
+			formNode._treadleCounts = true;
+			formNode.addEventListener('change', function() {
+				window.setTimeout(function() {
+					(self._toggles || []).forEach(function(u) { u(); });
+				}, 0);
+			});
+		}
 
-		// Extra-overrides panel — same class so it hides with the rest.
-		var extraSection = E('div', {
-			'class': 'cbi-section treadle-advanced'
-		}, [
-			E('h3', {}, [ _('Raw sing-box overrides') ]),
-			E('div', { 'class': 'cbi-section-descr' }, [
-				_('Optional JSON object stored at /etc/treadle/extra.json. Top-level keys here shallow-merge into the generated config (arrays are replaced wholesale). Use sparingly — most settings have a dedicated field above.')
-			]),
-			E('textarea', {
-				'id': 'treadle-extra-text',
-				'class': 'cbi-input-textarea',
-				'style': 'width:100%; min-height:240px; font-family:monospace; font-size:0.82em; line-height:1.4;',
-				'spellcheck': 'false',
-				'placeholder': '{\n  "experimental": {\n    "clash_api": { "external_controller": "127.0.0.1:9090" }\n  }\n}'
-			}, [ extraText ]),
-			E('div', { 'style': 'margin-top:0.5em;' }, [
-				E('button', {
-					'class': 'btn cbi-button cbi-button-remove',
-					'style': 'margin-right:0.5em;',
-					'click': ui.createHandlerFn(this, this._handleClearExtra)
-				}, [ _('Clear overrides') ]),
-				E('button', {
-					'class': 'btn cbi-button cbi-button-save',
-					'click': ui.createHandlerFn(this, this._handleSaveExtra)
-				}, [ _('Save overrides') ])
+		// ── Advanced: raw sing-box overrides ──────────────────────────────
+		// Saved with the page's Save / Save & Apply (see handleSave), so the
+		// page has one way to save; the JSON is checked first. A rebuild keeps
+		// whatever the box holds (Reset puts the saved text back first).
+		var extraText = this._extraEl ? this._extraEl.value : (this._extraSaved || '');
+		this._extraErr = E('div', { 'class': 'alert-message danger', 'style': 'display:none; margin-top:0.4em;' });
+		this._extraEl = E('textarea', {
+			'id': 'treadle-extra-text',
+			'class': 'cbi-input-textarea',
+			'style': 'width:100%; min-height:200px; font-family:monospace; font-size:0.82em; line-height:1.4;',
+			'spellcheck': 'false',
+			'aria-label': _('Raw sing-box overrides'),
+			'placeholder': '{\n  "log": { "timestamp": true }\n}'
+		}, [ extraText ]);
+		var extraBody = E('div', { 'class': 'treadle-extra-body' }, [
+			this._extraEl,
+			this._extraErr,
+			E('div', { 'class': 'cbi-value-description', 'style': 'margin-top:0.4em;' }, [
+				_('A JSON object merged over the generated config: its top-level keys replace Treadle\'s, arrays included. Stored as /etc/treadle/extra.json, checked when you save. Empty removes it.')
 			])
 		]);
-
-		// A plain checkbox + label at the top of the form — reads as a "view
-		// filter" the way Gmail's "Show advanced search" does, not as a
-		// section header. Lighter visual weight than the chip/bar styles
-		// because that's all this control needs to do: flip a visibility
-		// flag on the form below.
-		var styleEl = E('style', {}, [
-			// `:not(.hidden)` so a row whose depends() condition is unmet
-			// (LuCI tags it with the `hidden` class — form.js line ~2095)
-			// stays hidden even while Advanced is on. Without this, the
-			// Show-Advanced override out-specifics `.hidden{display:none}`
-			// and TUN-only / TProxy-only rows leak across modes.
-			'.cbi-map .treadle-advanced{display:none}' +
-			'.cbi-map.treadle-show-advanced .cbi-value.treadle-advanced:not(.hidden){display:flex}' +
-			'.cbi-map.treadle-show-advanced .cbi-section.treadle-advanced{display:block}' +
-			'.treadle-adv-toggle{display:inline-flex;align-items:center;gap:0.4em;' +
-				'margin:0.4em 0 1em;padding:0.2em 0.4em;cursor:pointer;' +
-				'font-size:0.95em;user-select:none}' +
-			'.treadle-adv-toggle input{margin:0;cursor:pointer}'
+		var advEl = E('div', { 'class': 'cbi-section' }, [
+			E('h3', {}, [ _('Advanced') ]),
+			E('div', { 'class': 'cbi-section-descr' }, [ _('For settings with no field above.') ]),
+			extraBody
 		]);
-
-		var cb = E('input', { 'type': 'checkbox' });
-		var toggle = E('label', { 'class': 'treadle-adv-toggle' }, [
-			cb, E('span', {}, [ _('Show all fields') ])
-		]);
-		// Session-persisted (same store the host uses for the active tab),
-		// so power users who live in the advanced fields don't re-tick the
-		// box on every visit — and it survives the Save & Apply page reload.
-		if (session.getLocalData('treadle.showAdvanced') === '1') {
-			cb.checked = true;
-			formNode.classList.add('treadle-show-advanced');
-		}
-		cb.addEventListener('change', function() {
-			formNode.classList.toggle('treadle-show-advanced', cb.checked);
-			session.setLocalData('treadle.showAdvanced', cb.checked ? '1' : '');
+		var advBtn = E('button', {
+			'type': 'button',
+			'class': 'treadle-more',
+			'click': function() {
+				open.advanced = !open.advanced;
+				save();
+				showAdv();
+			}
 		});
+		this._showExtra = function() {
+			open.advanced = true;
+			save();
+			showAdv();
+		};
+		var showAdv = function() {
+			extraBody.style.display = open.advanced ? '' : 'none';
+			advBtn.textContent = open.advanced ? _('▾ Hide raw sing-box overrides')
+				: _('▸ Show raw sing-box overrides');
+			advBtn.setAttribute('aria-expanded', open.advanced ? 'true' : 'false');
+		};
+		// Overrides already in place stay visible: hiding them would hide a
+		// setting that is in effect.
+		if (extraText.replace(/\s/g, '') !== '' && extraText.replace(/\s/g, '') !== '{}')
+			open.advanced = true;
+		advEl.insertBefore(advBtn, extraBody);
+		showAdv();
 
-		formNode.insertBefore(toggle, formNode.firstChild);
-		formNode.appendChild(styleEl);
-		formNode.appendChild(this._renderSbuSection());
-		formNode.appendChild(extraSection);
-
-		// A check or install may already be running (another tab, or a
-		// reload mid-install): pick up its progress.
-		if (this._sbu.busy)
-			this._sbuPoll(0);
-
+		formNode.appendChild(E('style', {}, [
+			// `:not(.hidden)` so a row whose depends() condition is unmet
+			// (LuCI tags it `hidden`) stays hidden even in an open section.
+			'.cbi-map .cbi-value.treadle-advanced{display:none}' +
+			'.cbi-map .cbi-section.treadle-open .cbi-value.treadle-advanced:not(.hidden){display:flex}' +
+			'.treadle-more{background:none;border:0;padding:0.3em 0;margin:0.2em 0 0.4em;' +
+				'color:var(--link-color, #3b8fd6);cursor:pointer;font-size:0.95em}'
+		]));
+		formNode.appendChild(advEl);
 		return formNode;
+	},
+
+	// The sing-box version card, which acts immediately: the host puts it
+	// below the save bar, apart from the settings it does not save with.
+	renderBelowFooter: function() {
+		return this._renderSbuSection();
 	},
 
 	// ── sing-box version (SagerNet updates) ──────────────────────────────
@@ -563,10 +589,16 @@ return baseclass.extend({
 	_renderSbuSection: function() {
 		this._sbuBody = E('div', {});
 		this._renderSbuBody();
-		return E('div', { 'class': 'cbi-section' }, [
-			E('h3', {}, [ _('sing-box version') ]),
+		return E('div', {
+			'class': 'cbi-section',
+			'style': 'margin-top:1.5em; padding:0.8em 1.2em; border:1px solid rgba(128,128,128,0.4); border-radius:6px; background:rgba(128,128,128,0.06);'
+		}, [
+			E('h3', { 'style': 'display:flex; align-items:center; gap:0.6em;' }, [
+				_('sing-box version'),
+				E('span', { 'class': 'label', 'style': 'text-transform:none; font-size:0.65em;' }, [ _('acts immediately') ])
+			]),
 			E('div', { 'class': 'cbi-section-descr' }, [
-				_('Check SagerNet\'s latest stable sing-box release for an OpenWrt package built for this router, and install it in place of the OpenWrt package. SagerNet\'s packages are not signed: Treadle checks the download against the SHA-256 that GitHub publishes for it, test-runs the binary, and returns to the OpenWrt package if the new version does not start.')
+				_('Installs SagerNet\'s latest stable OpenWrt package in place of OpenWrt\'s. SagerNet\'s packages are not signed: the download is checked against the SHA-256 GitHub publishes, test-run, and replaced by the OpenWrt package again if it does not start. Not part of Save & Apply.')
 			]),
 			this._sbuBody
 		]);
@@ -710,54 +742,64 @@ return baseclass.extend({
 		return this._sbuStart(callRevertSingboxPackage());
 	},
 
-	_handleSaveExtra: function() {
-		var el = document.getElementById('treadle-extra-text');
-		if (!el) return;
+	// Write extra.json when the box changed, after checking it is a JSON
+	// object. Resolves true to go on with the form save, false to stop.
+	_saveExtra: function() {
+		var self = this;
+		var el = this._extraEl;
+		if (!el) return Promise.resolve(true);
 		var raw = el.value || '';
-		var isEmpty = (raw.match(/^\s*$/) !== null);
-		if (!isEmpty) {
-			try {
-				var parsed = JSON.parse(raw);
-				if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-					ui.addNotification(null, E('p', _('Overrides must be a JSON object.')), 'error');
-					return;
-				}
-			} catch (e) {
-				ui.addNotification(null, E('p', _('Invalid JSON: ') + e.message), 'error');
-				return;
+		var errEl = this._extraErr;
+		// Shown under the box, which is where the user is looking (LuCI's
+		// notifications appear at the top of the page), as well as up there.
+		var fail = function(msg) {
+			if (self._showExtra) self._showExtra();
+			if (errEl) {
+				errEl.textContent = msg;
+				errEl.style.display = '';
+				el.scrollIntoView({ block: 'center' });
 			}
+			ui.addNotification(null, E('p', msg), 'error');
+			return false;
+		};
+		if (errEl) errEl.style.display = 'none';
+		if (raw === this._extraSaved) return Promise.resolve(true);
+		if (!/^\s*$/.test(raw)) {
+			var parsed;
+			try { parsed = JSON.parse(raw); }
+			catch (e) {
+				return Promise.resolve(fail(_('Raw sing-box overrides: invalid JSON: %s. Nothing was saved.').format(e.message)));
+			}
+			if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed))
+				return Promise.resolve(fail(_('Raw sing-box overrides must be a JSON object. Nothing was saved.')));
 		}
 		return callSetExtraConfig(raw).then(function(res) {
-			if (res && res.ok === false) {
-				ui.addNotification(null, E('p', res.error || _('Save failed.')), 'error');
-				return;
-			}
-			// The backend deletes the file when raw is whitespace-only;
-			// tell the user that explicitly so they don't think they
-			// just saved something when they actually cleared overrides
-			// by hitting Save on a blank textarea.
-			ui.addNotification(null, E('p',
-				isEmpty
-					? _('Overrides cleared.')
-					: _('Overrides saved. Regenerate to see them applied.')),
-				'info');
+			if (res && res.ok === false)
+				return fail(_('Raw sing-box overrides: %s').format(res.error || _('save failed')));
+			self._extraSaved = raw;
+			return true;
 		}).catch(function() {
-			ui.addNotification(null, E('p', _('Save failed.')), 'error');
+			return fail(_('Raw sing-box overrides: save failed.'));
 		});
 	},
 
-	_handleClearExtra: function() {
-		if (!confirm(_('Clear /etc/treadle/extra.json?'))) return;
-		return callSetExtraConfig('').then(function() {
-			var el = document.getElementById('treadle-extra-text');
-			if (el) el.value = '';
-			ui.addNotification(null, E('p', _('Overrides cleared.')), 'info');
-		}).catch(function() {
-			ui.addNotification(null, E('p', _('Clear failed.')), 'error');
+	// Save and Save & Apply write the overrides first, then the form; a bad
+	// override stops both, so nothing is half-saved.
+	handleSave: function() {
+		var self = this;
+		return this._saveExtra().then(function(ok) {
+			if (ok) return formpanel.save(self);
 		});
 	},
-
-	handleSave:      function() { return formpanel.save(this); },
-	handleSaveApply: function() { return formpanel.saveApply(this); },
-	handleReset:     function() { return formpanel.reset(this); }
+	handleSaveApply: function() {
+		var self = this;
+		return this._saveExtra().then(function(ok) {
+			if (ok) return formpanel.saveApply(self);
+		});
+	},
+	handleReset: function() {
+		if (this._extraEl) this._extraEl.value = this._extraSaved || '';
+		if (this._extraErr) this._extraErr.style.display = 'none';
+		return formpanel.reset(this);
+	}
 });

@@ -212,6 +212,9 @@ return view.extend({
 		if (this._footer && this._footer.parentNode)
 			this._footer.parentNode.removeChild(this._footer);
 		this._footer = null;
+		if (this._below && this._below.parentNode)
+			this._below.parentNode.removeChild(this._below);
+		this._below = null;
 
 		// LuCI's require() returns an already-constructed singleton, not a
 		// class — use the panel instance directly (do not `new` it). Reuse
@@ -234,6 +237,13 @@ return view.extend({
 				if (footer) {
 					self._footer = footer;
 					self._shell.appendChild(footer);
+				}
+				// Optional panel content that must sit apart from what the
+				// save bar saves (Settings: the sing-box version card, which
+				// acts immediately).
+				if (typeof panel.renderBelowFooter === 'function') {
+					self._below = panel.renderBelowFooter();
+					if (self._below) self._shell.appendChild(self._below);
 				}
 				return self._refreshStagedState(leaving);
 			});
