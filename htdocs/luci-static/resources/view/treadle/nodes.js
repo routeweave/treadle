@@ -234,7 +234,7 @@ return baseclass.extend({
 		// shifted by any structural change to /etc/config/treadle); the named
 		// form is fixed from creation through commit.
 		uid.installGridAdd(s);
-		this._deleteInModal(s);
+		formpanel.deleteInModal(s);
 
 		var oName = s.option(form.Value, 'name', _('Name'));
 		oName.rmempty = false;
@@ -391,7 +391,7 @@ return baseclass.extend({
 		// anonymous type and forecloses any future code that might reach
 		// for the section id as a cross-reference.
 		uid.installGridAdd(s);
-		this._deleteInModal(s);
+		formpanel.deleteInModal(s);
 		this._nodeSection = s;
 
 		s.tab('general',   _('General'));
@@ -842,37 +842,6 @@ return baseclass.extend({
 		]);
 	},
 
-	// Delete moves from each row into the edit dialog, next to Dismiss and
-	// Save: rows keep only the buttons used every day, and a delete is no
-	// longer one stray click away. It stages the removal like the row
-	// button did; Save & Apply commits it.
-	_deleteInModal: function(s) {
-		var render = s.renderRowActions;
-		s.renderRowActions = function(section_id) {
-			var td = render.apply(this, arguments);
-			var rm = td && td.querySelector && td.querySelector('.cbi-button-remove');
-			if (rm) rm.parentNode.removeChild(rm);
-			return td;
-		};
-		var openModal = s.renderMoreOptionsModal;
-		s.renderMoreOptionsModal = function(section_id) {
-			var section = this;
-			return Promise.resolve(openModal.apply(this, arguments)).then(function(r) {
-				var row = document.querySelector('#modal_overlay .modal .button-row');
-				if (row && !row.querySelector('.treadle-delete'))
-					row.insertBefore(E('button', {
-						'class': 'btn cbi-button cbi-button-remove treadle-delete',
-						'style': 'margin-right:auto;',
-						'click': function() {
-							ui.hideModal();
-							return section.handleRemove(section_id);
-						}
-					}, [ _('Delete') ]), row.firstChild);
-				return r;
-			});
-		};
-	},
-
 	// Every node a group can take as a member, for the Members picker.
 	_memberList: function(outbounds) {
 		// Subscription name/order lookups shared with routing.js / status.js
@@ -982,7 +951,7 @@ return baseclass.extend({
 			uci.set('treadle', sid, 'type', 'urltest');
 			return r;
 		};
-		this._deleteInModal(s);
+		formpanel.deleteInModal(s);
 
 		var o = this._tagOption(s);
 		o.placeholder = _('e.g. Auto');

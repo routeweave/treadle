@@ -7,6 +7,7 @@
 'require uci';
 'require rpc';
 'require ui';
+'require dom';
 'require view.treadle.lib.ordersave as ordersave';
 'require view.treadle.lib.formpanel as formpanel';
 'require view.treadle.lib.subs as subs';
@@ -275,20 +276,32 @@ function readConditions(rule_name) {
 	});
 }
 
-// Short human summary of a rule's conditions for the grid column.
+// What a rule matches, for the grid column: each condition's kind and its
+// values, joined by AND / OR. `full` lists everything (the cell's hover
+// text); `short` keeps the first two values of each condition and the first
+// three conditions, so a long rule still fits one line. Rule-set tokens
+// drop their provider in the short form ("geosite-netflix").
 function ruleSummary(rule_name) {
 	var conds = readConditions(rule_name);
-	if (!conds.length)
-		return _('no conditions (skipped)');
-	if (conds.length > 4)
-		return _('%d conditions').format(conds.length);
-	var parts = [];
+	if (!conds.length) {
+		var none = _('no conditions (skipped)');
+		return { short: none, full: none };
+	}
+	var shortParts = [], fullParts = [];
 	conds.forEach(function(c, i) {
-		if (i > 0)
-			parts.push(c.op === 'and' ? _('AND') : _('OR'));
-		parts.push(condLabel(c.kind, c.invert));
+		var op = (i > 0) ? (c.op === 'and' ? _('AND') : _('OR')) + ' ' : '';
+		var label = condLabel(c.kind, c.invert);
+		var vals = c.values.map(function(v) {
+			return (c.kind === 'ruleset') ? String(v).replace(/^[a-z]+\//, '') : String(v);
+		});
+		fullParts.push(op + label + ': ' + c.values.join(', '));
+		if (i < 3)
+			shortParts.push(op + label + ' ' + vals.slice(0, 2).join(', ') +
+				(vals.length > 2 ? ' +' + (vals.length - 2) : ''));
 	});
-	return parts.join(' ');
+	if (conds.length > 3)
+		shortParts.push(_('+%d more').format(conds.length - 3));
+	return { short: shortParts.join(' '), full: fullParts.join(' ') };
 }
 
 // Custom modal widget: the editable list of conditions for one rule. It is
@@ -627,6 +640,7 @@ return baseclass.extend({
 	},
 
 	render: function(data) {
+		var self = this;
 		var outbounds = (data && data[1] && Array.isArray(data[1].outbounds))
 			? data[1].outbounds : [];
 
@@ -661,22 +675,22 @@ return baseclass.extend({
 			return tags;
 		}
 
+		// The node choices, shared by the rules' Node column and the
+		// "Everything else" row: [ [tag, label], … ].
+		var choices = [ [ 'direct', _('direct (no proxy)') ], [ 'block', _('block (drop)') ] ];
+		subs.serverEntries(outbounds).forEach(function(e) { choices.push([ e.tag, e.label ]); });
+		this._choices = choices;
+
 		var m = new form.Map('treadle');
 
-		// ── default node ────────────────────────────────────────────────
-		var ds = m.section(form.NamedSection, 'routing', 'routing', _('Default node'),
-			_('Node for traffic not matched by any rule below.'));
-		ds.addremove = false;
-
-		var oFinal = ds.option(form.ListValue, 'final_outbound', _('Default node'));
-		addServers(oFinal);
-
 		// ── rules ───────────────────────────────────────────────────────
+		// The default node is not a section of its own any more: it is the
+		// table's fixed last row, "Everything else", added in renderContents
+		// below, because it is where traffic goes after every rule.
 		var s = m.section(form.GridSection, 'rule', _('Rules'),
-			_('Evaluated top-to-bottom; first match wins. Each rule matches a ' +
-			  'destination built from one or more conditions joined with ' +
-			  'AND / OR, and sends matching traffic to a node. Changes ' +
-			  'are staged until Save; Save & Apply also reloads the service.'));
+			_('Checked top to bottom; the first rule that matches decides the ' +
+			  'node, and traffic no rule matches goes to "Everything else". ' +
+			  'Changes apply with Save & Apply.'));
 		s.addremove = true;
 		s.sortable  = true;
 		s.anonymous = true;
@@ -693,6 +707,13 @@ return baseclass.extend({
 		// any structural change to /etc/config/treadle. `anonymous` still
 		// hides the name in the UI.
 		uid.installGridAdd(s);
+		formpanel.deleteInModal(s);
+		var contents = s.renderContents;
+		s.renderContents = function() {
+			var el = contents.apply(this, arguments);
+			self._addFixedRows(el);
+			return el;
+		};
 
 		var oEnabled = s.option(form.Flag, 'enabled', _('On'));
 		oEnabled['default'] = '1';
@@ -705,10 +726,16 @@ return baseclass.extend({
 		// Grid column only (modalonly === false): a read-only summary of the
 		// rule's conditions. Kept out of the modal — the ConditionList editor
 		// there already renders its own live preview.
-		var oMatch = s.option(form.DummyValue, '_match', _('Conditions'));
+		var oMatch = s.option(form.DummyValue, '_match', _('Matches'));
 		oMatch.modalonly = false;
+		// editable: the grid renders the element instead of escaping it.
+		oMatch.editable = true;
 		oMatch.cfgvalue = function(section_id) {
-			return ruleSummary(section_id);
+			var sum = ruleSummary(section_id);
+			return E('span', {
+				'class': 'treadle-match',
+				'title': sum.full
+			}, [ sum.short ]);
 		};
 
 		var oOut = s.option(form.ListValue, 'outbound', _('Node'));
@@ -716,7 +743,9 @@ return baseclass.extend({
 		// Render the node choice as an inline dropdown in the grid row so
 		// rebinding a rule to a different node is one click, not a modal
 		// open. The edit stays in-memory until the panel-level Save & Apply,
-		// matching the inline Enabled checkbox above.
+		// matching the inline Enabled checkbox above. Compact (styled below).
+		// No live "node in use" here: Routing is for choosing, and a group
+		// no rule uses yet has no live data; Status and Nodes show it.
 		oOut.editable = true;
 
 		// Resolve this rule's domain matches through the same outbound the
@@ -761,17 +790,18 @@ return baseclass.extend({
 		var macInert = imode === 'tun' && !(data && data[3] && data[3].tun_mac &&
 			uci.get('treadle', 'inbounds', 'tun_auto_route') !== '0');
 
-		var bp = m.section(form.GridSection, 'bypass', _('Bypass'),
-			_('LAN clients listed here skip the proxy entirely. Useful for ' +
-			  'devices that need direct WAN access (corporate VPN clients, ' +
-			  'gaming consoles, IoT). IP bypass works in all modes; MAC bypass ' +
-			  'in TUN mode needs sing-box 1.14 or later and auto-route.'));
+		var bp = m.section(form.GridSection, 'bypass', _('Devices that skip the proxy'),
+			_('Their traffic always goes direct, whatever the rules say. Useful ' +
+			  'for work VPN clients, game consoles and smart-home devices. An IP ' +
+			  'works in every mode; a MAC in TUN mode needs sing-box 1.14 or ' +
+			  'later and auto-route.'));
 		bp.addremove = true;
 		bp.anonymous = true;
-		bp.addbtntitle = _('Add bypass');
-		bp.modaltitle = function() { return _('Bypass'); };
+		bp.addbtntitle = _('Add device');
+		bp.modaltitle = function() { return _('Device'); };
 
 		uid.installGridAdd(bp);
+		formpanel.deleteInModal(bp);
 
 		var bpEnabled = bp.option(form.Flag, 'enabled', _('On'));
 		bpEnabled['default'] = '1';
@@ -784,7 +814,7 @@ return baseclass.extend({
 		// A new entry defaults to MAC (it survives a lease change) unless
 		// MAC entries would be inert here, then to IP.
 		var bpDefaultKind = macInert ? 'ip' : 'mac';
-		var bpKind = bp.option(form.ListValue, 'kind', _('Type'));
+		var bpKind = bp.option(form.ListValue, 'kind', _('Match by'));
 		bpKind.value('mac', _('MAC'));
 		bpKind.value('ip',  _('IP'));
 		bpKind['default'] = bpDefaultKind;
@@ -807,7 +837,7 @@ return baseclass.extend({
 			return [keys, labels];
 		}
 
-		var bpValue = bp.option(form.Value, 'value', _('Value'));
+		var bpValue = bp.option(form.Value, 'value', _('Address'));
 		bpValue.rmempty = false;
 		bpValue.placeholder = (bpDefaultKind === 'mac') ? '00:11:22:33:44:55' : '192.168.1.50';
 		// form.Value falls back to a plain ui.Textfield when no .value()
@@ -893,6 +923,21 @@ return baseclass.extend({
 			return true;
 		};
 
+		// Grid-only column: the device's DHCP name, so a row says which device
+		// an address is.
+		var bpDevice = bp.option(form.DummyValue, '_device', _('Device'));
+		bpDevice.modalonly = false;
+		bpDevice.cfgvalue = function(section_id) {
+			var v = String(uci.get('treadle', section_id, 'value') || '').toLowerCase();
+			for (var i = 0; i < leases.length; i++) {
+				var l = leases[i];
+				if ((l.mac && l.mac.toLowerCase() === v) || l.ip === v)
+					return (l.hostname || _('(no hostname)')) +
+						(l.mac && l.mac.toLowerCase() === v && l.ip ? ' (' + l.ip + ')' : '');
+			}
+			return '—';
+		};
+
 		// Grid-only column: warn when a MAC entry won't fire (tun mode on an
 		// older sing-box or without auto-route). Empty cell otherwise.
 		var bpWarn = bp.option(form.DummyValue, '_warn', '');
@@ -925,21 +970,87 @@ return baseclass.extend({
 			});
 		});
 		return m.render().then(function(node) {
-			// Breathing room between the rules grid's Add button and the
-			// following section. NamedSection renders its h3 and
-			// description outside the `#cbi-{config}-{name}` options wrapper,
-			// so a margin on that wrapper only pushed the options down —
-			// target the heading by its text instead, which pushes the whole
-			// visual block down.
-			var gaps = { };
-			gaps[_('Rules')]  = '2em';
-			gaps[_('Bypass')] = '2em';
-			node.querySelectorAll('h3').forEach(function(h) {
-				var g = gaps[h.textContent];
-				if (g) h.style.marginTop = g;
-			});
+			// Breathing room before the second section, and the page's small
+			// styles: the compact Node dropdown with its live info, and the
+			// Matches cell kept to one line.
+			var bpSection = node.querySelector('#cbi-treadle-bypass');
+			if (bpSection) bpSection.style.marginTop = '2em';
+			node.appendChild(E('style', {}, [
+				'#cbi-treadle-rule select{width:auto;min-width:8em;max-width:16em}' +
+				'#cbi-treadle-rule .treadle-match{display:inline-block;max-width:28em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}' +
+				'#cbi-treadle-rule .treadle-fixed td{background:rgba(128,128,128,.07)}' +
+				'#cbi-treadle-rule tr.treadle-last td{border-top:2px solid rgba(128,128,128,.45)}'
+			]));
 			return node;
 		});
+	},
+
+	// Rows the rules table always has, added on every (re)render of the
+	// grid: "Always first" at the top, read-only, naming what Treadle
+	// routes before any rule; and "Everything else" at the bottom, the
+	// default node. Neither carries a section id, so dragging a rule can't
+	// land on them.
+	_addFixedRows: function(sectionEl) {
+		var tbody = sectionEl.querySelector('tbody');
+		var head = sectionEl.querySelector('thead tr');
+		if (!tbody) return;
+		var cols = head ? head.children.length : 5;
+
+		var bypassed = uci.sections('treadle', 'bypass').filter(function(b) {
+			return b.enabled !== '0';
+		}).length;
+		var tun = (uci.get('treadle', 'inbounds', 'mode') || 'tun') === 'tun';
+		var items = [
+			_('Local and private addresses (LAN, CGNAT) → direct'),
+			_('DNS queries → Treadle\'s resolver, which follows the rules below')
+		];
+		if (tun) items.push(_('Ping → direct'));
+		items.push(_('Devices that skip the proxy (below) → direct'));
+		var summary = [ _('local networks'), _('DNS') ];
+		if (tun) summary.push(_('ping'));
+		summary.push(_('%d bypassed devices').format(bypassed));
+		tbody.insertBefore(E('tr', { 'class': 'tr treadle-fixed' }, [
+			E('td', { 'class': 'td', 'colspan': String(cols) }, [
+				E('details', {}, [
+					E('summary', { 'style': 'cursor:pointer;' }, [
+						E('strong', {}, [ _('Always first') ]), ' · ', summary.join(', ')
+					]),
+					E('ul', { 'style': 'margin:0.4em 0 0.2em 1.4em;' }, items.map(function(t) {
+						return E('li', {}, [ t ]);
+					}))
+				])
+			])
+		]), tbody.firstChild);
+
+		var current = uci.get('treadle', 'routing', 'final_outbound') || '';
+		var sel = E('select', {
+			'class': 'cbi-input-select',
+			'aria-label': _('Node for everything else'),
+			'change': function(ev) {
+				if (!uci.get('treadle', 'routing'))
+					uci.add('treadle', 'routing', 'routing');
+				uci.set('treadle', 'routing', 'final_outbound', ev.target.value);
+			}
+		});
+		var known = false;
+		this._choices.forEach(function(c) {
+			sel.appendChild(E('option', { 'value': c[0] }, [ c[1] ]));
+			if (c[0] === current) known = true;
+		});
+		if (!current)
+			sel.insertBefore(E('option', { 'value': '', 'disabled': 'disabled' }, [ _('— not set —') ]), sel.firstChild);
+		else if (!known)
+			sel.appendChild(E('option', { 'value': current }, [ current + ' ' + _('(missing)') ]));
+		sel.value = current;
+		tbody.appendChild(E('tr', { 'class': 'tr treadle-fixed treadle-last' }, [
+			E('td', { 'class': 'td', 'colspan': String(Math.max(cols - 2, 1)) }, [
+				E('strong', {}, [ _('Everything else') ]), ' ',
+				E('span', { 'style': 'opacity:0.7;' }, [ _('— traffic no rule above matched') ])
+			]),
+			E('td', { 'class': 'td', 'colspan': '2' }, [
+				E('div', { 'class': 'treadle-node' }, [ sel ])
+			])
+		]));
 	},
 
 	handleSave:      function() { return formpanel.save(this); },

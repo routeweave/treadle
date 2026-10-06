@@ -1056,11 +1056,6 @@ msgstr ""
 msgid "no conditions (skipped)"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/routing.js:113
-#, javascript-format
-msgid "%d conditions"
-msgstr ""
-
 #: htdocs/luci-static/resources/view/treadle/routing.js:117
 #: htdocs/luci-static/resources/view/treadle/routing.js:240
 #: htdocs/luci-static/resources/view/treadle/routing.js:254
@@ -1099,21 +1094,9 @@ msgstr ""
 msgid "Default node"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/routing.js:503
-msgid "Node for traffic not matched by any rule below."
-msgstr ""
-
 #: htdocs/luci-static/resources/view/treadle/routing.js:510
 #: htdocs/luci-static/resources/view/treadle/routing.js:780
 msgid "Rules"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/routing.js:511
-msgid ""
-"Evaluated top-to-bottom; first match wins. Each rule matches a destination "
-"built from one or more conditions joined with AND / OR, and sends matching "
-"traffic to a node. Changes are staged until Save; Save & Apply also reloads "
-"the service."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/routing.js:519
@@ -1190,12 +1173,6 @@ msgstr ""
 msgid "Source (.json)"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/routing.js:631
-#: htdocs/luci-static/resources/view/treadle/routing.js:639
-#: htdocs/luci-static/resources/view/treadle/routing.js:782
-msgid "Bypass"
-msgstr ""
-
 #: htdocs/luci-static/resources/view/treadle/routing.js:632
 msgid ""
 "LAN clients listed here skip the proxy entirely. Useful for devices that "
@@ -1209,10 +1186,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/routing.js:662
 msgid "(no hostname)"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/routing.js:672
-msgid "Value"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/routing.js:723
@@ -1776,4 +1749,97 @@ msgstr ""
 #: htdocs/luci-static/resources/view/treadle/status.js:600
 #, javascript-format
 msgid "%s: %s"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/routing.js:303
+#, javascript-format
+msgid "+%d more"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/routing.js:691
+msgid ""
+"Checked top to bottom; the first rule that matches decides the node, "
+"and traffic no rule matches goes to \"Everything else\". Changes "
+"apply with Save & Apply."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/routing.js:729
+msgid "Matches"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/routing.js:793
+msgid "Devices that skip the proxy"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/routing.js:794
+msgid ""
+"Their traffic always goes direct, whatever the rules say. Useful for "
+"work VPN clients, game consoles and smart-home devices. An IP works "
+"in every mode; a MAC in TUN mode needs sing-box 1.14 or later and "
+"auto-route."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/routing.js:800
+msgid "Add device"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/routing.js:801
+msgid "Device"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/routing.js:817
+msgid "Match by"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/routing.js:840
+msgid "Address"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/routing.js:1004
+msgid "Local and private addresses (LAN, CGNAT) → direct"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/routing.js:1005
+msgid "DNS queries → Treadle's resolver, which follows the rules below"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/routing.js:1007
+msgid "Ping → direct"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/routing.js:1008
+msgid "Devices that skip the proxy (below) → direct"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/routing.js:1009
+msgid "local networks"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/routing.js:1010
+msgid "ping"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/routing.js:1011
+#, javascript-format
+msgid "%d bypassed devices"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/routing.js:1016
+msgid "Always first"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/routing.js:1028
+msgid "Node for everything else"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/routing.js:1041
+msgid "— not set —"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/routing.js:1047
+msgid "Everything else"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/routing.js:1048
+msgid "— traffic no rule above matched"
 msgstr ""

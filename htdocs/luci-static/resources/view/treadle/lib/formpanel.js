@@ -39,5 +39,36 @@ return baseclass.extend({
 	// revert and a per-panel reset clear the same set.
 	resetGrid: function() {
 		return ui.changes.revert();
+	},
+
+	// Move a GridSection's Delete from every row into its edit dialog, next
+	// to Dismiss and Save: rows keep only the buttons used every day, and a
+	// delete is no longer one stray click away. It stages the removal like
+	// the row button did; Save & Apply commits it.
+	deleteInModal: function(s) {
+		var render = s.renderRowActions;
+		s.renderRowActions = function(section_id) {
+			var td = render.apply(this, arguments);
+			var rm = td && td.querySelector && td.querySelector('.cbi-button-remove');
+			if (rm) rm.parentNode.removeChild(rm);
+			return td;
+		};
+		var openModal = s.renderMoreOptionsModal;
+		s.renderMoreOptionsModal = function(section_id) {
+			var section = this;
+			return Promise.resolve(openModal.apply(this, arguments)).then(function(r) {
+				var row = document.querySelector('#modal_overlay .modal .button-row');
+				if (row && !row.querySelector('.treadle-delete'))
+					row.insertBefore(E('button', {
+						'class': 'btn cbi-button cbi-button-remove treadle-delete',
+						'style': 'margin-right:auto;',
+						'click': function() {
+							ui.hideModal();
+							return section.handleRemove(section_id);
+						}
+					}, [ _('Delete') ]), row.firstChild);
+				return r;
+			});
+		};
 	}
 });
