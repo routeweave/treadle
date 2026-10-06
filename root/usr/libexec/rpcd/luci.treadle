@@ -324,6 +324,14 @@ local function reconcile_subscriptions()
 			c:set("treadle", id, "status", "stale")
 			changed = true
 		end
+		-- Subscriptions no longer have an on/off switch: it only ever
+		-- stopped syncing, which auto-update 0 (manual only) does. One
+		-- switched off keeps that meaning; the option goes either way.
+		if s.enabled ~= nil then
+			if s.enabled == "0" then c:set("treadle", id, "auto_update", "0") end
+			c:delete("treadle", id, "enabled")
+			changed = true
+		end
 	end)
 	if changed then c:commit("treadle") end
 	c:close()
@@ -347,8 +355,8 @@ local function valid_sub_uids()
 end
 
 -- Delete node files on disk whose uid no longer corresponds to a current
--- UCI subscription. Called from the write-path RPCs (sync_one /
--- sync_all_subscriptions) so the directory is swept whenever a user runs a
+-- UCI subscription. Called from the sync_subscription RPC so the directory
+-- is swept whenever a user runs a
 -- sync — manually or via the hourly cron — bounding the lag between deleting
 -- a subscription in the UI and its file being removed to at most one hour.
 local function prune_orphan_nodes()
@@ -421,7 +429,7 @@ end
 -- per due subscription and deliberately does NOT hold the lock itself (a
 -- held-then-recursed `lock -n` from the wrapper process would fail and the
 -- RPC would skip every cron sync). Serializes manual and cron-driven
--- sync_subscription / sync_all_subscriptions runs against each other, so
+-- sync_subscription runs against each other, so
 -- concurrent sync_one() runs can't race on /etc/config/treadle: without it, two
 -- writers can stage disjoint c2:set's, the second commit's full-file rewrite
 -- wins, and one of them silently loses its status/last_sync/node_count writes.
@@ -564,6 +572,25 @@ end
 
 -- Fetch a subscription URL and update its UCI state.
 -- Returns a result table { status, node_count } on success.
+-- The one line of uclient-fetch's stderr worth showing for a failed
+-- download: "HTTP error 403", "Connection error: …", "SSL error …".
+-- Anything carrying a URL (the "Downloading '<url>'" line, or an error that
+-- quotes it) is never returned — a subscription URL is a bearer credential —
+-- and a host name or address inside the kept line becomes "<host>": the
+-- reason is also logged, and the host alone names the provider.
+local function fetch_error(text)
+	for line in (text or ""):gmatch("[^\n]+") do
+		if not line:find("://", 1, true)
+			and (line:match("^HTTP error %d+") or line:match("[Ee]rror")
+				or line:match("timed out") or line:match("[Rr]eset"))
+		then
+			line = line:gsub("^%s+", ""):gsub("[%w%-]+%.[%w%.%-]*[%w]", "<host>")
+			return line:sub(1, 80)
+		end
+	end
+	return nil
+end
+
 local function sync_one(id)
 	-- id is interpolated into a temp-file path (and a shell command via it)
 	-- and used as a UCI section reference. Reject anything that is not a
@@ -627,8 +654,15 @@ local function sync_one(id)
 		user_agent = num and ("sing-box/" .. num) or "sing-box"
 	end
 	local ua_flag = " -U '" .. user_agent:gsub("'", "'\\''") .. "'"
-	local fetch_cmd = "uclient-fetch -q --timeout=15" .. ua_flag .. " -O '" .. tmp_body .. "' '" .. safe_url .. "' 2>/dev/null"
+	-- Not -q: uclient-fetch's error line ("HTTP error 403", "Connection
+	-- error: …") is what the Nodes tab shows for a failed sync. Its stderr
+	-- also names the URL ("Downloading '<url>'"), so only the error line is
+	-- kept, by fetch_error below, and nothing else from it is stored.
+	local tmp_err = tmp_body .. ".err"
+	local fetch_cmd = "uclient-fetch --timeout=15" .. ua_flag .. " -O '" .. tmp_body .. "' '" .. safe_url .. "' 2>'" .. tmp_err .. "'"
 	local fetch_ok = (os.execute(fetch_cmd) == 0)
+	local sync_error = (not fetch_ok) and fetch_error(read_file(tmp_err)) or nil
+	os.remove(tmp_err)
 
 	local body = ""
 	if fetch_ok then
@@ -672,6 +706,7 @@ local function sync_one(id)
 				"sync '%s': skipped %d unsupported node(s): %s", sub_name, #skipped, listed))
 		end
 		if count == 0 then
+			sync_error = "no recognisable nodes in the reply"
 			log_treadle("warn", "sync '" .. sub_name .. "': URL returned no recognisable proxy nodes")
 		else
 			-- Node names for the log line, capped at MAX_NAMES.
@@ -701,13 +736,15 @@ local function sync_one(id)
 					end
 				end
 			else
+				sync_error = "could not save the nodes file"
 				log_treadle("err", "sync '" .. sub_name .. "': failed to write nodes file")
 			end
 		end
 	else
 		status = "error"
 		node_count = 0
-		log_treadle("err", "sync '" .. sub_name .. "': fetch failed — check URL or network")
+		sync_error = sync_error or (fetch_ok and "empty reply" or "download failed")
+		log_treadle("err", "sync '" .. sub_name .. "': fetch failed: " .. sync_error)
 	end
 
 	local now = os.date("%Y-%m-%d %H:%M")
@@ -726,6 +763,14 @@ local function sync_one(id)
 	c2:set("treadle", id, "status", status)
 	if status == "ok" then
 		c2:set("treadle", id, "node_count", tostring(node_count))
+		-- The last attempt that brought nodes in: the Nodes tab's "Last
+		-- sync" age, which a failed attempt must not reset.
+		if not sync_error then c2:set("treadle", id, "last_ok", now) end
+	end
+	if sync_error then
+		c2:set("treadle", id, "sync_error", sync_error)
+	else
+		c2:delete("treadle", id, "sync_error")
 	end
 	-- Read the clash flag (used by the first-import test below) off this
 	-- cursor instead of opening a third one a few lines later.
@@ -1123,38 +1168,6 @@ local methods = {
 		end
 	},
 
-	sync_all_subscriptions = {
-		call = function()
-			if not sync_lock_acquire() then
-				return { status = "busy", synced = 0, errors = 0, reloaded = false }
-			end
-			local ok, result = pcall(function()
-				local c = uci_cursor()
-				local ids = {}
-				c:foreach("treadle", "subscription", function(s)
-					if s.enabled == "1" then
-						ids[#ids + 1] = s[".name"]
-					end
-				end)
-				c:close()
-				local synced, errors = 0, 0
-				for _, id in ipairs(ids) do
-					local r = sync_one(id)
-					if r and r.status == "ok" then
-						synced = synced + 1
-					else
-						errors = errors + 1
-					end
-				end
-				prune_orphan_nodes()
-				local reloaded = reload_if_config_changed()
-				return { synced = synced, errors = errors, reloaded = reloaded }
-			end)
-			sync_lock_release()
-			if not ok then error(result) end
-			return result
-		end
-	},
 
 	-- Diff a freshly-generated config against the running one and reload
 	-- sing-box when they differ. Called by the cron sync wrapper and the
@@ -1557,15 +1570,21 @@ local methods = {
 -- reads back as local time too; the browser's clock and zone do not matter.
 local function subscription_ages(c)
 	local out, now = {}, os.time()
+	local function since(stamp)
+		local y, mo, d, h, mi = (stamp or ""):match("^(%d+)-(%d+)-(%d+) (%d+):(%d+)$")
+		if not y then return nil end
+		local t = os.time({ year = tonumber(y), month = tonumber(mo), day = tonumber(d),
+			hour = tonumber(h), min = tonumber(mi), sec = 0 })
+		if t and now >= t then return now - t end
+		return nil
+	end
 	c:foreach("treadle", "subscription", function(s)
-		local y, mo, d, h, mi = (s.last_sync or ""):match("^(%d+)-(%d+)-(%d+) (%d+):(%d+)$")
-		local age
-		if y then
-			local t = os.time({ year = tonumber(y), month = tonumber(mo), day = tonumber(d),
-				hour = tonumber(h), min = tonumber(mi), sec = 0 })
-			if t and now >= t then age = now - t end
-		end
-		out[#out + 1] = { id = s[".name"], age_s = age }
+		local age = since(s.last_sync)
+		-- Since the last sync that brought nodes in. Configs from before
+		-- last_ok existed fall back to last_sync when that one succeeded.
+		local ok_age = since(s.last_ok)
+		if ok_age == nil and s.status == "ok" then ok_age = age end
+		out[#out + 1] = { id = s[".name"], age_s = age, ok_age_s = ok_age }
 	end)
 	return out
 end

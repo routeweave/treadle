@@ -9,7 +9,7 @@
 		},
 		"write": {
 			"ubus": {
-				"luci.treadle": [ "reload_if_changed", "reconcile_subscriptions", "set_enabled", "set_extra_config", "sync_subscription", "sync_all_subscriptions", "start", "stop", "restart", "test_all_start", "refresh_rulesets", "check_singbox_update", "install_singbox_update", "revert_singbox_package" ]
+				"luci.treadle": [ "reload_if_changed", "reconcile_subscriptions", "set_enabled", "set_extra_config", "sync_subscription", "start", "stop", "restart", "test_all_start", "refresh_rulesets", "check_singbox_update", "install_singbox_update", "revert_singbox_package" ]
 			},
 			"uci": [ "treadle" ]
 		}

@@ -41,10 +41,6 @@ msgstr ""
 msgid "d ago"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:205
-msgid "Sync all now"
-msgstr ""
-
 #: htdocs/luci-static/resources/view/treadle/nodes.js:211
 #: htdocs/luci-static/resources/view/treadle/nodes.js:1016
 msgid "Test all"
@@ -53,10 +49,6 @@ msgstr ""
 #: htdocs/luci-static/resources/view/treadle/nodes.js:225
 #: htdocs/luci-static/resources/view/treadle/basic.js:121
 msgid "Subscriptions"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/nodes.js:226
-msgid "Node subscriptions."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:230
@@ -70,11 +62,6 @@ msgstr ""
 #: htdocs/luci-static/resources/view/treadle/nodes.js:231
 #: htdocs/luci-static/resources/view/treadle/basic.js:126
 msgid "Subscription"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/nodes.js:233
-#: htdocs/luci-static/resources/view/treadle/basic.js:128
-msgid "Enabled"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:238
@@ -95,11 +82,6 @@ msgstr ""
 #: htdocs/luci-static/resources/view/treadle/basic.js:137
 #: htdocs/luci-static/resources/view/treadle/main.js:24
 msgid "Nodes"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/nodes.js:247
-#: htdocs/luci-static/resources/view/treadle/nodes.js:250
-msgid "View"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:256
@@ -518,29 +500,6 @@ msgstr ""
 #: htdocs/luci-static/resources/view/treadle/nodes.js:1128
 #, javascript-format
 msgid "Tested %d nodes."
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1135
-msgid "Sync all subscriptions"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1137
-msgid ""
-"This downloads every subscription and then reloads this tab from the saved "
-"configuration. Unsaved changes on this tab will be discarded."
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1150
-msgid "Sync all"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1160
-#, javascript-format
-msgid "Sync all complete: %d synced, %d errors."
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1171
-msgid "Sync all failed."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/settings.js:82
@@ -1300,10 +1259,6 @@ msgstr ""
 msgid "Failed to load this tab: "
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:382
-msgid "Nodes you add by hand, and groups that pick among nodes."
-msgstr ""
-
 #: htdocs/luci-static/resources/view/treadle/settings.js:169
 msgid ""
 "How LAN traffic enters sing-box: through a TUN virtual interface "
@@ -1706,4 +1661,119 @@ msgstr ""
 #: htdocs/luci-static/resources/view/treadle/status.js:770
 #, javascript-format
 msgid "%s: in use"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:221
+msgid "Lists of nodes Treadle downloads on a schedule."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:253
+msgid "View the nodes in this subscription"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:258
+#, javascript-format
+msgid "%d nodes"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:270
+#, javascript-format
+msgid "%s ago"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:270
+msgid "never"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:274
+msgid "State"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:378
+msgid "Nodes you add by hand, from a share link or field by field."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:819
+#, javascript-format
+msgid "every %d h"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:819
+msgid "manual only"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:829
+msgid "failed"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:830
+msgid "last sync failed"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:836
+msgid "never synced"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:836
+msgid "stale"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:840
+msgid "up to date"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:870
+msgid "Delete"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:962
+msgid "Groups"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:963
+msgid ""
+"Pick the fastest node among their members. Rules and the default node "
+"can point at a group."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:967
+msgid "Add group"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:988
+msgid "e.g. Auto"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:990
+msgid "Members from"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:995
+msgid "Fixed list"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:999
+msgid "manual nodes"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1002
+#, javascript-format
+msgid "Pattern %s · %s"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1003
+msgid "all subscriptions"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1018
+msgid "Using now"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1025
+msgid "Shown while the group runs and live stats are on"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/status.js:600
+#, javascript-format
+msgid "%s: %s"
 msgstr ""

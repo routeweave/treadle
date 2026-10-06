@@ -19,14 +19,12 @@
 . /lib/functions.sh
 
 _sync_one() {
-	local sid enabled auto_update last_sync name label
+	local sid auto_update last_sync name label
 	sid="$1"
 
-	config_get_bool enabled     "$sid" enabled     0
 	config_get      auto_update "$sid" auto_update 0
 	config_get      last_sync   "$sid" last_sync   ""
 
-	[ "$enabled" = "1" ] || return
 	[ "$auto_update" -gt 0 ] 2>/dev/null || return
 
 	local now interval_secs

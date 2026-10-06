@@ -25,12 +25,6 @@
 'require view.treadle.lib.subsync as subsync';
 'require view.treadle.uid as uid';
 
-var callSyncAll = rpc.declare({
-	object: 'luci.treadle',
-	method: 'sync_all_subscriptions',
-	expect: { '': {} }
-});
-
 var callListSubscriptionNodes = rpc.declare({
 	object: 'luci.treadle',
 	method: 'list_subscription_nodes',
@@ -73,6 +67,15 @@ var callTestAllStart = rpc.declare({
 	expect: { '': {} }
 });
 
+// The Status tab's batch call, read here without logs: subscription ages
+// from the router's clock, and each group's live members and current pick
+// (active-watch's snapshot; empty when live stats are off).
+var callGetDashboard = rpc.declare({
+	object: 'luci.treadle',
+	method: 'get_dashboard',
+	expect: { '': {} }
+});
+
 var callTestAllStatus = rpc.declare({
 	object: 'luci.treadle',
 	method: 'test_all_status',
@@ -83,6 +86,21 @@ var callTestAllStatus = rpc.declare({
 // Color-coded latency badge shared with the Status panel — lives in
 // lib/badges.js so the two columns agree on what 'yellow' means.
 var formatLatency = badges.formatLatency;
+
+// Same red as lib/badges.js: Bootstrap has no red label class.
+var DANGER_STYLE =
+	' background-color: var(--danger-color, var(--error-color, var(--error-color-high, #d9534f)));' +
+	' color: var(--on-danger-color, var(--on-error-color, #fff));';
+
+// "93 s" / "12 min" / "5 h" / "9 d": an age in seconds, coarse on purpose.
+function formatAge(sec) {
+	sec = Number(sec);
+	if (!(sec >= 0)) return '';
+	if (sec < 60)    return _('%d s').format(sec);
+	if (sec < 3600)  return _('%d min').format(Math.floor(sec / 60));
+	if (sec < 86400) return _('%d h').format(Math.floor(sec / 3600));
+	return _('%d d').format(Math.floor(sec / 86400));
+}
 
 
 // Types with a server endpoint. `direct` is excluded — a direct outbound has
@@ -110,7 +128,8 @@ return baseclass.extend({
 		return Promise.all([
 			uci.load('treadle'),
 			callListOutbounds().catch(function() { return {}; }),
-			callGetLastLatency().catch(function() { return { results: {} }; })
+			callGetLastLatency().catch(function() { return { results: {} }; }),
+			callGetDashboard().catch(function() { return {}; })
 		]);
 	},
 
@@ -133,40 +152,52 @@ return baseclass.extend({
 		// on the first emoji tag and broke the whole batch promise.
 		this._latencyCells = {};
 
+		// Live data for the Groups and Subscriptions columns.
+		var dash = (data && data[3]) || {};
+		this._subAge = {};
+		(Array.isArray(dash.subs) ? dash.subs : []).forEach(function(a) {
+			self._subAge[a.id] = a;
+		});
+		this._liveGroup = {};
+		var lg = dash.groups && Array.isArray(dash.groups.groups) ? dash.groups.groups : [];
+		lg.forEach(function(g) { self._liveGroup[g.tag] = g; });
+
+		var outbounds = (data && data[1] && Array.isArray(data[1].outbounds))
+			? data[1].outbounds : [];
+		// Used by _collectAllTags to drive "Test all".
+		this._outbounds = outbounds;
+		var memberList = this._memberList(outbounds);
+
 		this._renderSubscriptions(m);
-		this._renderNodes(m, data);
+		this._renderGroups(m, memberList);
+		this._renderNodes(m, memberList);
 
 		this.map = m;
 		ordersave.install(m, 'subscription');
 		ordersave.install(m, 'node');
 
 		return m.render().then(function(node) {
-			// Both batch actions ("Sync all now" + "Test all") sit next to
-			// the Subscriptions section's Add button so they're visible
-			// without scrolling past a long node list. The first
-			// .cbi-section-create in document order is the subscriptions
-			// one since that section renders first.
+			// "Test all" sits next to the Subscriptions section's Add button
+			// so it is visible without scrolling past a long node list. The
+			// first .cbi-section-create in document order is the
+			// subscriptions one since that section renders first.
 			var clashOn = (uci.get('treadle', 'global', 'clash_api_enabled') === '1');
 			var subsCreate = node.querySelector('.cbi-section-create');
-			if (subsCreate) {
+			if (subsCreate && clashOn)
 				subsCreate.appendChild(E('button', {
 					'class': 'btn cbi-button cbi-button-neutral',
 					'style': 'margin-left:0.4em',
-					'click': ui.createHandlerFn(self, '_syncAll')
-				}, [ _('Sync all now') ]));
-				if (clashOn)
-					subsCreate.appendChild(E('button', {
-						'class': 'btn cbi-button cbi-button-neutral',
-						'style': 'margin-left:0.4em',
-						'click': ui.createHandlerFn(self, '_testAll')
-					}, [ _('Test all') ]));
-			}
-			// Breathing room between the two GridSections — matches the
-			// gap between sibling sections on the stock DHCP page.
-			var nodeSection = node.querySelector('#cbi-treadle-node');
-			if (nodeSection)
-				nodeSection.style.marginTop = '2em';
-			var nodesCreate = nodeSection && nodeSection.querySelector('.cbi-section-create');
+					'click': ui.createHandlerFn(self, '_testAll')
+				}, [ _('Test all') ]));
+			// Breathing room between the sections — matches the gap between
+			// sibling sections on the stock DHCP page. Groups and manual
+			// nodes are both `node` sections, so they share an element id;
+			// select them by it as a list.
+			var nodeSections = node.querySelectorAll('[id="cbi-treadle-node"]');
+			for (var i = 0; i < nodeSections.length; i++)
+				nodeSections[i].style.marginTop = '2em';
+			var creates = node.querySelectorAll('.cbi-section-create');
+			var nodesCreate = creates[creates.length - 1];
 			if (nodesCreate)
 				nodesCreate.appendChild(E('button', {
 					'class': 'btn cbi-button cbi-button-neutral',
@@ -187,7 +218,7 @@ return baseclass.extend({
 		var self = this;
 
 		var s = m.section(form.GridSection, 'subscription', _('Subscriptions'),
-			_('Node subscriptions.'));
+			_('Lists of nodes Treadle downloads on a schedule.'));
 		s.addremove = true;
 		s.sortable  = true;
 		s.anonymous = true;
@@ -203,34 +234,50 @@ return baseclass.extend({
 		// shifted by any structural change to /etc/config/treadle); the named
 		// form is fixed from creation through commit.
 		uid.installGridAdd(s);
-
-		var oEnabled = s.option(form.Flag, 'enabled', _('Enabled'));
-		oEnabled['default'] = '1';
-		oEnabled.rmempty = false;
-		oEnabled.editable = true;
+		this._deleteInModal(s);
 
 		var oName = s.option(form.Value, 'name', _('Name'));
 		oName.rmempty = false;
 		oName.placeholder = _('My Subscription');
 
-		// RPC-populated read-only fields shown in the grid row only —
-		// modalonly=false excludes them from the per-row edit modal.
+		// Read-only grid columns — modalonly=false keeps them out of the edit
+		// modal. The node count is also the way into the node list.
 		var oCount = s.option(form.DummyValue, 'node_count', _('Nodes'));
 		oCount.modalonly = false;
-
-		var oView = s.option(form.Button, '_view', _('View'));
-		oView.modalonly = false;
-		oView.editable = true;
-		oView.inputtitle = _('View');
-		oView.inputstyle = 'neutral';
-		oView.onclick = function(ev, section_id) {
-			return self._showNodes(section_id);
+		// editable: grid cells render the element instead of escaping it.
+		oCount.editable = true;
+		oCount.cfgvalue = function(section_id) {
+			var n = parseInt(uci.get('treadle', section_id, 'node_count'), 10) || 0;
+			return E('a', {
+				'href': '#',
+				'title': _('View the nodes in this subscription'),
+				'click': function(ev) {
+					ev.preventDefault();
+					self._showNodes(section_id);
+				}
+			}, [ _('%d nodes').format(n) ]);
 		};
 
-		var oLast = s.option(form.DummyValue, 'last_sync',  _('Last sync'));
+		var oLast = s.option(form.DummyValue, '_last_sync', _('Last sync'));
 		oLast.modalonly = false;
-		var oStatus = s.option(form.DummyValue, 'status',  _('Status'));
-		oStatus.modalonly = false;
+		// editable: grid cells render the element instead of escaping it.
+		oLast.editable = true;
+		oLast.cfgvalue = function(section_id) {
+			var a = self._subAge[section_id] || {};
+			var exact = uci.get('treadle', section_id, 'last_ok')
+				|| uci.get('treadle', section_id, 'last_sync') || '';
+			return E('span', { 'title': exact }, [
+				(a.ok_age_s != null) ? _('%s ago').format(formatAge(a.ok_age_s)) : _('never')
+			]);
+		};
+
+		var oState = s.option(form.DummyValue, '_state', _('State'));
+		oState.modalonly = false;
+		// editable: grid cells render the element instead of escaping it.
+		oState.editable = true;
+		oState.cfgvalue = function(section_id) {
+			return self._subState(section_id);
+		};
 
 		var oUrl = s.option(form.Value, 'url', _('URL'));
 		oUrl.modalonly = true;
@@ -323,63 +370,15 @@ return baseclass.extend({
 		});
 	},
 
-	_renderNodes: function(m, data) {
+	// Manual nodes: everything of type `node` that is not a group.
+	_renderNodes: function(m, memberList) {
 		var self = this;
-		var outbounds = (data && data[1] && Array.isArray(data[1].outbounds))
-			? data[1].outbounds : [];
-		// Used by _collectAllTags to drive "Test all" — same data the row
-		// renderer already consumes, just kept available across handlers.
-		this._outbounds = outbounds;
 
-		// Subscription name/order lookups shared with routing.js / status.js
-		// via lib/subs.js — see that module for the uid-keying rationale.
-		var subName = subs.nameMap(), subOrder = subs.orderMap();
-		function labelFor(tag, sub_id) {
-			return subs.labelFor(tag, sub_id, subName);
-		}
-		function groupKey(sub_id) {
-			return subs.groupKey(sub_id, subOrder);
-		}
-
-		// URLTest member candidates: manual nodes from the staged UCI view
-		// (a staged rename or fresh add must show its current tag here —
-		// list_outbounds only sees committed state; see routing.js
-		// addServers), subscription nodes from the RPC, plus any tag
-		// already stored on an existing urltest node, so a saved member
-		// whose node was removed still shows rather than being silently
-		// dropped. First-seen wins, manual first — matching build-config's
-		// dedupe policy.
-		var memberByTag = {};
-		subs.manualNodes().forEach(function(n, i) {
-			if (!(n.tag in memberByTag))
-				memberByTag[n.tag] = { tag: n.tag, label: n.tag, group: 0, idx: i };
-		});
-		outbounds.forEach(function(ob, i) {
-			if (ob && ob.tag && ob.subscription && !(ob.tag in memberByTag)) {
-				memberByTag[ob.tag] = {
-					tag:   ob.tag,
-					label: labelFor(ob.tag, ob.subscription),
-					group: groupKey(ob.subscription),
-					idx:   i
-				};
-			}
-		});
-		uci.sections('treadle', 'node').forEach(function(n) {
-			var obs = n.urltest_outbounds;
-			if (!Array.isArray(obs))
-				obs = obs ? String(obs).split(/[,\s]+/) : [];
-			obs.forEach(function(t) {
-				if (t && !(t in memberByTag)) {
-					memberByTag[t] = { tag: t, label: t, group: Infinity, idx: 0 };
-				}
-			});
-		});
-		var memberList = [];
-		for (var k in memberByTag) memberList.push(memberByTag[k]);
-		memberList.sort(subs.entryCompare);
-
-		var s = m.section(form.GridSection, 'node', _('Nodes'),
-			_('Nodes you add by hand, and groups that pick among nodes.'));
+		var s = m.section(form.GridSection, 'node', _('Manual nodes'),
+			_('Nodes you add by hand, from a share link or field by field.'));
+		s.filter = function(section_id) {
+			return uci.get('treadle', section_id, 'type') !== 'urltest';
+		};
 		s.addremove = true;
 		s.sortable  = true;
 		s.anonymous = true;
@@ -392,12 +391,12 @@ return baseclass.extend({
 		// anonymous type and forecloses any future code that might reach
 		// for the section id as a cross-reference.
 		uid.installGridAdd(s);
+		this._deleteInModal(s);
 		this._nodeSection = s;
 
 		s.tab('general',   _('General'));
 		s.tab('transport', _('Transport'));
 		s.tab('tls',       _('TLS'));
-		s.tab('group',     _('URLTest'));
 
 		var o;
 
@@ -406,39 +405,38 @@ return baseclass.extend({
 		// first value() entry is the implicit default, so the field is
 		// written once on create but not re-written on an unchanged save
 		// (which would register a phantom UCI change).
-		var oTag = s.taboption('general', form.Value, 'tag', _('Name'));
-		oTag.rmempty = false;
-		oTag.placeholder = _('e.g. MY-VPS-HK');
-		// Routing references store the node's TAG, not its section id —
-		// subscription nodes have no UCI section, so the tag is the only
-		// universal outbound identifier (and what sing-box itself keys on).
-		// A rename would therefore dangle every reference to the old tag,
-		// and build-config's validation pass would silently fall the
-		// affected rules back to direct. Propagate the rename instead:
-		// rewrite rule.outbound, routing.final_outbound and urltest member
-		// lists inside the same staged save, so
-		// Save & Apply commits the rename and the rewires atomically and
-		// Reset reverts both together. Skipped when the old tag is not
-		// unique among outbounds: with a duplicate tag the references
-		// still resolve after the rename (first-seen-wins dedupe), so
-		// rewriting them would steal the duplicate's references.
-		var tagWrite = oTag.write;
-		oTag.write = function(section_id, formvalue) {
-			var oldTag = uci.get('treadle', section_id, 'tag');
-			if (oldTag && formvalue && oldTag !== formvalue
-			    && self._tagIsUnique(oldTag, section_id))
-				self._propagateTagRename(oldTag, formvalue);
-			return tagWrite.apply(this, arguments);
-		};
+		this._tagOption(s, 'general');
 
 		var oType = s.taboption('general', form.ListValue, 'type', _('Type'));
-		[['urltest','URLTest'],
-		 ['vless','VLESS'],['vmess','VMess'],['trojan','Trojan'],
+		oType.modalonly = true;
+		[['vless','VLESS'],['vmess','VMess'],['trojan','Trojan'],
 		 ['shadowsocks','Shadowsocks'],['hysteria2','Hysteria2'],['tuic','TUIC'],
 		 ['anytls','AnyTLS'],['wireguard','WireGuard'],['socks','SOCKS5'],
 		 ['direct','Direct']].forEach(function(t) {
 			oType.value(t[0], t[1]);
 		});
+
+		// Grid-only summaries: the protocol with what matters about how it
+		// connects, and where it connects to.
+		var oProto = s.taboption('general', form.DummyValue, '_proto', _('Protocol'));
+		oProto.modalonly = false;
+		oProto.cfgvalue = function(section_id) {
+			var get = function(k) { return uci.get('treadle', section_id, k); };
+			var parts = [ oType.keylist.indexOf(get('type')) >= 0
+				? oType.vallist[oType.keylist.indexOf(get('type'))] : (get('type') || '?') ];
+			if (get('tls_reality') === '1') parts.push('REALITY');
+			else if (get('tls_enabled') === '1') parts.push('TLS');
+			if (get('transport_type')) parts.push(String(get('transport_type')).toUpperCase());
+			return parts.join(' · ');
+		};
+		var oServer = s.taboption('general', form.DummyValue, '_server', _('Server'));
+		oServer.modalonly = false;
+		oServer.cfgvalue = function(section_id) {
+			var host = uci.get('treadle', section_id, 'server');
+			var port = uci.get('treadle', section_id, 'server_port');
+			if (!host) return '—';
+			return (host.indexOf(':') >= 0 ? '[' + host + ']' : host) + (port ? ':' + port : '');
+		};
 
 		// ── Latency + Test (grid-only) ───────────────────────────────────
 		// Both columns appear only when latency testing is enabled
@@ -808,16 +806,238 @@ return baseclass.extend({
 		};
 		dependsOnReality(o);
 
+	},
+
+	// The subscription's state, as a badge plus one line of detail:
+	//   failed     — the last sync failed (with its reason)
+	//   stale      — no successful sync for twice its auto-update interval,
+	//                or a week when auto-update is off (same rule as Status)
+	//   up to date — otherwise, with the auto-update interval
+	_subState: function(section_id) {
+		var get = function(o) { return uci.get('treadle', section_id, o); };
+		var hours = parseInt(get('auto_update'), 10) || 0;
+		var every = hours > 0 ? _('every %d h').format(hours) : _('manual only');
+		var badge = function(cls, style, text) {
+			return E('span', {
+				'class': cls,
+				'style': 'padding:1px 7px; border-radius:3px; text-transform:none;' + (style || '')
+			}, [ text ]);
+		};
+		var why = get('sync_error');
+		if (get('status') === 'error' || why)
+			return E('span', {}, [
+				badge('label', DANGER_STYLE, _('failed')), ' ',
+				E('span', { 'style': 'opacity:0.75;' }, [ why || _('last sync failed') ])
+			]);
+		var age = (this._subAge[section_id] || {}).ok_age_s;
+		var limit = hours > 0 ? 2 * hours * 3600 : 7 * 86400;
+		if (age == null || age > limit)
+			return E('span', {}, [
+				badge('label warning', '', age == null ? _('never synced') : _('stale')), ' ',
+				E('span', { 'style': 'opacity:0.75;' }, [ every ])
+			]);
+		return E('span', {}, [
+			badge('label success', '', _('up to date')), ' ',
+			E('span', { 'style': 'opacity:0.75;' }, [ every ])
+		]);
+	},
+
+	// Delete moves from each row into the edit dialog, next to Dismiss and
+	// Save: rows keep only the buttons used every day, and a delete is no
+	// longer one stray click away. It stages the removal like the row
+	// button did; Save & Apply commits it.
+	_deleteInModal: function(s) {
+		var render = s.renderRowActions;
+		s.renderRowActions = function(section_id) {
+			var td = render.apply(this, arguments);
+			var rm = td && td.querySelector && td.querySelector('.cbi-button-remove');
+			if (rm) rm.parentNode.removeChild(rm);
+			return td;
+		};
+		var openModal = s.renderMoreOptionsModal;
+		s.renderMoreOptionsModal = function(section_id) {
+			var section = this;
+			return Promise.resolve(openModal.apply(this, arguments)).then(function(r) {
+				var row = document.querySelector('#modal_overlay .modal .button-row');
+				if (row && !row.querySelector('.treadle-delete'))
+					row.insertBefore(E('button', {
+						'class': 'btn cbi-button cbi-button-remove treadle-delete',
+						'style': 'margin-right:auto;',
+						'click': function() {
+							ui.hideModal();
+							return section.handleRemove(section_id);
+						}
+					}, [ _('Delete') ]), row.firstChild);
+				return r;
+			});
+		};
+	},
+
+	// Every node a group can take as a member, for the Members picker.
+	_memberList: function(outbounds) {
+		// Subscription name/order lookups shared with routing.js / status.js
+		// via lib/subs.js — see that module for the uid-keying rationale.
+		var subName = subs.nameMap(), subOrder = subs.orderMap();
+		function labelFor(tag, sub_id) {
+			return subs.labelFor(tag, sub_id, subName);
+		}
+		function groupKey(sub_id) {
+			return subs.groupKey(sub_id, subOrder);
+		}
+
+		// URLTest member candidates: manual nodes from the staged UCI view
+		// (a staged rename or fresh add must show its current tag here —
+		// list_outbounds only sees committed state; see routing.js
+		// addServers), subscription nodes from the RPC, plus any tag
+		// already stored on an existing urltest node, so a saved member
+		// whose node was removed still shows rather than being silently
+		// dropped. First-seen wins, manual first — matching build-config's
+		// dedupe policy.
+		var memberByTag = {};
+		subs.manualNodes().forEach(function(n, i) {
+			if (!(n.tag in memberByTag))
+				memberByTag[n.tag] = { tag: n.tag, label: n.tag, group: 0, idx: i };
+		});
+		outbounds.forEach(function(ob, i) {
+			if (ob && ob.tag && ob.subscription && !(ob.tag in memberByTag)) {
+				memberByTag[ob.tag] = {
+					tag:   ob.tag,
+					label: labelFor(ob.tag, ob.subscription),
+					group: groupKey(ob.subscription),
+					idx:   i
+				};
+			}
+		});
+		uci.sections('treadle', 'node').forEach(function(n) {
+			var obs = n.urltest_outbounds;
+			if (!Array.isArray(obs))
+				obs = obs ? String(obs).split(/[,\s]+/) : [];
+			obs.forEach(function(t) {
+				if (t && !(t in memberByTag)) {
+					memberByTag[t] = { tag: t, label: t, group: Infinity, idx: 0 };
+				}
+			});
+		});
+		var memberList = [];
+		for (var k in memberByTag) memberList.push(memberByTag[k]);
+		memberList.sort(subs.entryCompare);
+
+		return memberList;
+	},
+
+	// The Name field, shared by the group and manual-node tables. Routing
+	// references store a node's TAG, so a rename is propagated (see below).
+	_tagOption: function(s, tab) {
+		var self = this;
+		var oTag = (tab ? s.taboption(tab, form.Value, 'tag', _('Name')) : s.option(form.Value, 'tag', _('Name')));
+		oTag.rmempty = false;
+		oTag.placeholder = _('e.g. MY-VPS-HK');
+		// Routing references store the node's TAG, not its section id —
+		// subscription nodes have no UCI section, so the tag is the only
+		// universal outbound identifier (and what sing-box itself keys on).
+		// A rename would therefore dangle every reference to the old tag,
+		// and build-config's validation pass would silently fall the
+		// affected rules back to direct. Propagate the rename instead:
+		// rewrite rule.outbound, routing.final_outbound and urltest member
+		// lists inside the same staged save, so
+		// Save & Apply commits the rename and the rewires atomically and
+		// Reset reverts both together. Skipped when the old tag is not
+		// unique among outbounds: with a duplicate tag the references
+		// still resolve after the rename (first-seen-wins dedupe), so
+		// rewriting them would steal the duplicate's references.
+		var tagWrite = oTag.write;
+		oTag.write = function(section_id, formvalue) {
+			var oldTag = uci.get('treadle', section_id, 'tag');
+			if (oldTag && formvalue && oldTag !== formvalue
+			    && self._tagIsUnique(oldTag, section_id))
+				self._propagateTagRename(oldTag, formvalue);
+			return tagWrite.apply(this, arguments);
+		};
+
+		return oTag;
+	},
+
+	_renderGroups: function(m, memberList) {
+		var self = this;
+		var s = m.section(form.GridSection, 'node', _('Groups'),
+			_('Pick the fastest node among their members. Rules and the default node can point at a group.'));
+		s.addremove = true;
+		s.sortable  = true;
+		s.anonymous = true;
+		s.addbtntitle = _('Add group');
+		s.modaltitle = function() { return _('Group'); };
+		// Groups and manual nodes are both `node` sections; each table shows
+		// its own kind.
+		s.filter = function(section_id) {
+			return uci.get('treadle', section_id, 'type') === 'urltest';
+		};
+		uid.installGridAdd(s);
+		// A section added from this table is a group: set its type before the
+		// modal reads its values (handleAdd stages it synchronously, as in
+		// _openImported).
+		var add = s.handleAdd;
+		s.handleAdd = function(ev, name) {
+			var sid = name || uid.generate();
+			var r = add.call(this, ev, sid);
+			uci.set('treadle', sid, 'type', 'urltest');
+			return r;
+		};
+		this._deleteInModal(s);
+
+		var o = this._tagOption(s);
+		o.placeholder = _('e.g. Auto');
+
+		var oFrom = s.option(form.DummyValue, '_from', _('Members from'));
+		oFrom.modalonly = false;
+		oFrom.cfgvalue = function(section_id) {
+			var get = function(k) { return uci.get('treadle', section_id, k); };
+			if ((get('urltest_mode') || 'manual') !== 'regex')
+				return _('Fixed list');
+			var srcs = get('urltest_regex_sources') || [];
+			if (!Array.isArray(srcs)) srcs = [ srcs ];
+			var names = srcs.map(function(u) {
+				return u === '_manual' ? _('manual nodes')
+					: (uci.get('treadle', u, 'name') || u);
+			});
+			return _('Pattern %s · %s').format(get('urltest_regex') || '—',
+				names.length ? names.join(', ') : _('all subscriptions'));
+		};
+
+		var oCount = s.option(form.DummyValue, '_members', _('Members'));
+		oCount.modalonly = false;
+		oCount.cfgvalue = function(section_id) {
+			var live = self._liveGroup[uci.get('treadle', section_id, 'tag')];
+			if (live && Array.isArray(live.members))
+				return _('%d nodes').format(live.members.length);
+			var list = uci.get('treadle', section_id, 'urltest_outbounds');
+			if ((uci.get('treadle', section_id, 'urltest_mode') || 'manual') !== 'regex' && list)
+				return _('%d nodes').format(Array.isArray(list) ? list.length : 1);
+			return '—';
+		};
+
+		var oUsing = s.option(form.DummyValue, '_using', _('Using now'));
+		oUsing.modalonly = false;
+		// editable: grid cells render the element instead of escaping it.
+		oUsing.editable = true;
+		oUsing.cfgvalue = function(section_id) {
+			var live = self._liveGroup[uci.get('treadle', section_id, 'tag')];
+			if (!live || !live.now)
+				return E('span', { 'style': 'opacity:0.45;', 'title': _('Shown while the group runs and live stats are on') }, [ '—' ]);
+			return E('span', { 'style': 'white-space:nowrap;' }, [
+				live.now, ' ',
+				formatLatency(live.delay_ms ? { delay_ms: live.delay_ms } : { error: _('timeout') })
+			]);
+		};
+
 		// ── URLTest group ───────────────────────────────────────────────
 		// Auto-rotation by latency. Members can be picked explicitly (manual
 		// mode) or matched against a tag pattern (regex mode).
-		o = s.taboption('group', form.ListValue, 'urltest_mode', _('Selection mode'));
+		o = s.option(form.ListValue, 'urltest_mode', _('Selection mode'));
 		o.value('manual', _('Manual (select nodes)'));
 		o.value('regex',  _('Regex (match by tag)'));
 		o.modalonly = true;
-		o.depends('type', 'urltest');
 
-		o = s.taboption('group', form.MultiValue, 'urltest_outbounds', _('Members'));
+		o = s.option(form.MultiValue, 'urltest_outbounds', _('Members'));
 		// 'select' renders a ui.Dropdown multi-select: checkboxes plus a
 		// built-in filter field inside the opened dropdown panel.
 		o.widget = 'select';
@@ -829,9 +1049,9 @@ return baseclass.extend({
 			return form.MultiValue.prototype.transformChoices.apply(this) || {};
 		};
 		o.modalonly = true;
-		o.depends({ type: 'urltest', urltest_mode: 'manual' });
+		o.depends('urltest_mode', 'manual');
 
-		o = s.taboption('group', form.Value, 'urltest_regex', _('Tag pattern'),
+		o = s.option(form.Value, 'urltest_regex', _('Tag pattern'),
 			_('POSIX extended regular expression (ERE) matched against each ' +
 			  'node tag. Use <code>|</code> for alternation, <code>[0-9]</code> ' +
 			  'for digits, <code>.</code> for any character, <code>^</code>/' +
@@ -840,14 +1060,14 @@ return baseclass.extend({
 			  'write <code>[0-9]</code> / <code>[A-Za-z0-9_]</code> instead.'));
 		o.modalonly = true;
 		o.placeholder = _('e.g. ^HK-|^SG-');
-		o.depends({ type: 'urltest', urltest_mode: 'regex' });
+		o.depends('urltest_mode', 'regex');
 
 		// Restrict regex matching to nodes from selected sources. Empty =
 		// match across every source (the behaviour before this field existed).
 		// Sentinel `_manual` covers UCI-defined manual nodes; remaining values
 		// are subscription uids (the subscription section's name). `_manual`
 		// is non-hex and cannot collide with a uid.
-		o = s.taboption('group', form.MultiValue, 'urltest_regex_sources', _('Sources'),
+		o = s.option(form.MultiValue, 'urltest_regex_sources', _('Sources'),
 			_('Subscriptions whose nodes are evaluated against the pattern. ' +
 			  'Leave empty to match nodes from every source (current and future). ' +
 			  'Restrict to specific subscriptions if you want a new feed to require ' +
@@ -863,15 +1083,14 @@ return baseclass.extend({
 		});
 		o.modalonly = true;
 		o.optional = true;
-		o.depends({ type: 'urltest', urltest_mode: 'regex' });
+		o.depends('urltest_mode', 'regex');
 
 		// Test URL: combobox (form.Value auto-promotes to ui.Combobox when
 		// .value() entries are present) — preset picks for the two most
 		// common /generate_204 endpoints, plus free-text entry for any
 		// custom URL the user prefers to type.
-		o = s.taboption('group', form.Value, 'urltest_url', _('Test URL'));
+		o = s.option(form.Value, 'urltest_url', _('Test URL'));
 		o.modalonly = true;
-		o.depends('type', 'urltest');
 		o.default = 'https://www.gstatic.com/generate_204';
 		// Required (default is set) — drops the "unspecified" empty entry
 		// that form.Value would otherwise insert in the Combobox dropdown.
@@ -881,18 +1100,16 @@ return baseclass.extend({
 		o.value('https://cp.cloudflare.com/generate_204',   'Cloudflare (HTTPS)');
 		o.value('http://cp.cloudflare.com/generate_204',    'Cloudflare (HTTP)');
 
-		o = s.taboption('group', form.Value, 'urltest_interval', _('Interval'));
+		o = s.option(form.Value, 'urltest_interval', _('Interval'));
 		o.modalonly = true;
 		o.placeholder = '3m';
-		o.depends('type', 'urltest');
 
-		o = s.taboption('group', form.Value, 'urltest_tolerance', _('Tolerance (ms)'));
+		o = s.option(form.Value, 'urltest_tolerance', _('Tolerance (ms)'));
 		o.modalonly = true;
 		o.datatype = 'uinteger';
 		o.placeholder = '50';
-		o.depends('type', 'urltest');
 
-		o = s.taboption('group', form.ListValue, 'urltest_member_order', _('Member order'),
+		o = s.option(form.ListValue, 'urltest_member_order', _('Member order'),
 			_('sing-box prefers the first members of a group whenever their latencies ' +
 			  'are within the tolerance, so in list order a group keeps using its first ' +
 			  'few nodes. Random spreads that across the group; latency puts the fastest ' +
@@ -903,24 +1120,21 @@ return baseclass.extend({
 		o.value('shuffle', _('Random'));
 		o.value('latency', _('Latency, then random'));
 		o.default = 'list';
-		o.depends('type', 'urltest');
 
-		o = s.taboption('group', form.Value, 'urltest_max_members', _('Maximum members'),
+		o = s.option(form.Value, 'urltest_max_members', _('Maximum members'),
 			_('Keep only this many members, in the order above, preferring nodes on ' +
 			  'different servers. Each member costs one test per interval. Empty keeps all.'));
 		o.modalonly = true;
 		o.datatype = 'range(1,1000)';
 		o.placeholder = _('all');
-		o.depends('type', 'urltest');
 
-		o = s.taboption('group', form.Flag, 'urltest_interrupt_exist_connections',
+		o = s.option(form.Flag, 'urltest_interrupt_exist_connections',
 			_('Interrupt existing connections'),
 			_('Drop connections routed through this group when its active member ' +
 			  'changes, so apps reconnect through the new node. Useful for HTTP/web; ' +
 			  'noisy for SSH and other long-lived sessions.'));
 		o.modalonly = true;
 		o.rmempty = true;
-		o.depends('type', 'urltest');
 	},
 
 	_showNodes: function(section_id) {
@@ -1324,48 +1538,6 @@ return baseclass.extend({
 					? _('Tested %d nodes — %d timed out.').format(tested + errors, errors)
 					: _('Tested %d nodes.').format(tested)),
 				'info');
-		});
-	},
-
-	_syncAll: function() {
-		var self = this;
-		ui.showModal(_('Sync all subscriptions'), [
-			E('p', {}, [
-				_('This downloads every subscription and then reloads this tab ' +
-				  'from the saved configuration. Unsaved changes on this tab ' +
-				  'will be discarded.')
-			]),
-			E('div', { 'class': 'right' }, [
-				E('button', {
-					'class': 'btn',
-					'click': ui.hideModal
-				}, [ _('Cancel') ]),
-				' ',
-				E('button', {
-					'class': 'btn cbi-button cbi-button-positive',
-					'click': ui.createHandlerFn(self, '_doSyncAll')
-				}, [ _('Sync all') ])
-			])
-		]);
-	},
-
-	_doSyncAll: function() {
-		var self = this;
-		ui.hideModal();
-		return callSyncAll().then(function(res) {
-			ui.addNotification(null, E('p',
-				_('Sync all complete: %d synced, %d errors.')
-					.format(res.synced || 0, res.errors || 0)),
-				(res.errors || 0) > 0 ? 'warning' : 'info');
-			if (res && res.reloaded)
-				ui.addNotification(null,
-					E('p', _('Active node changed — sing-box reloaded.')), 'info');
-			uci.unload('treadle');
-			return uci.load('treadle').then(function() {
-				return self._treadleHost.remountActive();
-			});
-		}).catch(function() {
-			ui.addNotification(null, E('p', _('Sync all failed.')), 'error');
 		});
 	},
 

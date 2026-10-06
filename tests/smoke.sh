@@ -177,7 +177,6 @@ while read -r id file _; do
 	uci set "treadle.$id=subscription"
 	uci set "treadle.$id.name=fixture $file"
 	uci set "treadle.$id.url=http://127.0.0.1:$PORT/$file"
-	uci set "treadle.$id.enabled=1"
 done <<EOF
 $SUBS
 EOF
@@ -205,6 +204,18 @@ after=$(date -r "$nf" +%s)
 [ "$(jsonfilter -i "$OUT/resync.json" -e '@.status')" = "ok" ] && [ "$before" = "$after" ] \
 	&& ok "unchanged re-sync left the node file untouched" \
 	|| bad "re-sync: status=$(jsonfilter -i "$OUT/resync.json" -e '@.status') mtime $before -> $after"
+
+# Subscriptions have no on/off switch any more: reconcile_subscriptions,
+# run on every start, turns a switched-off one into auto-update 0 (manual
+# only, which is all the switch ever did) and drops the option.
+uci set treadle.0123456789abcd01.enabled=0
+uci set treadle.0123456789abcd01.auto_update=6
+uci commit treadle
+echo '{}' | "$HANDLER" call reconcile_subscriptions >/dev/null
+[ -z "$(uci -q get treadle.0123456789abcd01.enabled)" ] \
+	&& [ "$(uci -q get treadle.0123456789abcd01.auto_update)" = 0 ] \
+	&& ok "a switched-off subscription becomes manual-only and loses the old switch" \
+	|| bad "after reconcile: enabled='$(uci -q get treadle.0123456789abcd01.enabled)' auto_update='$(uci -q get treadle.0123456789abcd01.auto_update)'"
 
 # The Status page's subscription ages come from the router's clock, as
 # seconds since last_sync, so the browser's time zone cannot skew them.
@@ -710,7 +721,6 @@ uci set treadle.0123456789abcd68.tls_ech_config="$ECH_PEM"
 uci set treadle.0123456789abcd69=subscription
 uci set treadle.0123456789abcd69.name='ech fixture'
 uci set treadle.0123456789abcd69.url=https://example.com/sub
-uci set treadle.0123456789abcd69.enabled=1
 uci add_list treadle.0123456789abcd6f.urltest_outbounds=SUB-ECH
 uci commit treadle
 printf '%s\n' '[{"type":"trojan","payload":"{\"type\":\"trojan\",\"tag\":\"SUB-ECH\",\"server\":\"example.com\",\"server_port\":443,\"password\":\"pw\",\"tls\":{\"enabled\":true,\"ech\":{\"enabled\":true}}}"}]' \
@@ -885,7 +895,6 @@ EOF
 uci set treadle.0123456789abcd06=subscription
 uci set treadle.0123456789abcd06.name="fixture uri-rt.txt"
 uci set "treadle.0123456789abcd06.url=http://127.0.0.1:$PORT/uri-rt.txt"
-uci set treadle.0123456789abcd06.enabled=1
 uci commit treadle
 printf '{"id":"0123456789abcd06"}' | "$HANDLER" call sync_subscription > "$OUT/sync-rt.json"
 [ "$(jsonfilter -i "$OUT/sync-rt.json" -e '@.status')" = ok ] && [ "$(jsonfilter -i "$OUT/sync-rt.json" -e '@.node_count')" = 6 ] \
@@ -983,7 +992,6 @@ uci batch <<'EOF'
 set treadle.0123456789abcd50=subscription
 set treadle.0123456789abcd50.name=large fixture
 set treadle.0123456789abcd50.url=https://example.com/sub
-set treadle.0123456789abcd50.enabled=1
 set treadle.0123456789abcd51=node
 set treadle.0123456789abcd51.type=urltest
 set treadle.0123456789abcd51.tag=LARGE

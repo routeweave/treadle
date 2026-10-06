@@ -574,11 +574,11 @@ return baseclass.extend({
 	// Stale: the last sync failed, or it is older than twice the subscription's
 	// own auto-update interval, or older than a week when auto-update is off.
 	_subscriptionHealth: function(ages) {
+		// Since the last sync that brought nodes in: a failed attempt does
+		// not make a subscription fresh.
 		var ageOf = {};
-		arr(ages).forEach(function(a) { ageOf[a.id] = a.age_s; });
-		var list = uci.sections('treadle', 'subscription').filter(function(s) {
-			return s.enabled !== '0';
-		});
+		arr(ages).forEach(function(a) { ageOf[a.id] = (a.ok_age_s != null) ? a.ok_age_s : a.age_s; });
+		var list = uci.sections('treadle', 'subscription');
 		if (!list.length)
 			return { state: 'off', value: _('None'), sub: _('Add one on the Nodes tab') };
 		var stale = [], newest = null;
@@ -587,8 +587,9 @@ return baseclass.extend({
 			var hours = Number(s.auto_update) || 0;
 			var limit = hours > 0 ? 2 * hours * 3600 : 7 * 86400;
 			if (typeof age === 'number' && (newest === null || age < newest)) newest = age;
-			if ((s.status && s.status !== 'ok') || typeof age !== 'number' || age > limit)
-				stale.push({ name: s.name || s['.name'], age: age, failed: s.status && s.status !== 'ok' });
+			var failed = (s.status && s.status !== 'ok') || !!s.sync_error;
+			if (failed || typeof age !== 'number' || age > limit)
+				stale.push({ name: s.name || s['.name'], age: age, failed: failed, why: s.sync_error });
 		});
 		if (stale.length) {
 			var first = stale[0];
@@ -596,7 +597,7 @@ return baseclass.extend({
 				state: 'warn',
 				value: _('%d of %d stale').format(stale.length, list.length),
 				sub: first.failed
-					? _('%s: last sync failed').format(first.name)
+					? (first.why ? _('%s: %s').format(first.name, first.why) : _('%s: last sync failed').format(first.name))
 					: (typeof first.age === 'number'
 						? _('%s: last synced %s ago').format(first.name, formatAge(first.age))
 						: _('%s: never synced').format(first.name))
