@@ -167,9 +167,8 @@ return baseclass.extend({
 
 		var oMode = sNet.option(form.ListValue, 'mode', _('Mode'),
 			_('How LAN traffic enters sing-box: through a TUN virtual ' +
-			  'interface (recommended), transparently via TProxy, or ' +
-			  'transparently via TProxy. An explicit HTTP/SOCKS5 listener can ' +
-			  'be added to either.'));
+			  'interface (recommended), or transparently via TProxy. An ' +
+			  'explicit HTTP/SOCKS5 listener can be added to either.'));
 		oMode.value('tun',          _('TUN only — virtual L3 interface, sing-box manages routing'));
 		oMode.value('tproxy',       _('TProxy only — transparent TCP + UDP via nftables'));
 		oMode['default'] = 'tun';
@@ -357,12 +356,10 @@ return baseclass.extend({
 		// UCI section across several form sections — `connect_timeout` is
 		// not reused as an option name anywhere else, which is what keeps
 		// the per-option DOM ids unique).
-		var sDial = m.section(form.NamedSection, 'global', 'treadle', _('Node dialling'),
-			_('How long to wait for a node to answer before giving up on it ' +
-			  'and moving on.'));
+		var sDial = m.section(form.NamedSection, 'global', 'treadle', _('Node dialling'));
 		sDial.addremove = false;
 
-		// Whole section is Advanced, like Latency testing and Logging: its
+		// Whole section is Advanced, like Logging: its
 		// only field is, and tagging the row alone left an empty heading.
 		// No default: an empty field is the usual case and emits nothing,
 		// leaving sing-box's own 5 s. The placeholder shows that figure.
@@ -384,31 +381,30 @@ return baseclass.extend({
 			return true;
 		};
 
-		// ── Latency testing ──────────────────────────────────────────────
-		// Whole section is Advanced (same treadle-advanced wrapper-class
-		// trick as Logging). The flag binds to `global` and feeds
-		// build-config's experimental.clash_api emission; node probes
-		// themselves run on an ephemeral sing-box instance started by the
-		// test runner, so the running config stays lean.
-		var sLatency = m.section(form.NamedSection, 'global', 'treadle', _('Latency testing'),
-			_('Probe node round-trip time via sing-box\'s clash-compatible API. ' +
-			  'The API binds 127.0.0.1 only — never exposed on the LAN.'));
+		// ── Live stats and latency testing ───────────────────────────────
+		// Always visible: the flag feeds build-config's
+		// experimental.clash_api emission, which the Status tab's Traffic and
+		// Groups rows read as well as the Nodes tab's Test buttons. Node
+		// probes themselves run on an ephemeral sing-box instance started by
+		// the test runner, so the running config stays lean. Only the
+		// auto-test interval is Advanced.
+		var sLatency = m.section(form.NamedSection, 'global', 'treadle', _('Live stats and latency testing'));
 		sLatency.addremove = false;
 
 		var oClashApi = sLatency.option(form.Flag, 'clash_api_enabled',
-			_('Enable latency testing'),
-			_('Adds a loopback-only clash API listener to sing-box and a Test ' +
-			  'button next to each node on the Nodes tab. Tests run on a ' +
-			  'temporary second sing-box instance, so every known node is ' +
-			  'testable without bloating the running config.'));
+			_('Enable live stats and latency testing'),
+			_('Shows live traffic and the active node of each group on the ' +
+			  'Status tab, and adds a Test button next to each node on the ' +
+			  'Nodes tab. Uses sing-box\'s clash API, which listens on ' +
+			  '127.0.0.1 only and is never exposed on the LAN.'));
 		oClashApi.rmempty = false;
 
-		var oAutoTest = sLatency.option(form.Value, 'auto_test_hours',
+		var oAutoTest = advance(sLatency.option(form.Value, 'auto_test_hours',
 			_('Auto-test interval (hours)'),
 			_('Probe every node automatically each N hours, so the Latency ' +
 			  'column stays fresh without clicking Test all. Runs from the ' +
 			  'hourly maintenance tick after due subscription syncs, so newly ' +
-			  'imported nodes are included. 0 disables.'));
+			  'imported nodes are included. 0 disables.')));
 		oAutoTest.datatype = 'uinteger';
 		oAutoTest.placeholder = '0';
 		oAutoTest['default'] = '0';
@@ -445,7 +441,7 @@ return baseclass.extend({
 		// Sections whose whole content is Advanced. _postRender tags their
 		// wrapper div with treadle-advanced so the section header + every row
 		// hides as one unit when the toggle is off.
-		this._advSections = [sDial, sLatency, sLogging];
+		this._advSections = [sDial, sLogging];
 
 		return m.render().then(L.bind(this._postRender, this, extraText));
 	},

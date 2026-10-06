@@ -379,7 +379,7 @@ return baseclass.extend({
 		memberList.sort(subs.entryCompare);
 
 		var s = m.section(form.GridSection, 'node', _('Nodes'),
-			_('Manually configured proxy nodes.'));
+			_('Nodes you add by hand, and groups that pick among nodes.'));
 		s.addremove = true;
 		s.sortable  = true;
 		s.anonymous = true;

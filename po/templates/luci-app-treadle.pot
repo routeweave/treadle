@@ -160,10 +160,6 @@ msgstr ""
 msgid "Active node changed — sing-box reloaded."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:388
-msgid "Manually configured proxy nodes."
-msgstr ""
-
 #: htdocs/luci-static/resources/view/treadle/nodes.js:393
 #: htdocs/luci-static/resources/view/treadle/routing.js:552
 msgid "Node"
@@ -768,28 +764,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/settings.js:283
 msgid "Direct (WAN)"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:291
-msgid "Latency testing"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:293
-msgid ""
-"Probe node round-trip time via sing-box's clash-compatible API. The API "
-"binds 127.0.0.1 only — never exposed on the LAN."
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:299
-msgid "Enable latency testing"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/settings.js:300
-msgid ""
-"Adds a loopback-only clash API listener to sing-box and a Test button next "
-"to each node on the Nodes tab. Tests run on a temporary second sing-box "
-"instance, so every known node is testable without bloating the running "
-"config."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/settings.js:307
@@ -1406,4 +1380,31 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/main.js:340
 msgid "Failed to load this tab: "
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:382
+msgid "Nodes you add by hand, and groups that pick among nodes."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:169
+msgid ""
+"How LAN traffic enters sing-box: through a TUN virtual interface "
+"(recommended), or transparently via TProxy. An explicit HTTP/SOCKS5 "
+"listener can be added to either."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:391
+msgid "Live stats and latency testing"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:395
+msgid "Enable live stats and latency testing"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/settings.js:396
+msgid ""
+"Shows live traffic and the active node of each group on the Status "
+"tab, and adds a Test button next to each node on the Nodes tab. Uses "
+"sing-box's clash API, which listens on 127.0.0.1 only and is never "
+"exposed on the LAN."
 msgstr ""
