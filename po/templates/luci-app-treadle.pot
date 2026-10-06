@@ -1608,10 +1608,6 @@ msgstr ""
 msgid "inside another group"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:746
-msgid "(in use)"
-msgstr ""
-
 #: htdocs/luci-static/resources/view/treadle/status.js:752
 #, javascript-format
 msgid ""
@@ -1705,4 +1701,9 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/status.js:1170
 msgid "Connectivity"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/status.js:770
+#, javascript-format
+msgid "%s: in use"
 msgstr ""

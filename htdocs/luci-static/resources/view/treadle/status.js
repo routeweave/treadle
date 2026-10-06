@@ -268,8 +268,9 @@ var STATUS_CSS =
 	'.treadle-status .treadle-hcard small{opacity:.75}' +
 	'.treadle-status .treadle-dot{display:inline-block;width:.6em;height:.6em;border-radius:50%;margin-right:.45em;vertical-align:middle}' +
 	'.treadle-status .treadle-muted{opacity:.7}' +
-	'.treadle-status .treadle-members{display:grid;grid-template-columns:repeat(auto-fill,minmax(14em,1fr));gap:.25em 1.5em;padding:.2em 0 .4em}' +
-	'.treadle-status .treadle-members > div{display:flex;justify-content:space-between;align-items:center;gap:.6em}' +
+	'.treadle-status .treadle-members{display:flex;flex-wrap:wrap;gap:.45em;padding:.3em 0 .5em}' +
+	'.treadle-status .treadle-chip{display:inline-flex;align-items:center;gap:.55em;padding:.25em .35em .25em .65em;border:1px solid rgba(128,128,128,.4);border-radius:5px;white-space:nowrap}' +
+	'.treadle-status .treadle-chip-on{border:2px solid ' + DOT.ok + ';font-weight:bold}' +
 	'.treadle-status .treadle-toggle{padding:0 .5em;min-width:2.4em;font-size:1.1em;line-height:1.6}' +
 	'.treadle-status .treadle-show-narrow{display:none}' +
 	'.treadle-status .treadle-log{font-family:monospace;font-size:.85em;max-height:16em;overflow-y:auto}' +
@@ -336,6 +337,22 @@ function resolverKind(addr) {
 	if (/^tls:\/\//.test(addr))   return _('DoT');
 	if (/^quic:\/\//.test(addr))  return _('DoQ');
 	return _('plain DNS');
+}
+
+// A group's members for display: the one in use first, then the fastest,
+// then the ones without a result. Stable within each band, so equal
+// latencies keep the group's own order. Shown sorted, the chips answer "why
+// is it on this node?" at a glance next to the group's tolerance.
+function sortMembers(members, now) {
+	return arr(members).map(function(m, i) {
+		return { m: m, i: i };
+	}).sort(function(a, b) {
+		var ra = a.m.tag === now ? 0 : (a.m.delay_ms ? 1 : 2);
+		var rb = b.m.tag === now ? 0 : (b.m.delay_ms ? 1 : 2);
+		if (ra !== rb) return ra - rb;
+		if (ra === 1 && a.m.delay_ms !== b.m.delay_ms) return a.m.delay_ms - b.m.delay_ms;
+		return a.i - b.i;
+	}).map(function(x) { return x.m; });
 }
 
 // luci.jsonc sends an empty Lua table as {}; every list from the router goes
@@ -715,36 +732,44 @@ return baseclass.extend({
 				'aria-label': (open ? _('Hide members of %s') : _('Show members of %s')).format(r.tag),
 				'click': function() { self._toggleOpen(r.tag); }
 			}, [ open ? '▾' : '▸' ]) : '';
-			// On a phone the Used by column is hidden and the same text moves
-			// under the node name.
+			var kind = x
+				? _('Group · %d nodes').format(arr(x.members).length)
+				: self._nodeKind(r.tag);
+			// On a phone the Used by and Kind columns are hidden and the same
+			// text moves under the node name.
 			var name = [
 				E('strong', {}, [ r.tag ]),
 				(x && x.now) ? E('span', { 'class': 'treadle-muted' }, [ '  →  ' + x.now ]) : '',
-				r.usedBy ? E('span', { 'class': 'treadle-muted treadle-show-narrow' }, [ r.usedBy ]) : ''
+				r.usedBy ? E('span', { 'class': 'treadle-muted treadle-show-narrow' }, [ r.usedBy ]) : '',
+				E('span', { 'class': 'treadle-muted treadle-show-narrow' }, [ kind ])
 			];
 			var latency = x
 				? self._latency(x.delay_ms, !!x.now)
 				: self._latency(r.node && r.node.delay_ms, !!(r.node && r.node.tested_at));
-			var kind = x
-				? _('Group · %d nodes').format(arr(x.members).length)
-				: self._nodeKind(r.tag);
+			// Node and latency side by side: "is the node I go through
+			// healthy?" is the question this table answers first.
 			trs.push(E('tr', { 'class': 'tr cbi-section-table-row' }, [
 				E('td', { 'class': 'td', 'style': 'width:1%;' }, [ toggle ]),
-				E('td', { 'class': 'td treadle-hide-narrow' }, [ r.usedBy || E('span', { 'class': 'treadle-muted' }, [ _('inside another group') ]) ]),
 				E('td', { 'class': 'td' }, name),
 				E('td', { 'class': 'td' }, [ latency ]),
+				E('td', { 'class': 'td treadle-hide-narrow' }, [ r.usedBy || E('span', { 'class': 'treadle-muted' }, [ _('inside another group') ]) ]),
 				E('td', { 'class': 'td treadle-muted treadle-hide-narrow' }, [ kind ])
 			]));
 			if (open)
 				trs.push(E('tr', { 'class': 'tr' }, [
 					E('td', { 'class': 'td' }),
 					E('td', { 'class': 'td', 'colspan': '4' }, [
-						E('div', { 'class': 'treadle-members' }, arr(x.members).map(function(m) {
+						// One chip per member, name and latency together, so a
+						// badge can never be read as the next member's. The
+						// member in use is bold with a thicker border, so it
+						// does not rely on its green alone.
+						E('div', { 'class': 'treadle-members' }, sortMembers(x.members, x.now).map(function(m) {
 							var inUse = (m.tag === x.now);
-							return E('div', {}, [
-								E('span', { 'style': inUse ? 'font-weight:bold;' : '' }, [
-									m.tag, inUse ? ' ' + _('(in use)') : ''
-								]),
+							return E('span', {
+								'class': 'treadle-chip' + (inUse ? ' treadle-chip-on' : ''),
+								'title': inUse ? _('%s: in use').format(m.tag) : m.tag
+							}, [
+								E('span', {}, [ m.tag ]),
 								self._latency(m.delay_ms, true)
 							]);
 						})),
@@ -762,9 +787,9 @@ return baseclass.extend({
 			E('table', { 'class': 'table cbi-section-table' }, [
 				E('thead', {}, [ E('tr', { 'class': 'tr cbi-section-table-titles' }, [
 					E('th', { 'class': 'th' }),
-					E('th', { 'class': 'th treadle-hide-narrow' }, [ _('Used by') ]),
 					E('th', { 'class': 'th' }, [ _('Node') ]),
 					E('th', { 'class': 'th' }, [ _('Latency') ]),
+					E('th', { 'class': 'th treadle-hide-narrow' }, [ _('Used by') ]),
 					E('th', { 'class': 'th treadle-hide-narrow' }, [ _('Kind') ])
 				]) ]),
 				E('tbody', {}, trs)
