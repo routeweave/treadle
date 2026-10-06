@@ -75,4 +75,8 @@ if [ -n "$have" ] && [ "$have" != "$built" ]; then
 	fi
 fi
 
+# When this instance started, for the Status page's uptime. tmpfs, one
+# write per (re)start.
+date +%s > /var/run/treadle.started 2>/dev/null
+
 exec "$SINGBOX" run -c "$cfg"

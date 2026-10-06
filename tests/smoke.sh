@@ -206,6 +206,14 @@ after=$(date -r "$nf" +%s)
 	&& ok "unchanged re-sync left the node file untouched" \
 	|| bad "re-sync: status=$(jsonfilter -i "$OUT/resync.json" -e '@.status') mtime $before -> $after"
 
+# The Status page's subscription ages come from the router's clock, as
+# seconds since last_sync, so the browser's time zone cannot skew them.
+echo '{}' | "$HANDLER" call get_dashboard > "$OUT/dash-subs.json"
+age=$(jsonfilter -i "$OUT/dash-subs.json" -e '@.subs[@.id="0123456789abcd01"].age_s')
+[ -n "$age" ] && [ "$age" -ge 0 ] && [ "$age" -lt 600 ] \
+	&& ok "get_dashboard reports a just-synced subscription's age" \
+	|| bad "subscription age '$age': $(head -c 300 "$OUT/dash-subs.json")"
+
 # Each node's payload is stored as the outbound object itself. (Files from an
 # older Treadle hold it as a JSON string; the ECH fixture below is one, and
 # build-config must still read it.)
@@ -1109,7 +1117,8 @@ for stale in "sing-box version 0.0.0" "$SB_VERSION go0.0"; do
 	done
 	kill "$WRAP" 2>/dev/null; wait "$WRAP" 2>/dev/null
 	[ "$(cat "$wrap.sbver" 2>/dev/null)" = "$SB_STAMP" ] && [ ! -e "$wrap.next" ] \
-		&& ok "the start wrapper rebuilds a config stamped '$stale'" \
+		&& [ -s /var/run/treadle.started ] \
+		&& ok "the start wrapper rebuilds a config stamped '$stale' and records its start time" \
 		|| { bad "the start wrapper left stamp '$(cat "$wrap.sbver" 2>/dev/null)' for '$stale'"; sed 's/^/    /' "$OUT/wrap.log"; }
 done
 uci set treadle.inbounds.mode=tproxy
@@ -1356,6 +1365,7 @@ cat > "$FO/t.json" <<EOF
   "outbounds": [
     { "type": "socks", "tag": "m1", "server": "127.0.0.1", "server_port": 18101, "version": "5" },
     { "type": "socks", "tag": "m2", "server": "127.0.0.1", "server_port": 18102, "version": "5" },
+    { "type": "socks", "tag": "solo", "server": "127.0.0.1", "server_port": 18101, "version": "5" },
     { "type": "urltest", "tag": "g", "outbounds": [ "m1", "m2" ],
       "url": "http://127.0.0.1:18199/", "interval": "300s", "tolerance": 50 } ],
   "route": { "final": "g" },
@@ -1379,9 +1389,15 @@ if command -v curl >/dev/null 2>&1; then
 	while [ "$i" -lt 30 ] && ! { fo_up 18101 && fo_up 18102; }; do sleep 1; i=$((i + 1)); done
 	sing-box run -c "$FO/t.json" >"$FO/t.log" 2>&1 &
 	FO_PIDS="$FO_PIDS $!"
+	# The group as the default node and a rule's single node, for the probe pass.
+	fo_final=$(uci -q get treadle.routing.final_outbound)
 	uci set treadle.global.clash_api_enabled=1
+	uci set treadle.routing.final_outbound=g
+	uci set treadle.0123456789abcd70=rule
+	uci set treadle.0123456789abcd70.enabled=1
+	uci set treadle.0123456789abcd70.outbound=solo
 	uci commit treadle
-	lua /usr/libexec/treadle/active-watch >"$FO/aw.log" 2>&1 &
+	TREADLE_PROBE_URL=http://127.0.0.1:18199/ lua /usr/libexec/treadle/active-watch >"$FO/aw.log" 2>&1 &
 	FO_PIDS="$FO_PIDS $!"
 	i=0
 	while [ "$i" -lt 30 ] && [ -z "$(fo_now)" ]; do sleep 1; i=$((i + 1)); done
@@ -1395,6 +1411,30 @@ if command -v curl >/dev/null 2>&1; then
 	fo_probe && [ -n "$victim" ] \
 		&& ok "the test group is serving through its first member" \
 		|| bad "test group: now='$first', probe failed: $(head -c 300 "$FO/t.log")"
+	# The probe pass (second tick): each group's members, the rule's single
+	# node tested on its own, and the connectivity check through the node
+	# the default group is using.
+	ACT=/var/etc/treadle/.active-nodes.json
+	i=0
+	while [ "$i" -lt 30 ] && [ -z "$(jsonfilter -i "$ACT" -e '@.connectivity.state' 2>/dev/null)" ]; do
+		sleep 1; i=$((i + 1))
+	done
+	[ "$(jsonfilter -i "$ACT" -e '@.groups.g.members[*].tag' 2>/dev/null | tr '\n' ' ')" = "m1 m2 " ] \
+		&& ok "active-watch records every member of a group" \
+		|| bad "group members: $(jsonfilter -i "$ACT" -e '@.groups.g' 2>&1 | head -c 300)"
+	[ -n "$(jsonfilter -i "$ACT" -e '@.nodes.solo.delay_ms' 2>/dev/null)" ] \
+		&& ok "a node a rule uses on its own gets a latency from the probe pass" \
+		|| bad "single node: $(jsonfilter -i "$ACT" -e '@.nodes' 2>&1 | head -c 300)"
+	[ "$(jsonfilter -i "$ACT" -e '@.connectivity.state' 2>/dev/null)" = ok ] \
+		&& [ "$(jsonfilter -i "$ACT" -e '@.connectivity.via' 2>/dev/null)" = "$first" ] \
+		&& ok "the connectivity check passes through the default group's current node" \
+		|| bad "connectivity: $(jsonfilter -i "$ACT" -e '@.connectivity' 2>&1 | head -c 300)"
+	echo '{}' | "$HANDLER" call get_active_groups > "$OUT/groups.json"
+	[ "$(jsonfilter -i "$OUT/groups.json" -e '@.nodes[0].tag')" = solo ] \
+		&& [ -n "$(jsonfilter -i "$OUT/groups.json" -e '@.connectivity.state')" ] \
+		&& [ -n "$(jsonfilter -i "$OUT/groups.json" -e '@.now')" ] \
+		&& ok "get_active_groups passes the probe results and the router's clock to the page" \
+		|| bad "get_active_groups: $(head -c 300 "$OUT/groups.json")"
 	[ -n "$victim" ] && { kill "$victim" 2>/dev/null; wait "$victim" 2>/dev/null; }
 	fo_probe    # the failed request that makes sing-box drop the member's result
 	i=0
@@ -1407,7 +1447,6 @@ if command -v curl >/dev/null 2>&1; then
 	# Traffic stats: /connections every tick (10 s) while the Status page
 	# polls (get_clash_stats stamps a marker), once a minute otherwise.
 	aw_ts() { jsonfilter -i "$1" -e '@.updated_at' 2>/dev/null; }
-	ACT=/var/etc/treadle/.active-nodes.json
 	STS=/var/etc/treadle/.clash-stats.json
 	# Two stats writes within 25 s while watched: only the per-tick path does that.
 	n=0; last=$(aw_ts "$STS"); i=0
@@ -1432,6 +1471,8 @@ if command -v curl >/dev/null 2>&1; then
 		|| bad "idle: $ticks tick(s), stats $idle_from -> $(aw_ts "$STS")"
 	for p in $FO_PIDS; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done
 	uci set treadle.global.clash_api_enabled=0
+	uci set treadle.routing.final_outbound="$fo_final"
+	uci delete treadle.0123456789abcd70
 	uci commit treadle
 else
 	bad "curl is not available for the failover test"

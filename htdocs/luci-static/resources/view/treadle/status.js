@@ -4,38 +4,31 @@
 // Status tab: the dashboard. Answers "is it working?" at a glance and "why
 // not?" without leaving the page.
 //
-// Two distinct concepts, two distinct controls:
+// Layout (top → bottom):
+//   warnings (sing-box too old for something configured, standalone service)
+//   get started (only while nothing is configured)
+//   banner (only while the connectivity check is failing)
+//   service card — state + uptime, default-node switcher and the node in
+//     use, Start/Stop/Restart, live traffic tiles, the Enable toggle
+//   health — connectivity, DNS, subscriptions
+//   nodes in use — everything traffic can go through and what uses it;
+//     groups expand to their members
+//   activity — Treadle events or the sing-box log, optionally warnings only
+//   footer — versions, inbound mode, counts, generated config
 //
-//   * Enable toggle (persistent, UCI global.enabled) — installs-but-dormant
-//     vs. installed-and-running. Off hides the runtime row entirely; the
-//     service won't autostart and the watchdog stays idle.
+// Two distinct controls for the service, as before:
+//   * Enable (persistent, UCI global.enabled) — installed-but-dormant vs.
+//     installed-and-running. Off hides everything that describes a running
+//     service; the service won't autostart and the watchdog stays idle.
 //   * Stop / Start / Restart (transient, tmpfs marker) — diagnostic
 //     pause/resume/cycle without flipping the persistent flag. Reboot
-//     clears the marker, so an enabled-but-paused service resumes
-//     automatically.
+//     clears the marker, so an enabled-but-paused service resumes.
 //
-// Layout (top → bottom):
-//   [ ✓ ] Enable Treadle                                 ← persistent
-//   ● Running / ○ Paused / ● Stopped  via  <active-node>  [actions]
-//   Subscriptions: N · Active rules: N
-//   <recent activity — 20-line log tail, auto-refreshed>
-//   [View full log] [View generated config]
-//   sing-box X.Y.Z · Mode
-//
-// One 2s poller drives the whole dashboard — service status (badge +
-// actions + footer), groups, traffic and the log tails are fetched in a
-// single batched tick on one rescheduled setTimeout, torn down on tab
-// switch via _teardown. The full log viewer and the generated-config
-// preview live in on-demand modals (the prior Diagnostics panel rendered
-// them inline; here they would crowd the glance-first layout).
-//
-// The active-node line shows `routing.final_outbound` from UCI — the tag
-// of the default node the rule chain falls through to (a group counts as a
-// node here). Subscription nodes render as "<subscription>/<tag>" so two
-// nodes that happen to share a tag across subscriptions can be told apart;
-// manual nodes and groups render as the bare tag. Same formatting as the
-// Routing tab's dropdown. It is an inline switcher (see
-// _renderNodeSwitcher).
+// One 2 s poller drives the whole page through one batched RPC
+// (get_dashboard); the log tail rides along on every LOG_EVERY-th tick. The
+// card's top row is built once and updated in place, so the default-node
+// dropdown is never rebuilt under the user's pointer; the other sections are
+// rebuilt only when what they show changed.
 
 'use strict';
 'require baseclass';
@@ -43,6 +36,7 @@
 'require ui';
 'require dom';
 'require uci';
+'require session';
 'require view.treadle.lib.subs as subs';
 'require view.treadle.lib.badges as badges';
 
@@ -112,7 +106,8 @@ var callListOutbounds = rpc.declare({
 	expect: { '': {} }
 });
 
-var TAIL_LINES     = 10;
+var TAIL_LINES     = 30;    // fetched, so the warnings filter has lines to pick from
+var SHOW_LINES     = 8;     // shown in the Activity panel
 var POLL_MS        = 2000;
 var LOG_EVERY      = 5;     // log tails on every 5th tick (10 s)
 var FULL_LOG_LINES = 500;
@@ -245,6 +240,110 @@ function downloadConfig(json) {
 	requestAnimationFrame(function() { URL.revokeObjectURL(url); });
 }
 
+// Colours for the health dots. The badges reuse LuCI's label classes; these
+// small dots have no class of their own, so they take literal colours that
+// read on both the light and the dark themes.
+var DOT = {
+	ok:   '#26a65b',
+	warn: '#e0a43a',
+	bad:  '#dc3545',
+	off:  'rgba(128,128,128,0.6)'
+};
+
+// Same red as lib/badges.js: Bootstrap has no red label class.
+var DANGER_STYLE =
+	' background-color: var(--danger-color, var(--error-color, var(--error-color-high, #d9534f)));' +
+	' color: var(--on-danger-color, var(--on-error-color, #fff));';
+
+// Page-scoped styles. Small and structural: the grids that let the tiles,
+// health cards and member lists wrap to one column on a phone.
+var STATUS_CSS =
+	'.treadle-status .treadle-row{display:flex;flex-wrap:wrap;align-items:center;gap:.5em 1em}' +
+	'.treadle-status .treadle-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(9em,1fr));gap:.6em;margin-top:.9em}' +
+	'.treadle-status .treadle-tile{background:rgba(128,128,128,.08);border-radius:6px;padding:.55em .8em}' +
+	'.treadle-status .treadle-tile small{display:block;opacity:.7;font-size:.8em}' +
+	'.treadle-status .treadle-tile strong{font-size:1.2em;font-variant-numeric:tabular-nums}' +
+	'.treadle-status .treadle-health{display:grid;grid-template-columns:repeat(auto-fit,minmax(15em,1fr));gap:.8em;margin:1.2em 0}' +
+	'.treadle-status .treadle-hcard{border:1px solid rgba(128,128,128,.3);border-radius:6px;padding:.7em .9em}' +
+	'.treadle-status .treadle-hcard small{opacity:.75}' +
+	'.treadle-status .treadle-dot{display:inline-block;width:.6em;height:.6em;border-radius:50%;margin-right:.45em;vertical-align:middle}' +
+	'.treadle-status .treadle-muted{opacity:.7}' +
+	'.treadle-status .treadle-members{display:grid;grid-template-columns:repeat(auto-fill,minmax(14em,1fr));gap:.25em 1.5em;padding:.2em 0 .4em}' +
+	'.treadle-status .treadle-members > div{display:flex;justify-content:space-between;align-items:center;gap:.6em}' +
+	'.treadle-status .treadle-toggle{padding:0 .5em;min-width:2.4em;font-size:1.1em;line-height:1.6}' +
+	'.treadle-status .treadle-show-narrow{display:none}' +
+	'.treadle-status .treadle-log{font-family:monospace;font-size:.85em;max-height:16em;overflow-y:auto}' +
+	'.treadle-status .treadle-log > div{display:flex;gap:.8em;padding:.15em 0;white-space:nowrap;align-items:baseline}' +
+	'.treadle-status .treadle-log .treadle-msg{overflow:hidden;text-overflow:ellipsis}' +
+	'@media (max-width:600px){.treadle-status .treadle-hide-narrow{display:none}' +
+	'.treadle-status .treadle-show-narrow{display:block;font-size:.85em}}';
+
+// "93 s" / "12 min" / "5 h" / "9 d": an age in seconds, coarse on purpose.
+function formatAge(s) {
+	s = Number(s);
+	if (!(s >= 0)) return '';
+	if (s < 60)    return _('%d s').format(s);
+	if (s < 3600)  return _('%d min').format(Math.floor(s / 60));
+	if (s < 86400) return _('%d h').format(Math.floor(s / 3600));
+	return _('%d d').format(Math.floor(s / 86400));
+}
+
+function formatUptime(s) {
+	s = Number(s) || 0;
+	var d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+	if (d > 0) return _('%d d %d h').format(d, h);
+	if (h > 0) return _('%d h %d min').format(h, m);
+	return _('%d min').format(m);
+}
+
+// Severity of one raw syslog line: 'error', 'warning' or 'info'. sing-box
+// writes every line to stderr, so its own level token decides; Treadle's
+// lines carry it in the syslog priority (daemon.err, daemon.warning, …).
+function lineLevel(line) {
+	var s = String(line).replace(ANSI_RE, '');
+	var tok = s.match(/\b(FATAL|PANIC|ERROR|WARN|INFO|DEBUG|TRACE)\[/);
+	if (tok) {
+		if (tok[1] === 'WARN') return 'warning';
+		if (tok[1] === 'INFO' || tok[1] === 'DEBUG' || tok[1] === 'TRACE') return 'info';
+		return 'error';
+	}
+	var pri = s.match(/ daemon\.(\w+) /);
+	if (pri) {
+		if (/^(emerg|alert|crit|err)$/.test(pri[1])) return 'error';
+		if (pri[1] === 'warning' || pri[1] === 'warn') return 'warning';
+	}
+	return 'info';
+}
+
+// One log line as { time, level, msg }: the cleaned "YYYY/MM/DD HH:MM:SS
+// msg" form cut to the time of day, with sing-box's "LEVEL[id] [conn dur]"
+// prefix dropped — the level is shown as a badge, and the connection id
+// means nothing at a glance.
+function parseLogLine(line) {
+	var clean = cleanLogLine(line);
+	var m = clean.match(/^\d{4}\/\d{2}\/\d{2} (\d{2}:\d{2}:\d{2}) (.*)$/);
+	var msg = m ? m[2] : clean;
+	msg = msg.replace(/^(FATAL|PANIC|ERROR|WARN|INFO|DEBUG|TRACE)\[\d+\]\s*(\[[^\]]*\]\s*)?/, '');
+	return { time: m ? m[1] : '', level: lineLevel(line), msg: msg };
+}
+
+// "DoH" / "DoT" / "DoQ" / "plain DNS" for a resolver address as Settings
+// stores it.
+function resolverKind(addr) {
+	addr = String(addr || '');
+	if (/^https:\/\//.test(addr)) return _('DoH');
+	if (/^h3:\/\//.test(addr))    return _('DoH3');
+	if (/^tls:\/\//.test(addr))   return _('DoT');
+	if (/^quic:\/\//.test(addr))  return _('DoQ');
+	return _('plain DNS');
+}
+
+// luci.jsonc sends an empty Lua table as {}; every list from the router goes
+// through this before .forEach.
+function arr(v) {
+	return Array.isArray(v) ? v : [];
+}
+
 return baseclass.extend({
 	_statusTimer: null,
 	_onVisible: null,
@@ -253,181 +352,94 @@ return baseclass.extend({
 
 	load: function() {
 		// All RPCs degrade gracefully — a missing one leaves the relevant
-		// row blank rather than blanking the tab.
+		// section blank rather than blanking the tab.
 		return Promise.all([
 			callGetDashboard(TAIL_LINES, true).catch(function() { return {}; }),
 			callListOutbounds().catch(function() { return {}; }),
 			uci.load('treadle').catch(function() { return null; })
 		]).then(function(r) {
-			var d = r[0] || {};
-			return [ d.status, d.logs, r[1], d.groups, d.stats ];
+			return { dash: r[0] || {}, outbounds: arr((r[1] || {}).outbounds) };
 		});
 	},
 
-	render: function(results) {
-		var status     = (results && results[0]) || {};
-		var logsData   = (results && results[1]) || {};
-		// luci.jsonc serialises an empty Lua array as `{}`, so list_outbounds
-		// arrives as an object (not []) when no nodes exist. Coerce defensively
-		// — same guard the Nodes and Routing panels use — so the runtimeInfo()
-		// .forEach below doesn't blow up the whole tab on a fresh install.
-		var rawOut     = ((results && results[2]) || {}).outbounds;
-		var outbounds  = Array.isArray(rawOut) ? rawOut : [];
-		var groupsData = (results && results[3]) || { groups: [] };
-		var statsData  = (results && results[4]) || {};
-		var treadleText  = formatLog(logsData.treadle);
-		var singboxText = formatLog(logsData.singbox);
-		// Cache the outbound list for _updateStatus to reuse when the
-		// runtime section is rebuilt on an enable-flip. final_outbound
-		// rarely changes mid-session, so a snapshot at load time is fine;
-		// the user has to leave the tab to add a node anyway.
-		this._outbounds = outbounds;
-		// Only the load call asks for it; ticks reuse it for the footer.
-		this._packageVersion = status.package_version;
-		this._running   = !!status.running;
-
-		var info     = runtimeInfo();
-		var mode     = uci.get('treadle', 'inbounds', 'mode') || 'tun';
-		var subCount = uci.sections('treadle', 'subscription').length;
-		var manualCount = uci.sections('treadle', 'node').length;
-
+	render: function(data) {
+		data = data || {};
+		var d = data.dash || {};
+		var status = d.status || {};
 		var self = this;
 
-		var node = E('div', { 'class': 'cbi-map' }, [
+		// Snapshots for the whole page life: the node list feeds the
+		// default-node switcher and the "Kind" column; adding a node means
+		// leaving this tab, which re-renders it.
+		this._outbounds = data.outbounds || [];
+		this._packageVersion = status.package_version;
+		this._logs = d.logs || {};
+		this._sigs = {};
+		this._open = session.getLocalData('treadle.statusOpen') || {};
+		this._logSrc = session.getLocalData('treadle.statusLog') || 'treadle';
+		this._warnOnly = !!session.getLocalData('treadle.statusWarnOnly');
 
-			// ── Enable toggle ──────────────────────────────────────────
-			// Persistent master switch (UCI global.enabled). Off = the
-			// service won't autostart, watchdog stays idle, runtime row
-			// hidden. The container is id'd so _updateStatus can refresh
-			// the checkbox state without re-rendering the whole panel
-			// (matters for a poll discovering an out-of-band UCI change).
-			E('div', { 'class': 'cbi-section' }, [
-				E('div', {
-					'id': 'treadle-enable-row',
-					'style': 'display:flex; align-items:center; gap:0.6em;'
-				}, this._renderEnable(status.enabled))
+		var subCount = uci.sections('treadle', 'subscription').length;
+		var manualCount = uci.sections('treadle', 'node').length;
+		var els = this._els = {};
+
+		els.compat  = E('div', {}, renderWarnings(status));
+		els.banner  = E('div', {});
+		els.badge   = E('span', { 'id': 'treadle-status-badge' });
+		els.uptime  = E('span', { 'class': 'treadle-muted' });
+		els.using   = E('span', { 'class': 'treadle-muted' });
+		els.actions = E('span', { 'style': 'margin-left:auto; display:flex; gap:0.3em;' });
+		els.pause   = E('div', { 'class': 'treadle-muted', 'style': 'margin-top:0.4em; display:none;' },
+			[ _('Paused for testing — will resume on next reboot.') ]);
+		els.tiles   = E('div', {});
+		els.enable  = E('div', { 'class': 'treadle-row', 'style': 'margin-top:0.9em;' },
+			this._renderEnable(status.enabled));
+		els.running = E('div', {}, [
+			E('div', { 'class': 'treadle-row' }, [
+				els.badge, els.uptime,
+				E('label', { 'for': 'treadle-default-node', 'class': 'treadle-muted' }, [ _('Default node') ]),
+				this._renderNodeSwitcher(uci.get('treadle', 'routing', 'final_outbound') || ''),
+				els.using,
+				els.actions
 			]),
+			els.pause,
+			els.tiles
+		]);
+		els.health  = E('div', { 'class': 'treadle-health' });
+		els.inuse   = E('div', { 'class': 'cbi-section' });
+		els.log     = E('div', { 'class': 'treadle-log' });
+		els.logBar  = E('div', { 'class': 'treadle-row', 'style': 'margin-bottom:0.5em;' });
+		els.footer  = E('div', { 'class': 'treadle-row treadle-muted', 'style': 'font-size:0.9em; margin:0.5em 0 2em;' });
 
-			// ── Version warning ────────────────────────────────────────
-			// Shown only while the config leaves something out for the
-			// installed sing-box; refreshed by _updateStatus.
-			E('div', { 'id': 'treadle-compat' }, renderWarnings(status)),
-
-			// ── Get started ────────────────────────────────────────────
+		var node = E('div', { 'class': 'cbi-map treadle-status' }, [
+			E('style', {}, [ STATUS_CSS ]),
+			els.compat,
 			// First-run checklist, shown only while nothing at all is
-			// configured (no subscriptions, no nodes of any kind). It
-			// disappears after the first subscription or node exists; the
-			// later steps are then covered by the no-default switcher
-			// placeholder. Static per render — adding a node happens on
-			// another tab, and returning here re-renders the panel.
-			(subCount === 0 && manualCount === 0 && outbounds.length === 0)
+			// configured. Static per render: adding a node happens on another
+			// tab, and returning here re-renders the panel.
+			(subCount === 0 && manualCount === 0 && this._outbounds.length === 0)
 				? this._renderGetStarted()
 				: '',
-
-			// ── Runtime row ────────────────────────────────────────────
-			// Hidden entirely when the master switch is off — nothing to
-			// say and nothing to do. The container is rebuilt by
-			// _updateStatus on every poll tick so the runtime state
-			// (running / paused / unexpectedly-stopped) and its action
-			// toolbar follow the service.
-			E('div', {
-				'id': 'treadle-runtime-section',
-				'class': 'cbi-section',
-				'style': status.enabled ? '' : 'display:none;'
-			}, this._renderRuntime(status, subCount, info, mode)),
-
-			// ── Traffic ────────────────────────────────────────────────
-			// One-row digest of /connections from the daemon snapshot:
-			// instantaneous bytes/sec each way (10s-averaged), open
-			// connection count, and cumulative totals since sing-box
-			// started. Hidden when clash API is off; container is always
-			// present so _updateClashStats can flip it back on without a
-			// page re-render.
-			E('div', {
-				'id': 'treadle-traffic-section',
-				'class': 'cbi-section',
-				'style': (status.running && statsData && !statsData.error) ? '' : 'display:none;'
-			}, this._renderTraffic(statsData)),
-
-			// ── Active groups ──────────────────────────────────────────
-			// One row per urltest group, showing the currently active
-			// member (clash `now`), its last-known latency, and the
-			// group's own tuning (interval/tolerance). Hidden when clash
-			// API is off, when the daemon has nothing yet, or when there
-			// are no groups — the container is always present so
-			// _updateGroups can flip visibility without re-rendering the
-			// page.
-			E('div', {
-				'id': 'treadle-groups-section',
-				'class': 'cbi-section',
-				'style': (Array.isArray(groupsData.groups) && groupsData.groups.length) ? '' : 'display:none;'
-			}, this._renderGroups(groupsData)),
-
-			// ── Recent activity ────────────────────────────────────────
-			// Two stacked boxes — Treadle control-plane events (sparse) and
-			// sing-box service log (verbose). Each is a fixed-row textarea,
-			// no vertical scroll; long lines still scroll horizontally. The
-			// cleanLogLine pass trims each line to "YYYY/MM/DD HH:MM:SS <msg>"
-			// so the visible width fits comfortably.
-			E('div', { 'class': 'cbi-section' }, [
-				E('h4', { 'style': 'margin:0.4em 0 0.3em;' }, [ _('Treadle log') ]),
-				E('textarea', {
-					'id': 'treadle-log-treadle',
-					'class': 'cbi-input-textarea',
-					'readonly': 'readonly',
-					'wrap': 'off',
-					'rows': String(TAIL_LINES),
-					'style': 'width:100%; resize:none; overflow-y:hidden; ' +
-					         'font-family:monospace; font-size:0.8em; ' +
-					         'line-height:1.35; background:rgba(128,128,128,0.05);'
-				}, [ treadleText ]),
-				E('h4', { 'style': 'margin:1em 0 0.3em;' }, [ _('sing-box log') ]),
-				E('textarea', {
-					'id': 'treadle-log-singbox',
-					'class': 'cbi-input-textarea',
-					'readonly': 'readonly',
-					'wrap': 'off',
-					'rows': String(TAIL_LINES),
-					'style': 'width:100%; resize:none; overflow-y:hidden; ' +
-					         'font-family:monospace; font-size:0.8em; ' +
-					         'line-height:1.35; background:rgba(128,128,128,0.05);'
-				}, [ singboxText ]),
-				E('div', {
-					'style': 'margin:0.5em 0 2em; display:flex; gap:0.4em;'
-				}, [
-					E('button', {
-						'class': 'btn cbi-button cbi-button-neutral',
-						'click': ui.createHandlerFn(self, '_showFullLog')
-					}, [ _('View full log') ]),
-					E('button', {
-						'class': 'btn cbi-button cbi-button-neutral',
-						'click': ui.createHandlerFn(self, '_showConfig')
-					}, [ _('View generated config') ])
-				])
-			]),
-
+			els.banner,
+			E('div', { 'class': 'cbi-section' }, [ els.running, els.enable ]),
+			els.health,
+			els.inuse,
+			E('div', { 'class': 'cbi-section' }, [ els.logBar, els.log ]),
+			els.footer
 		]);
 
-		// Polling and scroll-to-bottom both have to wait until the panel's
-		// DOM is actually attached: render() builds a detached node and
-		// the host shell (main.js) appends it in a .then microtask after
-		// we return. requestAnimationFrame fires after that microtask, so
-		// at this point document.getElementById can finally see our IDs.
-		// Without this, _scheduleStatusRefresh's "is the panel mounted?"
-		// guard short-circuits the initial call and polling never starts
-		// on a fresh page load — only the user-action paths
-		// (handleStart/Stop/Restart/ToggleEnabled call _refreshStatusNow
-		// which then schedules) would resurrect it, which is why the
-		// freeze was easy to miss before live traffic numbers made it
-		// visible.
+		this._apply(d, true);
+
+		// Polling has to wait until the panel's DOM is attached: render()
+		// builds a detached node and the host shell (main.js) appends it in a
+		// .then microtask after we return. requestAnimationFrame fires after
+		// that microtask, so _scheduleStatusRefresh's "is the panel mounted?"
+		// guard can see the badge by then.
 		requestAnimationFrame(L.bind(function() {
 			this._scheduleStatusRefresh();
-			['treadle-log-treadle', 'treadle-log-singbox'].forEach(function(id) {
-				var el = document.getElementById(id);
-				if (el) el.scrollTop = el.scrollHeight;
-			});
 		}, this));
 
+		self._renderLogBar();
 		return node;
 	},
 
@@ -442,30 +454,409 @@ return baseclass.extend({
 		return 'stopped';
 	},
 
-	_renderBadge: function(state) {
-		// Plain colored text rather than a `label-*` pill — pills are sized
-		// for inline form labels and look cramped at the status row.
-		var spec = {
-			running: { color: '#26a65b', text: _('● Running') },
-			paused:  { color: '#888',    text: _('○ Paused')  },
-			stopped: { color: '#dc3545', text: _('● Stopped') }
-		}[state];
-		return E('span', {
-			'style': 'color:' + spec.color + '; font-weight:bold;'
-		}, [ spec.text ]);
+	_renderBadge: function(state, enabled) {
+		var base = 'padding:0.25em 0.8em; border-radius:999px; font-size:1.05em; text-transform:none;';
+		if (!enabled)
+			return E('span', { 'class': 'label', 'style': base }, [ _('Off') ]);
+		if (state === 'running')
+			return E('span', { 'class': 'label success', 'style': base }, [ _('Running') ]);
+		if (state === 'paused')
+			return E('span', { 'class': 'label warning', 'style': base }, [ _('Paused') ]);
+		return E('span', { 'class': 'label', 'style': base + DANGER_STYLE }, [ _('Stopped') ]);
 	},
 
-	_renderFooter: function(status, mode) {
-		// No autostart read-out: the Enable toggle is the visible control
-		// for that flag, so the footer would just echo it. Mode and versions
-		// are not shown elsewhere on the page. Treadle's own version comes
-		// first, as it is the one a bug report has to name.
-		var versions = [ shortVersion(status.version) ];
-		var pkg = status.package_version || this._packageVersion;
-		if (pkg)
-			versions.unshift('Treadle ' + pkg);
-		return _('%s · Mode: %s').format(versions.join(' · '), mode);
+	_renderEnable: function(enabled) {
+		// "applies immediately" because this toggle commits through rpcd on
+		// click — unlike everything else in Treadle, there is no Save & Apply
+		// step between the click and the service action.
+		var cb = E('input', {
+			'type': 'checkbox',
+			'id': 'treadle-enable-checkbox',
+			'class': 'cbi-input-checkbox',
+			'style': 'margin:0;',
+			'click': ui.createHandlerFn(this, 'handleToggleEnabled')
+		});
+		if (enabled) cb.checked = true;
+		return [
+			cb,
+			E('label', { 'for': 'treadle-enable-checkbox', 'style': 'margin:0; cursor:pointer;' }, [ _('Enable Treadle') ]),
+			E('span', { 'class': 'treadle-muted', 'style': 'font-size:0.9em;' }, [
+				enabled
+					? _('sing-box runs and starts at boot · applies immediately')
+					: _('installed but dormant: no service, no autostart · applies immediately')
+			])
+		];
 	},
+
+	_tile: function(label, value, unit) {
+		return E('div', { 'class': 'treadle-tile' }, [
+			E('small', {}, [ label ]),
+			E('strong', {}, [ value ]),
+			unit ? E('span', { 'class': 'treadle-muted' }, [ ' ', unit ]) : ''
+		]);
+	},
+
+	// Five live numbers from active-watch's /connections snapshot, or a
+	// pointer to Settings when the clash API they come from is off.
+	_renderTiles: function(stats) {
+		if (stats.error)
+			return [ E('div', { 'class': 'treadle-muted', 'style': 'margin-top:0.9em;' }, [
+				_('Live stats are off. Turn on "Live stats and latency testing" on the '),
+				this._tabLink('settings', _('Settings')),
+				_(' tab to see traffic, the nodes in use and the connectivity check.')
+			]) ];
+		var tiles = [
+			this._tile(_('Download'), formatRate(stats.down_bps)),
+			this._tile(_('Upload'), formatRate(stats.up_bps)),
+			this._tile(_('Connections'), String(stats.conn_count || 0)),
+			this._tile(_('This session'), formatBytes(stats.total_down) + ' ↓ ' + formatBytes(stats.total_up) + ' ↑')
+		];
+		if (typeof stats.mem_inuse === 'number' && stats.mem_inuse > 0)
+			tiles.push(this._tile(_('sing-box memory'), formatBytes(stats.mem_inuse)));
+		return [ E('div', { 'class': 'treadle-tiles' }, tiles) ];
+	},
+
+	// ── Health ────────────────────────────────────────────────────────────
+
+	// The connectivity check from active-watch: one test a minute through
+	// whatever the default node resolves to.
+	_connectivityHealth: function(g, running) {
+		var c = g.connectivity;
+		var now = Number(g.now) || 0;
+		if (g.error)
+			return { state: 'off', value: _('Off'), sub: _('Needs live stats (Settings)') };
+		if (!running)
+			return { state: 'off', value: _('Not running'), sub: '' };
+		if (!c)
+			return { state: 'off', value: _('Waiting'), sub: _('The first check runs within a minute') };
+		if (c.state === 'none')
+			return { state: 'off', value: _('Not checked'), sub: _('The default node is not a proxy') };
+		var ago = (c.checked_at && now) ? formatAge(now - c.checked_at) : '';
+		if (c.state === 'ok')
+			return { state: 'ok', value: _('OK · %d ms').format(c.delay_ms),
+				sub: _('Through %s, checked %s ago').format(c.via, ago) };
+		if (c.state === 'failing')
+			return { state: 'bad', value: _('Failing'),
+				sub: _('%d checks in a row through %s').format(c.streak, c.via) };
+		return { state: 'warn', value: _('Retrying'),
+			sub: _('The last check through %s failed').format(c.via) };
+	},
+
+	_dnsHealth: function() {
+		var managed = uci.get('treadle', 'dns', 'managed_dns') !== '0';
+		var remote = uci.get('treadle', 'dns', 'remote_server') || 'tls://1.1.1.1';
+		var local = uci.get('treadle', 'dns', 'local_server') || 'wan';
+		return {
+			state: managed ? 'ok' : 'off',
+			value: managed ? _('Managed') : _('Not managed'),
+			sub: _('Remote: %s · Local: %s').format(resolverKind(remote),
+				local === 'wan' ? _('WAN resolver') : resolverKind(local))
+		};
+	},
+
+	// Stale: the last sync failed, or it is older than twice the subscription's
+	// own auto-update interval, or older than a week when auto-update is off.
+	_subscriptionHealth: function(ages) {
+		var ageOf = {};
+		arr(ages).forEach(function(a) { ageOf[a.id] = a.age_s; });
+		var list = uci.sections('treadle', 'subscription').filter(function(s) {
+			return s.enabled !== '0';
+		});
+		if (!list.length)
+			return { state: 'off', value: _('None'), sub: _('Add one on the Nodes tab') };
+		var stale = [], newest = null;
+		list.forEach(function(s) {
+			var age = ageOf[s['.name']];
+			var hours = Number(s.auto_update) || 0;
+			var limit = hours > 0 ? 2 * hours * 3600 : 7 * 86400;
+			if (typeof age === 'number' && (newest === null || age < newest)) newest = age;
+			if ((s.status && s.status !== 'ok') || typeof age !== 'number' || age > limit)
+				stale.push({ name: s.name || s['.name'], age: age, failed: s.status && s.status !== 'ok' });
+		});
+		if (stale.length) {
+			var first = stale[0];
+			return {
+				state: 'warn',
+				value: _('%d of %d stale').format(stale.length, list.length),
+				sub: first.failed
+					? _('%s: last sync failed').format(first.name)
+					: (typeof first.age === 'number'
+						? _('%s: last synced %s ago').format(first.name, formatAge(first.age))
+						: _('%s: never synced').format(first.name))
+			};
+		}
+		return { state: 'ok', value: _('%d up to date').format(list.length),
+			sub: newest !== null ? _('Last sync %s ago').format(formatAge(newest)) : '' };
+	},
+
+	_renderHealth: function(items) {
+		return items.map(function(h) {
+			return E('div', {
+				'class': 'treadle-hcard',
+				'style': h.state === 'bad' ? 'border-color:' + DOT.bad + ';'
+					: h.state === 'warn' ? 'border-color:' + DOT.warn + ';' : ''
+			}, [
+				E('div', { 'class': 'treadle-muted', 'style': 'font-size:0.8em; text-transform:uppercase; letter-spacing:0.05em;' }, [
+					E('span', { 'class': 'treadle-dot', 'style': 'background:' + DOT[h.state] + ';' }),
+					h.label
+				]),
+				E('div', { 'style': 'font-weight:bold; margin:0.25em 0 0.15em;' }, [ h.value ]),
+				E('small', {}, [ h.sub ])
+			]);
+		});
+	},
+
+	// Red banner while the connectivity check is failing: the one state the
+	// rest of the page cannot make obvious on its own.
+	_renderBanner: function(g, running) {
+		var c = g.connectivity;
+		if (!running || g.error || !c || c.state !== 'failing')
+			return [];
+		var now = Number(g.now) || 0;
+		var since = (c.last_ok_at && now)
+			? _('Last success %s ago.').format(formatAge(now - c.last_ok_at))
+			: _('No check has succeeded since sing-box started.');
+		return [ E('div', { 'class': 'alert-message danger' }, [
+			E('strong', {}, [ _('Traffic through %s is failing').format(c.default) ]),
+			E('p', { 'style': 'margin:0.3em 0 0;' }, [
+				_('The last %d connectivity checks through %s failed.').format(c.streak, c.via), ' ',
+				since, ' ',
+				_('sing-box is running, so the node or its provider is not answering. A group moves off a failed member by itself; check the members below or the nodes on the '),
+				this._tabLink('nodes', _('Nodes')),
+				_(' tab.')
+			])
+		]) ];
+	},
+
+	// ── Nodes in use ──────────────────────────────────────────────────────
+
+	// Everything traffic can go through and what uses it: the default node
+	// and each enabled rule's node, merged per node, then any other group in
+	// the running config. "direct" and "block" are not nodes and are left
+	// out.
+	_inUseRows: function(g) {
+		var groups = arr(g.groups), nodes = arr(g.nodes);
+		var groupOf = {}, nodeOf = {}, users = {}, order = [];
+		groups.forEach(function(x) { groupOf[x.tag] = x; });
+		nodes.forEach(function(x) { nodeOf[x.tag] = x; });
+		var add = function(tag, user) {
+			if (!tag || tag === 'direct' || tag === 'block') return;
+			if (!users[tag]) { users[tag] = { isDefault: false, rules: [] }; order.push(tag); }
+			if (user === null) users[tag].isDefault = true;
+			else users[tag].rules.push(user);
+		};
+		add(uci.get('treadle', 'routing', 'final_outbound') || '', null);
+		uci.sections('treadle', 'rule').filter(function(r) {
+			return r.enabled !== '0';
+		}).sort(function(a, b) {
+			return (parseInt(a.order, 10) || 0) - (parseInt(b.order, 10) || 0);
+		}).forEach(function(r) {
+			add(r.outbound, r.name || _('unnamed rule'));
+		});
+		groups.forEach(function(x) { if (!users[x.tag]) { users[x.tag] = { isDefault: false, rules: [] }; order.push(x.tag); } });
+		return order.map(function(tag) {
+			var u = users[tag], parts = [];
+			if (u.isDefault) parts.push(_('Default'));
+			if (u.rules.length === 1) parts.push(_('Rule: %s').format(u.rules[0]));
+			else if (u.rules.length > 1) parts.push(_('Rules: %s').format(u.rules.join(', ')));
+			return { tag: tag, usedBy: parts.join(' · '), group: groupOf[tag], node: nodeOf[tag] };
+		});
+	},
+
+	// "Node · manual" or "Node · <subscription>": where a single node comes from.
+	_nodeKind: function(tag) {
+		var manual = uci.sections('treadle', 'node').some(function(s) {
+			return s.tag === tag && s.type !== 'urltest';
+		});
+		if (manual) return _('Node · manual');
+		var subName = subs.nameMap();
+		for (var i = 0; i < this._outbounds.length; i++)
+			if (this._outbounds[i].tag === tag && this._outbounds[i].subscription)
+				return _('Node · %s').format(subName[this._outbounds[i].subscription] || this._outbounds[i].subscription);
+		return _('Node');
+	},
+
+	// A latency badge for one result: ms, "timeout" when tested without an
+	// answer, "—" when not tested yet.
+	_latency: function(ms, tested) {
+		if (typeof ms === 'number' && ms > 0)
+			return badges.formatLatency({ delay_ms: ms });
+		if (tested)
+			return badges.formatLatency({ error: _('timeout') });
+		return badges.formatLatency(null);
+	},
+
+	_toggleOpen: function(tag) {
+		this._open[tag] = !this._open[tag];
+		session.setLocalData('treadle.statusOpen', this._open);
+		this._sigs.inuse = null;
+		this._renderInUse(this._lastGroups || {});
+	},
+
+	_renderInUse: function(g) {
+		var self = this;
+		var rows = this._inUseRows(g);
+		var sig = JSON.stringify([ rows, this._open ]);
+		if (sig === this._sigs.inuse) return;
+		this._sigs.inuse = sig;
+
+		if (g.error || !rows.length) {
+			this._els.inuse.style.display = 'none';
+			return;
+		}
+		this._els.inuse.style.display = '';
+
+		var trs = [];
+		rows.forEach(function(r) {
+			var x = r.group, open = !!(x && self._open[r.tag]);
+			var toggle = x ? E('button', {
+				'class': 'btn cbi-button cbi-button-neutral treadle-toggle',
+				'aria-expanded': open ? 'true' : 'false',
+				'aria-label': (open ? _('Hide members of %s') : _('Show members of %s')).format(r.tag),
+				'click': function() { self._toggleOpen(r.tag); }
+			}, [ open ? '▾' : '▸' ]) : '';
+			// On a phone the Used by column is hidden and the same text moves
+			// under the node name.
+			var name = [
+				E('strong', {}, [ r.tag ]),
+				(x && x.now) ? E('span', { 'class': 'treadle-muted' }, [ '  →  ' + x.now ]) : '',
+				r.usedBy ? E('span', { 'class': 'treadle-muted treadle-show-narrow' }, [ r.usedBy ]) : ''
+			];
+			var latency = x
+				? self._latency(x.delay_ms, !!x.now)
+				: self._latency(r.node && r.node.delay_ms, !!(r.node && r.node.tested_at));
+			var kind = x
+				? _('Group · %d nodes').format(arr(x.members).length)
+				: self._nodeKind(r.tag);
+			trs.push(E('tr', { 'class': 'tr cbi-section-table-row' }, [
+				E('td', { 'class': 'td', 'style': 'width:1%;' }, [ toggle ]),
+				E('td', { 'class': 'td treadle-hide-narrow' }, [ r.usedBy || E('span', { 'class': 'treadle-muted' }, [ _('inside another group') ]) ]),
+				E('td', { 'class': 'td' }, name),
+				E('td', { 'class': 'td' }, [ latency ]),
+				E('td', { 'class': 'td treadle-muted treadle-hide-narrow' }, [ kind ])
+			]));
+			if (open)
+				trs.push(E('tr', { 'class': 'tr' }, [
+					E('td', { 'class': 'td' }),
+					E('td', { 'class': 'td', 'colspan': '4' }, [
+						E('div', { 'class': 'treadle-members' }, arr(x.members).map(function(m) {
+							var inUse = (m.tag === x.now);
+							return E('div', {}, [
+								E('span', { 'style': inUse ? 'font-weight:bold;' : '' }, [
+									m.tag, inUse ? ' ' + _('(in use)') : ''
+								]),
+								self._latency(m.delay_ms, true)
+							]);
+						})),
+						E('div', { 'class': 'treadle-muted', 'style': 'font-size:0.85em;' }, [
+							_('Uses the fastest member, and switches only when another is more than %s ms faster. Tested every %s.')
+								.format(x.tolerance || '50', x.interval || '3m')
+						])
+					])
+				]));
+		});
+
+		dom.content(this._els.inuse, [
+			E('h3', {}, [ _('Nodes in use') ]),
+			E('div', { 'class': 'cbi-section-descr' }, [ _('Everything your traffic can go through right now, and why.') ]),
+			E('table', { 'class': 'table cbi-section-table' }, [
+				E('thead', {}, [ E('tr', { 'class': 'tr cbi-section-table-titles' }, [
+					E('th', { 'class': 'th' }),
+					E('th', { 'class': 'th treadle-hide-narrow' }, [ _('Used by') ]),
+					E('th', { 'class': 'th' }, [ _('Node') ]),
+					E('th', { 'class': 'th' }, [ _('Latency') ]),
+					E('th', { 'class': 'th treadle-hide-narrow' }, [ _('Kind') ])
+				]) ]),
+				E('tbody', {}, trs)
+			])
+		]);
+	},
+
+	// ── Activity ──────────────────────────────────────────────────────────
+
+	_renderLogBar: function() {
+		var self = this;
+		var srcBtn = function(id, label) {
+			return E('button', {
+				'class': 'btn cbi-button ' + (self._logSrc === id ? 'cbi-button-apply' : 'cbi-button-neutral'),
+				'aria-pressed': self._logSrc === id ? 'true' : 'false',
+				'click': function() {
+					self._logSrc = id;
+					session.setLocalData('treadle.statusLog', id);
+					self._renderLogBar();
+					self._renderLog();
+				}
+			}, [ label ]);
+		};
+		var cb = E('input', {
+			'type': 'checkbox', 'id': 'treadle-warn-only', 'class': 'cbi-input-checkbox', 'style': 'margin:0;',
+			'change': function(ev) {
+				self._warnOnly = ev.currentTarget.checked;
+				session.setLocalData('treadle.statusWarnOnly', self._warnOnly);
+				self._renderLog();
+			}
+		});
+		if (this._warnOnly) cb.checked = true;
+		dom.content(this._els.logBar, [
+			E('h3', { 'style': 'margin:0;' }, [ _('Activity') ]),
+			E('span', { 'style': 'display:inline-flex; gap:0.2em;', 'role': 'group', 'aria-label': _('Log source') }, [
+				srcBtn('treadle', _('Treadle events')),
+				srcBtn('singbox', _('sing-box'))
+			]),
+			E('span', { 'style': 'display:inline-flex; align-items:center; gap:0.4em;' }, [
+				cb, E('label', { 'for': 'treadle-warn-only', 'style': 'margin:0;' }, [ _('Warnings and errors only') ])
+			]),
+			E('button', {
+				'class': 'btn cbi-button cbi-button-neutral', 'style': 'margin-left:auto;',
+				'click': ui.createHandlerFn(this, '_showFullLog')
+			}, [ _('Full log') ])
+		]);
+		this._renderLog();
+	},
+
+	_renderLog: function() {
+		var self = this;
+		var lines = arr(this._logs[this._logSrc]).map(parseLogLine).filter(function(l) {
+			return !self._warnOnly || l.level !== 'info';
+		}).slice(-SHOW_LINES);
+		if (!lines.length) {
+			dom.content(this._els.log, [ E('div', { 'class': 'treadle-muted', 'style': 'font-family:inherit;' }, [
+				this._warnOnly ? _('No warnings or errors in the recent log.') : _('Nothing logged yet.')
+			]) ]);
+			return;
+		}
+		dom.content(this._els.log, lines.map(function(l) {
+			var badge = l.level === 'error'
+				? E('span', { 'class': 'label', 'style': 'text-transform:none; flex:0 0 auto;' + DANGER_STYLE }, [ _('error') ])
+				: l.level === 'warning'
+					? E('span', { 'class': 'label warning', 'style': 'text-transform:none; flex:0 0 auto;' }, [ _('warning') ])
+					: E('span', { 'class': 'treadle-muted', 'style': 'flex:0 0 auto; min-width:4.5em;' }, [ _('info') ]);
+			return E('div', {}, [
+				E('span', { 'class': 'treadle-muted', 'style': 'flex:0 0 auto;' }, [ l.time ]),
+				badge,
+				E('span', { 'class': 'treadle-msg', 'title': l.msg }, [ l.msg ])
+			]);
+		}));
+	},
+
+	_renderFooter: function(status) {
+		var parts = [];
+		var pkg = status.package_version || this._packageVersion;
+		if (pkg) parts.push('Treadle ' + pkg);
+		parts.push(shortVersion(status.version));
+		parts.push((uci.get('treadle', 'inbounds', 'mode') || 'tun') === 'tun' ? _('TUN') : _('TProxy'));
+		parts.push(_('%d active rules').format(runtimeInfo().ruleCount));
+		parts.push(_('%d subscriptions').format(uci.sections('treadle', 'subscription').length));
+		return [
+			E('span', {}, [ parts.join(' · ') ]),
+			E('button', {
+				'class': 'btn cbi-button cbi-button-neutral', 'style': 'margin-left:auto;',
+				'click': ui.createHandlerFn(this, '_showConfig')
+			}, [ _('View generated config') ])
+		];
+	},
+
+	// ── Kept controls ─────────────────────────────────────────────────────
 
 	_renderActions: function(state) {
 		// running → Stop + Restart
@@ -492,36 +883,6 @@ return baseclass.extend({
 				'class': 'btn cbi-button cbi-button-neutral',
 				'click': ui.createHandlerFn(this, 'handleRestart')
 			}, [ _('Restart') ])
-		];
-	},
-
-	_renderEnable: function(enabled) {
-		// A plain checkbox + label, big enough that "is Treadle turned on?"
-		// is a glance question. ui.createHandlerFn binds `this` and the
-		// notification-on-error wrapping is shared with the runtime
-		// handlers.
-		var cb = E('input', {
-			'type': 'checkbox',
-			'id': 'treadle-enable-checkbox',
-			'class': 'cbi-input-checkbox',
-			'style': 'width:1.2em; height:1.2em; margin:0;',
-			'click': ui.createHandlerFn(this, 'handleToggleEnabled')
-		});
-		if (enabled) cb.checked = true;
-		return [
-			cb,
-			E('label', {
-				'for': 'treadle-enable-checkbox',
-				'style': 'font-size:1.15em; font-weight:bold; cursor:pointer; margin:0;'
-			}, [ _('Enable Treadle') ]),
-			// "applies immediately" because this toggle commits through rpcd
-			// on click — unlike everything else in Treadle, there is no
-			// Save & Apply step between the click and the service action.
-			E('span', { 'style': 'opacity:0.6; font-size:0.9em;' }, [
-				enabled
-					? _('— sing-box runs and autostarts at boot · applies immediately')
-					: _('— installed but dormant; no service, no autostart · applies immediately')
-			])
 		];
 	},
 
@@ -578,6 +939,7 @@ return baseclass.extend({
 		var self = this;
 		currentTag = currentTag || '';
 		var sel = E('select', {
+			'id': 'treadle-default-node',
 			'class': 'cbi-input-select',
 			'style': 'font-size:0.85em; max-width:20em;',
 			'title': _('Default node — traffic not matched by any routing rule goes here. Changing it applies immediately.'),
@@ -675,168 +1037,6 @@ return baseclass.extend({
 		});
 	},
 
-	// Compact latency badge — the shared lib/badges.js renderer, so the
-	// Status Groups column and the Nodes Latency column agree on the
-	// 300/600 ms green→yellow→red thresholds.
-	_renderLatency: function(ms) {
-		return badges.formatLatency(
-			(typeof ms === 'number' && ms > 0) ? { delay_ms: ms } : null);
-	},
-
-	// "urltest · every 1m0s · ±50ms" — surfaces the configured tuning right
-	// next to the evidence of it churning, so the user can read both at
-	// once without leaving the page.
-	_renderGroupMeta: function(g) {
-		if (g.type === 'urltest') {
-			var parts = [ _('urltest') ];
-			if (g.interval && g.interval !== '')
-				parts.push(_('every %s').format(g.interval));
-			if (g.tolerance && g.tolerance !== '')
-				parts.push('±' + g.tolerance + 'ms');
-			return parts.join(' · ');
-		}
-		return g.type || '';
-	},
-
-	// One-line traffic digest. Four columns rendered as inline pieces, not
-	// a table — they're a *single* reading at a moment in time, not a
-	// growing list. Each piece is id'd so _updateClashStats can refresh
-	// the values in place without rebuilding the row (avoids a layout
-	// flicker every 2s).
-	_renderTraffic: function(stats) {
-		stats = stats || {};
-		var hasMem = (typeof stats.mem_inuse === 'number' && stats.mem_inuse > 0);
-		var pieces = [
-			E('span', {}, [
-				E('span', { 'style': 'opacity:0.6;' }, [ '↓ ' ]),
-				E('strong', { 'id': 'treadle-traffic-down' }, [ formatRate(stats.down_bps) ])
-			]),
-			E('span', {}, [
-				E('span', { 'style': 'opacity:0.6;' }, [ '↑ ' ]),
-				E('strong', { 'id': 'treadle-traffic-up' }, [ formatRate(stats.up_bps) ])
-			]),
-			E('span', { 'style': 'opacity:0.7;' }, [
-				E('span', { 'id': 'treadle-traffic-conns' }, [ String(stats.conn_count || 0) ]),
-				' ', _('connections')
-			]),
-			E('span', { 'style': 'opacity:0.7;' }, [
-				_('session:'), ' ',
-				E('span', { 'id': 'treadle-traffic-total-down' }, [ formatBytes(stats.total_down) ]),
-				' ↓ / ',
-				E('span', { 'id': 'treadle-traffic-total-up' }, [ formatBytes(stats.total_up) ]),
-				' ↑'
-			])
-		];
-		if (hasMem) {
-			pieces.push(E('span', { 'style': 'opacity:0.7;' }, [
-				_('memory:'), ' ',
-				E('span', { 'id': 'treadle-traffic-mem' }, [ formatBytes(stats.mem_inuse) ])
-			]));
-		}
-		return [
-			E('h4', { 'style': 'margin:0.2em 0 0.4em;' }, [ _('Traffic') ]),
-			E('div', {
-				'style': 'display:flex; flex-wrap:wrap; gap:1.2em; ' +
-				         'align-items:baseline; font-size:0.95em;'
-			}, pieces)
-		];
-	},
-
-	// Render every group as one row of a compact section table. The empty
-	// case (no groups, clash API off, daemon hasn't primed the snapshot
-	// yet) returns a single message row so the panel never collapses to
-	// nothing once it's been shown — the caller hides the whole section
-	// when there are no groups, so this branch is only seen mid-flip.
-	_renderGroups: function(data) {
-		// luci.jsonc can't tell empty arrays from empty objects at the Lua
-		// boundary — an empty `out = {}` in get_active_groups serializes
-		// as `{}`, which arrives here as an object, not an array. The
-		// section is hidden in that case anyway, but _renderGroups is
-		// still invoked to build the contents; coerce defensively so the
-		// `.forEach` below doesn't blow up the whole tab.
-		var groups = (data && Array.isArray(data.groups)) ? data.groups : [];
-		var rows = [];
-		var self = this;
-		groups.forEach(function(g) {
-			rows.push(E('tr', { 'class': 'tr cbi-section-table-row' }, [
-				E('td', { 'class': 'td', 'style': 'font-weight:bold;' }, [ g.tag ]),
-				E('td', { 'class': 'td', 'style': 'opacity:0.6;' }, [ '→' ]),
-				E('td', { 'class': 'td' }, [ g.now || E('span', { 'style': 'opacity:0.5;' }, [ '—' ]) ]),
-				E('td', { 'class': 'td' }, [ self._renderLatency(g.delay_ms) ]),
-				E('td', {
-					'class': 'td',
-					'style': 'font-size:0.85em; opacity:0.7;'
-				}, [ self._renderGroupMeta(g) ])
-			]));
-		});
-		if (rows.length === 0) {
-			rows.push(E('tr', { 'class': 'tr cbi-section-table-row' }, [
-				E('td', {
-					'class': 'td',
-					'colspan': '5',
-					'style': 'opacity:0.6; font-style:italic;'
-				}, [
-					(data && data.error)
-						? _('Active-node tracking is disabled — enable the clash API in Settings to see this.')
-						: _('No groups configured yet, or daemon still priming.')
-				])
-			]));
-		}
-		return [
-			E('h4', { 'style': 'margin:0.2em 0 0.4em;' }, [ _('Groups') ]),
-			E('table', { 'class': 'table cbi-section-table' }, [
-				E('tbody', {}, rows)
-			])
-		];
-	},
-
-	_renderRuntime: function(status, subCount, info, mode) {
-		// The whole runtime section (badge row, counts, footer). Called
-		// from render() to build the initial DOM, and again from
-		// _updateStatus when the enable state flips on so the contents
-		// appear without a full re-render.
-		var state = this._runtimeState(status);
-		return [
-			E('div', {
-				'style': 'display:flex; flex-wrap:wrap; align-items:center; ' +
-				         'gap:0.7em; padding:0.2em 0; font-size:1.15em; line-height:1.3;'
-			}, [
-				E('span', { 'id': 'treadle-status-badge' }, [
-					this._renderBadge(state)
-				]),
-				E('span', { 'style': 'opacity:0.6; font-weight:normal;' }, [
-					_('via')
-				]),
-				E('span', { 'id': 'treadle-active-node' }, [
-					this._renderNodeSwitcher(info.tag)
-				]),
-				E('span', {
-					'id': 'treadle-status-actions',
-					'style': 'margin-left:auto; display:flex; gap:0.3em; font-size:0.88em;'
-				}, this._renderActions(state))
-			]),
-			E('div', {
-				'id': 'treadle-status-pausenote',
-				'style': state === 'paused'
-					? 'margin-top:0.4em; font-size:0.9em; opacity:0.7;'
-					: 'display:none;'
-			}, [ _('Paused for testing — will resume on next reboot.') ]),
-			E('div', { 'style': 'margin-top:0.5em;' }, [
-				_('Subscriptions: %d').format(subCount),
-				' · ',
-				_('Active rules: %d').format(info.ruleCount)
-			]),
-			E('div', {
-				'id': 'treadle-status-footer',
-				'style': 'margin-top:0.25em;'
-			}, [
-				this._renderFooter(status, mode)
-			])
-		];
-	},
-
-	// ── Status controls + polling ─────────────────────────────────────────
-
 	// Surface transport-level RPC failures (rpcd reload, network error,
 	// JSON parse) as a notification instead of letting them disappear
 	// into ui.createHandlerFn's generic handler. Without a .catch,
@@ -911,157 +1111,97 @@ return baseclass.extend({
 		});
 	},
 
-	_updateStatus: function(status) {
-		// Cached for _updateClashStats so the Traffic row stays hidden
-		// whenever sing-box isn't actually running — the daemon snapshot
-		// is a tmpfs file that doesn't clear when the service stops.
-		this._running = !!status.running;
-
-		// Reflect any out-of-band change to `enabled` (a CLI `uci set`, a
-		// concurrent admin) into the checkbox state. Don't fire the click
-		// handler — that would loop back into set_enabled.
-		var cb = document.getElementById('treadle-enable-checkbox');
-		if (cb) cb.checked = !!status.enabled;
-
-		var compatBox = document.getElementById('treadle-compat');
-		if (compatBox)
-			dom.content(compatBox, renderWarnings(status));
-
-		// Show/hide the runtime section as a whole. When flipping from
-		// disabled→enabled, the section was previously hidden but its
-		// inner DOM is still the stale snapshot from render(); rebuild it
-		// from current values so the badge/actions/footer match.
-		var runtime = document.getElementById('treadle-runtime-section');
-		if (runtime) {
-			if (status.enabled) {
-				runtime.style.display = '';
-				if (!document.getElementById('treadle-status-badge')) {
-					var info     = runtimeInfo();
-					var mode     = uci.get('treadle', 'inbounds', 'mode') || 'tun';
-					var subCount = uci.sections('treadle', 'subscription').length;
-					while (runtime.firstChild) runtime.removeChild(runtime.firstChild);
-					this._renderRuntime(status, subCount, info, mode)
-						.forEach(function(n) { runtime.appendChild(n); });
-					return;
-				}
-			} else {
-				runtime.style.display = 'none';
-				return;
-			}
-		}
-
+	// Bring every section in line with one get_dashboard reply. Called by
+	// render() for the first paint and by every poll tick after it. Works on
+	// the element references render() kept, so it also runs before the
+	// panel is attached.
+	_apply: function(d, withLogs) {
+		var els = this._els;
+		var status = d.status || {};
+		var g = d.groups || { groups: [] };
+		var stats = d.stats || {};
 		var state = this._runtimeState(status);
+		var enabled = !!status.enabled;
+		var running = state === 'running';
+		this._lastGroups = g;
 
-		var badge = document.getElementById('treadle-status-badge');
-		if (badge) {
-			while (badge.firstChild) badge.removeChild(badge.firstChild);
-			badge.appendChild(this._renderBadge(state));
-		}
-		var actions = document.getElementById('treadle-status-actions');
-		if (actions) {
-			while (actions.firstChild) actions.removeChild(actions.firstChild);
-			this._renderActions(state).forEach(function(b) {
-				actions.appendChild(b);
-			});
-		}
-		var pausenote = document.getElementById('treadle-status-pausenote');
-		if (pausenote) {
-			pausenote.style.display = (state === 'paused') ? '' : 'none';
-			if (state === 'paused') {
-				pausenote.style.marginTop = '0.4em';
-				pausenote.style.fontSize  = '0.9em';
-				pausenote.style.opacity   = '0.7';
-			}
-		}
-		var footer = document.getElementById('treadle-status-footer');
-		if (footer) {
-			var mode2 = uci.get('treadle', 'inbounds', 'mode') || 'tun';
-			footer.textContent = this._renderFooter(status, mode2);
-		}
-	},
+		// Reflect an out-of-band change to `enabled` (a CLI `uci set`, a
+		// concurrent admin) without firing the click handler.
+		var cb = els.enable.querySelector('input');
+		if (cb && cb.checked !== enabled)
+			dom.content(els.enable, this._renderEnable(enabled));
 
-	// Replace the Groups section's rows with the new snapshot. Hides the
-	// whole section when the snapshot is empty so the page collapses
-	// quietly back to the no-groups layout if the user deletes their last
-	// group (or turns clash API off) without reloading the tab.
-	_updateGroups: function(data) {
-		var section = document.getElementById('treadle-groups-section');
-		if (!section) return;
-		var groups = (data && Array.isArray(data.groups)) ? data.groups : [];
-		section.style.display = (groups.length > 0) ? '' : 'none';
-		if (groups.length === 0) return;
-		while (section.firstChild) section.removeChild(section.firstChild);
-		this._renderGroups(data).forEach(function(n) {
-			section.appendChild(n);
+		dom.content(els.compat, renderWarnings(status));
+		dom.content(els.badge, [ this._renderBadge(state, enabled) ]);
+		els.uptime.textContent = (running && status.uptime_s != null)
+			? _('for %s').format(formatUptime(status.uptime_s)) : '';
+
+		// "now using HK-03 · 106 ms" when the default is a group; just the
+		// latency when it is a single node.
+		var fin = uci.get('treadle', 'routing', 'final_outbound') || '';
+		var using = '';
+		arr(g.groups).forEach(function(x) {
+			if (x.tag === fin && x.now)
+				using = _('now using %s').format(x.now) +
+					(x.delay_ms ? ' · ' + x.delay_ms + ' ms' : '');
 		});
-	},
-
-	// In-place refresh of the four (or five, with memory) traffic spans.
-	// Re-renders the whole row only when the memory pill needs to appear
-	// or disappear — adding/removing a sibling mid-row would otherwise
-	// shift the others, and gating just that one span by display:none on
-	// every tick is cheap. Hides the whole section when clash API was
-	// disabled at runtime (Settings flipped while we were watching).
-	_updateClashStats: function(stats) {
-		var section = document.getElementById('treadle-traffic-section');
-		if (!section) return;
-		stats = stats || {};
-		// Show only when the clash API is on AND sing-box is currently
-		// up — a stale snapshot from a stopped sing-box is worse than
-		// silence. `_running` is set by _updateStatus on each tick;
-		// undefined on the first call (load() already gated the initial
-		// render).
-		if (stats.error || this._running === false) {
-			section.style.display = 'none';
-			return;
-		}
-		section.style.display = '';
-		var memEl  = document.getElementById('treadle-traffic-mem');
-		var wantMem = (typeof stats.mem_inuse === 'number' && stats.mem_inuse > 0);
-		if (wantMem !== !!memEl) {
-			while (section.firstChild) section.removeChild(section.firstChild);
-			this._renderTraffic(stats).forEach(function(n) { section.appendChild(n); });
-			return;
-		}
-		var set = function(id, text) {
-			var el = document.getElementById(id);
-			if (el) el.textContent = text;
-		};
-		set('treadle-traffic-down',     formatRate(stats.down_bps));
-		set('treadle-traffic-up',       formatRate(stats.up_bps));
-		set('treadle-traffic-conns',    String(stats.conn_count || 0));
-		set('treadle-traffic-total-down', formatBytes(stats.total_down));
-		set('treadle-traffic-total-up', formatBytes(stats.total_up));
-		if (wantMem) set('treadle-traffic-mem', formatBytes(stats.mem_inuse));
-	},
-
-	_updateLogTail: function(data) {
-		[['treadle-log-treadle', data.treadle],
-		 ['treadle-log-singbox', data.singbox]].forEach(function(pair) {
-			var el = document.getElementById(pair[0]);
-			if (!el) return;
-			el.value = formatLog(pair[1]);
-			el.scrollTop = el.scrollHeight;
+		arr(g.nodes).forEach(function(x) {
+			if (x.tag === fin && x.delay_ms)
+				using = x.delay_ms + ' ms';
 		});
+		els.using.textContent = running ? using : '';
+
+		var sig = state + '|' + enabled;
+		if (sig !== this._sigs.actions) {
+			this._sigs.actions = sig;
+			dom.content(els.actions, this._renderActions(state));
+		}
+		els.pause.style.display = (enabled && state === 'paused') ? '' : 'none';
+
+		// While disabled, nothing that describes a running service is shown:
+		// only the badge, the Enable toggle and the log.
+		els.actions.style.display = enabled ? 'flex' : 'none';
+		els.tiles.style.display = (enabled && (running || stats.error)) ? '' : 'none';
+		dom.content(els.tiles, this._renderTiles(stats));
+
+		dom.content(els.banner, this._renderBanner(g, running));
+
+		var health = [
+			Object.assign({ label: _('Connectivity') }, this._connectivityHealth(g, running)),
+			Object.assign({ label: _('DNS') }, this._dnsHealth()),
+			Object.assign({ label: _('Subscriptions') }, this._subscriptionHealth(d.subs))
+		];
+		els.health.style.display = enabled ? '' : 'none';
+		var hsig = JSON.stringify(health);
+		if (hsig !== this._sigs.health) {
+			this._sigs.health = hsig;
+			dom.content(els.health, this._renderHealth(health));
+		}
+
+		if (enabled && running) {
+			this._renderInUse(g);
+		} else {
+			els.inuse.style.display = 'none';
+			this._sigs.inuse = null;
+		}
+
+		if (withLogs && d.logs) {
+			this._logs = d.logs;
+			this._renderLog();
+		}
+		dom.content(els.footer, this._renderFooter(status));
 	},
 
-	// One poll tick: status badge/actions, groups and traffic, plus the two
-	// log tails when they are due. One RPC, so one handler process on the
-	// router per tick. Also called directly by the action handlers (with no
-	// argument, so logs are included) so the page reflects a
-	// start/stop/toggle immediately.
+	// One poll tick, or an immediate refresh after a start/stop/toggle
+	// (called with no argument, so logs are included). One RPC, so one
+	// handler process on the router per tick.
 	_refreshStatusNow: function(logsDue) {
 		var self = this;
 		var withLogs = (logsDue !== false);
 		// Omit `logs` rather than sending null: rpcd checks arguments against
 		// the method's declared types, and `logs` is declared as a number.
 		return callGetDashboard(withLogs ? TAIL_LINES : undefined).then(function(d) {
-			d = d || {};
-			self._updateStatus(d.status || {});
-			self._updateGroups(d.groups || { groups: [] });
-			self._updateClashStats(d.stats || {});
-			if (withLogs)
-				self._updateLogTail(d.logs || {});
+			self._apply(d || {}, withLogs);
 			self._scheduleStatusRefresh();
 		});
 	},
@@ -1094,8 +1234,6 @@ return baseclass.extend({
 				.catch(L.bind(this._scheduleStatusRefresh, this));
 		}, this), POLL_MS);
 	},
-
-	// ── Modals ────────────────────────────────────────────────────────────
 
 	_showFullLog: function() {
 		ui.showModal(_('Service log'), [

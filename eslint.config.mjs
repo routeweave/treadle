@@ -15,7 +15,7 @@ const luciGlobals = {
 	badges: "readonly", formpanel: "readonly", ordersave: "readonly",
 	subs: "readonly", subsync: "readonly", uid: "readonly",
 	statusPanel: "readonly", nodesPanel: "readonly", routingPanel: "readonly",
-	settingsPanel: "readonly", basicPanel: "readonly"
+	settingsPanel: "readonly"
 };
 
 const browserGlobals = {

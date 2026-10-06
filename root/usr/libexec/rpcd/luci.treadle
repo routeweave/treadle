@@ -778,6 +778,14 @@ local methods = {
 
 			local running = service_running()
 
+			-- Seconds since the start wrapper last ran sing-box, computed
+			-- here so the browser's clock does not matter.
+			local uptime_s
+			if running then
+				local started = tonumber((read_file("/var/run/treadle.started") or ""):match("%d+"))
+				if started and os.time() >= started then uptime_s = os.time() - started end
+			end
+
 			local version = singbox_version()
 
 			-- Transient pause marker: present when the user clicked Stop on
@@ -800,6 +808,7 @@ local methods = {
 				paused = paused,
 				version = version,
 				package_version = (not no_package) and treadle_version() or nil,
+				uptime_s = uptime_s,
 				compat  = compat,
 				standalone_singbox = standalone
 			}
@@ -1304,6 +1313,7 @@ local methods = {
 						            or string.lower(tostring(entry.type or "")),
 						now       = entry.now or "",
 						delay_ms  = entry.delay_ms,
+						members   = (type(entry.members) == "table") and entry.members or {},
 						interval  = u.interval or "",
 						tolerance = u.tolerance or ""
 					}
@@ -1312,7 +1322,27 @@ local methods = {
 			-- Stable order so the UI rows don't jump on each refresh —
 			-- pairs() over the snapshot is unordered. Sort by tag.
 			table.sort(out, function(a, b) return a.tag < b.tag end)
-			return { groups = out, updated_at = tonumber(parsed.updated_at) or 0 }
+			-- Single nodes in use and the connectivity check, from
+			-- active-watch's probe pass (see probe_pass there).
+			local nodes = {}
+			if type(parsed.nodes) == "table" then
+				for tag, e in pairs(parsed.nodes) do
+					if type(e) == "table" then
+						nodes[#nodes + 1] = { tag = tag, delay_ms = e.delay_ms,
+							tested_at = e.tested_at }
+					end
+				end
+				table.sort(nodes, function(a, b) return a.tag < b.tag end)
+			end
+			return {
+				groups       = out,
+				nodes        = nodes,
+				connectivity = (type(parsed.connectivity) == "table") and parsed.connectivity or nil,
+				updated_at   = tonumber(parsed.updated_at) or 0,
+				-- The router's clock, so the page can turn the timestamps
+				-- above into ages without trusting the browser's.
+				now          = os.time()
+			}
 		end
 	},
 
@@ -1522,6 +1552,24 @@ local methods = {
 -- only on an upgrade, so it is included only when `versions` is set, which
 -- the page does once on load. The parts share one UCI cursor.
 -- Added after the table so the call can reach the other methods.
+-- Seconds since each subscription's last sync. last_sync is stored as the
+-- router's local time ("YYYY-MM-DD HH:MM", see sync_one), which os.time
+-- reads back as local time too; the browser's clock and zone do not matter.
+local function subscription_ages(c)
+	local out, now = {}, os.time()
+	c:foreach("treadle", "subscription", function(s)
+		local y, mo, d, h, mi = (s.last_sync or ""):match("^(%d+)-(%d+)-(%d+) (%d+):(%d+)$")
+		local age
+		if y then
+			local t = os.time({ year = tonumber(y), month = tonumber(mo), day = tonumber(d),
+				hour = tonumber(h), min = tonumber(mi), sec = 0 })
+			if t and now >= t then age = now - t end
+		end
+		out[#out + 1] = { id = s[".name"], age_s = age }
+	end)
+	return out
+end
+
 methods.get_dashboard = {
 	args = { logs = 0, versions = false },
 	call = function(args)
@@ -1533,6 +1581,7 @@ methods.get_dashboard = {
 			return (ok and type(r) == "table") and r or fallback
 		end
 		local out = {
+			subs   = c and subscription_ages(c) or {},
 			status = part("get_status", nil, {}, args.versions ~= true),
 			groups = part("get_active_groups", nil, { groups = {} }),
 			stats  = part("get_clash_stats", nil, {})

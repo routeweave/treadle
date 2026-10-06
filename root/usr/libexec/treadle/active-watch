@@ -14,9 +14,14 @@
 --
 -- Snapshot at /var/etc/treadle/.active-nodes.json (tmpfs — cleared on reboot,
 -- which is fine: the first tick after boot primes the snapshot without
--- emitting a change line). The same file backs the Status page's Groups
--- panel via the get_active_groups RPC, so the UI sees the same view this
--- watcher logs against.
+-- emitting a change line). The same file backs the Status page's "Nodes in
+-- use" panel via the get_active_groups RPC, so the UI sees the same view
+-- this watcher logs against.
+--
+-- Once a minute it also tests the nodes that are in use but in no group
+-- (the default node or a rule's node), which sing-box never tests itself,
+-- and runs the connectivity check: one test through the node the default
+-- resolves to. Both go into the same snapshot.
 
 local jsonc = require "luci.jsonc"
 local lib   = dofile("/usr/libexec/treadle/treadlelib.lua")
@@ -149,13 +154,29 @@ local function group_state(parsed)
 			and type(p.now) == "string" and p.now ~= ""
 			and tag:sub(1, 1) ~= "_"
 		then
-			local entry = { now = p.now, type = p.type }
+			local entry = { now = p.now, type = p.type, members = {} }
 			-- Latency lives on the member proxy's history, not the group's.
 			local member = parsed.proxies[p.now]
 			if type(member) == "table" and type(member.history) == "table" then
 				local last = member.history[#member.history]
 				if last and type(last.delay) == "number" and last.delay > 0 then
 					entry.delay_ms = last.delay
+				end
+			end
+			-- Every member with its latest result, in the group's order, for
+			-- the Status page's expandable group rows. No result (none yet,
+			-- or the last test failed) leaves delay_ms out.
+			if type(p.all) == "table" then
+				for _, tag_m in ipairs(p.all) do
+					local mp = parsed.proxies[tag_m]
+					local d
+					if type(mp) == "table" and type(mp.history) == "table" then
+						local h = mp.history[#mp.history]
+						if h and type(h.delay) == "number" and h.delay > 0 then
+							d = h.delay
+						end
+					end
+					entry.members[#entry.members + 1] = { tag = tag_m, delay_ms = d }
 				end
 			end
 			-- A failed dial deletes the active member's test result but not
@@ -174,8 +195,18 @@ local function group_state(parsed)
 	return out
 end
 
+-- Results of the last probe pass (see probe_pass below), saved with every
+-- snapshot so the Status page reads one file.
+local probe_nodes = {}
+local probe_conn
+
 local function save_snapshot(state)
-	save_json(SNAPSHOT, { groups = state, updated_at = os.time() })
+	save_json(SNAPSHOT, {
+		groups       = state,
+		nodes        = probe_nodes,
+		connectivity = probe_conn,
+		updated_at   = os.time()
+	})
 end
 
 local function load_snapshot()
@@ -321,6 +352,129 @@ local function nudge_groups(current)
 	end
 end
 
+-- Probe pass, every PROBE_S. sing-box tests group members on each group's
+-- interval but never a node used on its own, so the Status page would have
+-- no latency for the default node or a rule's node when it is not a group.
+-- One GET /proxies/<tag>/delay tests a node through the running instance
+-- and records the result on the node, the way a group's test does. The
+-- connectivity check is the same test through whatever the default
+-- resolves to (a group's current member, or the node itself): CONN_FAIL_AFTER
+-- failures in a row mark it failing, logged once, with the recovery logged
+-- too. At most PROBE_MAX single nodes per pass, each bounded by
+-- PROBE_FETCH_S, so a pass of dead nodes cannot stall the 10 s tick for
+-- long.
+local PROBE_S          = 60
+local PROBE_MAX        = 6
+local PROBE_TIMEOUT_MS = 3000
+local PROBE_FETCH_S    = 6
+-- TREADLE_PROBE_URL lets the smoke test point the probe at a local server.
+local PROBE_URL        = os.getenv("TREADLE_PROBE_URL") or "https://www.gstatic.com/generate_204"
+local CONN_FAIL_AFTER  = 3
+local probe_last       = 0
+local conn_streak      = 0
+local conn_last_ok     = nil
+
+-- The default node and each enabled rule's node, from UCI. Read per pass
+-- through the libuci binding (fork-free) so an applied change is picked up.
+local function in_use()
+	local ok, res = pcall(function()
+		local c = require("uci").cursor()
+		local fin = c:get("treadle", "routing", "final_outbound") or ""
+		local rules = {}
+		c:foreach("treadle", "rule", function(s)
+			if s.enabled ~= "0" and s.outbound and s.outbound ~= "" then
+				rules[#rules + 1] = s.outbound
+			end
+		end)
+		c:close()
+		return { final = fin, rules = rules }
+	end)
+	return ok and res or { final = "", rules = {} }
+end
+
+-- Test one node; its latency in ms, or nil when it did not answer.
+local function test_node(tag)
+	-- Tag and URL are percent-encoded, so they cannot break out of the quotes.
+	local f = io.popen("uclient-fetch --timeout=" .. PROBE_FETCH_S
+		.. " -qO- 'http://" .. CLASH_HOST .. "/proxies/" .. lib.url_encode(tag)
+		.. "/delay?timeout=" .. PROBE_TIMEOUT_MS .. "&url=" .. lib.url_encode(PROBE_URL)
+		.. "' 2>/dev/null")
+	if not f then return nil end
+	local body = f:read("*a") or ""
+	f:close()
+	local ok, parsed = pcall(jsonc.parse, body)
+	local d = ok and type(parsed) == "table" and tonumber(parsed.delay) or nil
+	if d and d > 0 then return d end
+	return nil
+end
+
+local function probe_pass(parsed, current)
+	local proxies = parsed.proxies
+	local function known(tag)
+		return tag ~= "" and tag ~= "direct" and tag ~= "block"
+			and type(proxies[tag]) == "table"
+	end
+	local function is_group(tag)
+		local t = proxies[tag].type
+		return t == "URLTest" or t == "Selector"
+	end
+	local now = os.time()
+	local t = in_use()
+	local wanted = { t.final }
+	for _, r in ipairs(t.rules) do wanted[#wanted + 1] = r end
+
+	local nodes, count = {}, 0
+	for _, tag in ipairs(wanted) do
+		if known(tag) and not is_group(tag) and not nodes[tag] and count < PROBE_MAX then
+			count = count + 1
+			nodes[tag] = { delay_ms = test_node(tag), tested_at = now }
+		end
+	end
+	probe_nodes = nodes
+
+	local fin = t.final
+	if not known(fin) then
+		-- No proxy default (direct, block, unset, or a tag not in the running
+		-- config): nothing to check through.
+		probe_conn = { state = "none" }
+		conn_streak = 0
+		return
+	end
+	local via = fin
+	if is_group(fin) then
+		via = (current[fin] and current[fin].now) or proxies[fin].now or ""
+	end
+	local d
+	if nodes[via] then
+		d = nodes[via].delay_ms
+	elseif via ~= "" then
+		d = test_node(via)
+	end
+	if d then
+		if conn_streak >= CONN_FAIL_AFTER then
+			logmsg("info", string.format(
+				"connectivity: through %s again (%dms)", via, d))
+		end
+		conn_streak = 0
+		conn_last_ok = now
+	else
+		conn_streak = conn_streak + 1
+		if conn_streak == CONN_FAIL_AFTER then
+			logmsg("warning", string.format(
+				"connectivity: %d checks in a row through %s failed", conn_streak, via))
+		end
+	end
+	probe_conn = {
+		state      = (conn_streak >= CONN_FAIL_AFTER) and "failing" or (d and "ok" or "retrying"),
+		default    = fin,
+		via        = via,
+		delay_ms   = d,
+		streak     = conn_streak,
+		last_ok_at = conn_last_ok,
+		checked_at = now
+	}
+end
+
 -- Lightweight UCI peek so the daemon notices a clash_api_enabled flip
 -- between procd reconciliations. Without it the loop keeps polling 9090
 -- after the user disables clash, eventually logging 'clash API
@@ -452,6 +606,13 @@ while true do
 					end
 				end
 			end
+		end
+
+		-- Not on an event tick, for the same reason as the nudge below: a
+		-- fresh sing-box is still running its own first test pass.
+		if not event_tick and os.time() - probe_last >= PROBE_S then
+			probe_last = os.time()
+			probe_pass(parsed, current)
 		end
 
 		save_snapshot(current)
