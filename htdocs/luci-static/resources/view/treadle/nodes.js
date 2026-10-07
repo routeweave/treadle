@@ -23,6 +23,7 @@
 'require view.treadle.lib.subs as subs';
 'require view.treadle.lib.badges as badges';
 'require view.treadle.lib.subsync as subsync';
+'require view.treadle.lib.notify as notify';
 'require view.treadle.uid as uid';
 
 var callListSubscriptionNodes = rpc.declare({
@@ -183,12 +184,14 @@ return baseclass.extend({
 			// subscriptions one since that section renders first.
 			var clashOn = (uci.get('treadle', 'global', 'clash_api_enabled') === '1');
 			var subsCreate = node.querySelector('.cbi-section-create');
-			if (subsCreate && clashOn)
-				subsCreate.appendChild(E('button', {
+			if (subsCreate && clashOn) {
+				self._testAllBtn = E('button', {
 					'class': 'btn cbi-button cbi-button-neutral',
 					'style': 'margin-left:0.4em',
 					'click': ui.createHandlerFn(self, '_testAll')
-				}, [ _('Test all') ]));
+				}, [ _('Test all') ]);
+				subsCreate.appendChild(self._testAllBtn);
+			}
 			// Breathing room between the sections — matches the gap between
 			// sibling sections on the stock DHCP page. Groups and manual
 			// nodes are both `node` sections, so they share an element id;
@@ -360,13 +363,12 @@ return baseclass.extend({
 			if (!dropped.length)
 				return;
 			var modal = document.querySelector('#modal_overlay .modal');
-			var note = E('div', { 'class': 'alert-message warning' }, [
-				_('Not carried over from the link: %s').format(dropped.join(', '))
-			]);
+			var msg = _('Not carried over from the link: %s').format(dropped.join(', '));
 			if (modal && modal.firstChild)
-				modal.insertBefore(note, modal.firstChild.nextSibling);
+				modal.insertBefore(E('div', { 'class': 'alert-message warning' }, [ msg ]),
+					modal.firstChild.nextSibling);
 			else
-				ui.addNotification(null, note, 'warning');
+				notify.warning(msg);
 		});
 	},
 
@@ -1298,16 +1300,14 @@ return baseclass.extend({
 	// Adopt a runner that is already in flight (forked by the backend
 	// after a subscription's first sync, or started before a tab reload):
 	// when the status file says running, drive the standard poll loop so
-	// cells refresh as its results land. The detached span stands in for
-	// the banner's elapsed element — _pollTestAll only touches it when it
-	// is connected to the DOM.
+	// cells refresh as its results land.
 	_resumeTestPoll: function() {
 		var self = this;
 		return callTestAllStatus().then(function(status) {
 			if (!status || !status.running || self._testAllRunning)
 				return;
 			self._testAllRunning = true;
-			return self._pollTestAll(E('span'), null);
+			return self._pollTestAll();
 		}).catch(function() { /* no runner state — nothing to adopt */ });
 	},
 
@@ -1317,16 +1317,14 @@ return baseclass.extend({
 	// so the row doesn't jump) until the run settles. Refuses while a
 	// "Test all" batch is in flight — the runner's lock would reject the
 	// second run anyway, and the UI guard gives a friendlier message.
-	// Completion is driven by the same banner-less _pollTestAll loop the
-	// batch path uses: it refreshes the cell from the cache as the result
+	// Completion is driven by the same _pollTestAll loop the batch path
+	// uses: it refreshes the cell from the cache as the result
 	// lands, its timer is tracked in _testAllTimer (so _teardown cancels
 	// it on tab switch), and it clears _testAllRunning when done.
 	_testOne: function(btn, tag) {
 		var self = this;
 		if (this._testAllRunning) {
-			ui.addNotification(null,
-				E('p', _('A latency test run is already in progress.')),
-				'info');
+			notify.notice(_('A latency test run is already in progress.'));
 			return Promise.resolve();
 		}
 		this._testAllRunning = true;
@@ -1340,13 +1338,11 @@ return baseclass.extend({
 		return callTestAllStart([ tag ]).then(function(res) {
 			if (res && res.error)
 				throw new Error(res.error);
-			return self._pollTestAll(E('span'), null);
+			return self._pollTestAll();
 		}).catch(function(err) {
 			self._testAllRunning = false;
 			var detail = err && (err.message || String(err)) || _('unknown error');
-			ui.addNotification(null,
-				E('p', [ _('Test failed: '), detail ]),
-				'error');
+			notify.error(_('Test failed: ') + detail);
 		}).finally(function() {
 			btn.style.width  = '';
 			btn.style.height = '';
@@ -1380,13 +1376,13 @@ return baseclass.extend({
 	},
 
 	// Section "Test all" handler — dispatches directly. Probing is
-	// non-destructive and the progress banner already reports what's
-	// running, so a confirm step only added friction (the per-subscription
+	// non-destructive and the spinning button already shows a run is in
+	// progress, so a confirm step only added friction (the per-subscription
 	// batch button never had one either).
 	_testAll: function() {
 		var tags = this._collectAllTags();
 		if (tags.length === 0) {
-			ui.addNotification(null, E('p', _('No nodes to test.')), 'info');
+			notify.notice(_('No nodes to test.'));
 			return;
 		}
 		return this._doTestAll(tags);
@@ -1404,9 +1400,7 @@ return baseclass.extend({
 	// omit/empty to probe every node Treadle knows about.
 	_doTestAll: function(tags) {
 		if (this._testAllRunning) {
-			ui.addNotification(null,
-				E('p', _('A latency test run is already in progress.')),
-				'warning');
+			notify.notice(_('A latency test run is already in progress.'));
 			return Promise.resolve();
 		}
 		this._testAllRunning = true;
@@ -1415,36 +1409,35 @@ return baseclass.extend({
 		var self = this;
 		ui.hideModal();
 
-		var elapsedEl = E('span', {}, [ _('Starting…') ]);
-		var banner = ui.addNotification(_('Latency tests running'), [
-			E('p', {}, [ elapsedEl ]),
-			E('p', { 'style': 'opacity:0.7; font-size:0.9em; margin:0;' }, [
-				_('Probes run in parallel on the device. ' +
-				  'You can switch tabs — results land as they arrive.')
-			])
-		], 'info');
-
 		return callTestAllStart(Array.isArray(tags) ? tags : []).then(function(res) {
 			if (res && res.error) {
 				throw new Error(res.error);
 			}
-			return self._pollTestAll(elapsedEl, banner);
+			return self._pollTestAll();
 		}).catch(function(err) {
 			self._testAllRunning = false;
-			if (banner && banner.parentNode)
-				banner.parentNode.removeChild(banner);
 			var detail = err && (err.message || String(err)) || _('unknown error');
-			ui.addNotification(null,
-				E('p', [ _('Test all failed: '), detail ]),
-				'error');
+			notify.error(_('Test all failed: ') + detail);
 		});
 	},
 
+	// Spin and disable the section's Test all button while any run is in
+	// flight — the progress indicator for every run, whichever button (or
+	// the backend) started it. Same look as ui.createHandlerFn's busy state,
+	// which also drives it when the run came from that button.
+	_setTestBusy: function(on) {
+		var btn = this._testAllBtn;
+		if (!btn)
+			return;
+		btn.classList.toggle('spinning', on);
+		btn.disabled = on;
+	},
+
 	// Drive the poll loop while the background runner does its work.
-	// Each tick: ask for status, refresh cells from the cache, update
-	// the banner's elapsed counter. Stops when status.running flips off,
-	// when the safety timeout trips, or when the panel is torn down.
-	_pollTestAll: function(elapsedEl, banner) {
+	// Each tick: ask for status and refresh cells from the cache. Stops
+	// when status.running flips off, when the safety timeout trips, or
+	// when the panel is torn down.
+	_pollTestAll: function() {
 		var self = this;
 		var startMs = Date.now();
 		var POLL_INTERVAL = 1500;
@@ -1473,9 +1466,6 @@ return baseclass.extend({
 					reject(new Error(_('runner timed out (status file never cleared)')));
 					return;
 				}
-				var elapsed = Math.floor((Date.now() - startMs) / 1000);
-				if (elapsedEl.parentNode)
-					elapsedEl.textContent = _('Probing… %ds elapsed').format(elapsed);
 
 				callTestAllStatus().then(function(status) {
 					return refreshCells().then(function() { return status; });
@@ -1489,28 +1479,25 @@ return baseclass.extend({
 					self._testAllTimer = setTimeout(tick, POLL_INTERVAL);
 				});
 			}
+			self._setTestBusy(true);
 			self._testAllTimer = setTimeout(tick, POLL_INTERVAL);
+		}).finally(function() {
+			self._setTestBusy(false);
 		}).then(function(status) {
-			if (banner && banner.parentNode)
-				banner.parentNode.removeChild(banner);
 			// Left the tab mid-run: _teardown already reset the state (a new
 			// mount may own it by now), and there is no result to report.
 			if (status && status.aborted)
 				return;
 			self._testAllRunning = false;
 			if (status && status.error) {
-				ui.addNotification(null,
-					E('p', _('Test all failed: %s').format(status.error)),
-					'error');
+				notify.error(_('Test all failed: %s').format(status.error));
 				return;
 			}
 			var tested = (status && status.tested) || 0;
 			var errors = (status && status.errors) || 0;
-			ui.addNotification(null, E('p',
-				errors > 0
-					? _('Tested %d nodes — %d timed out.').format(tested + errors, errors)
-					: _('Tested %d nodes.').format(tested)),
-				'info');
+			notify.notice(errors > 0
+				? _('Tested %d nodes — %d timed out.').format(tested + errors, errors)
+				: _('Tested %d nodes.').format(tested));
 		});
 	},
 
@@ -1570,9 +1557,8 @@ return baseclass.extend({
 		});
 
 		if (changed > 0)
-			ui.addNotification(null, E('p',
-				_('Renamed "%s" to "%s" — %d routing reference(s) updated to follow.')
-					.format(oldTag, newTag, changed)), 'info');
+			notify.notice(_('Renamed "%s" to "%s" — %d routing reference(s) updated to follow.')
+				.format(oldTag, newTag, changed));
 	},
 
 	handleSave:      function() { return formpanel.save(this); },

@@ -9,6 +9,7 @@
 'require rpc';
 'require ui';
 'require uci';
+'require view.treadle.lib.notify as notify';
 
 var callSyncSubscription = rpc.declare({
 	object: 'luci.treadle',
@@ -64,17 +65,14 @@ return baseclass.extend({
 		btn.classList.add('treadle-sync-spin');
 		btn.style.width = w + 'px';
 		return callSyncSubscription(section_id).then(function(res) {
-			var ok = res && res.status === 'ok';
-			ui.addNotification(null, E('p',
-				ok ? _('Synced: %d nodes.').format(res.node_count || 0)
-				   : _('Sync failed.')),
-				ok ? 'info' : 'warning');
-			if (!ok)
+			if (!res || res.status !== 'ok') {
+				notify.error(_('Sync failed.'));
 				return;
+			}
+			notify.notice(_('Synced: %d nodes.').format(res.node_count || 0));
 			return callReloadIfChanged().then(function(r) {
 				if (r && r.reloaded)
-					ui.addNotification(null,
-						E('p', _('Active node changed — sing-box reloaded.')), 'info');
+					notify.notice(_('Active node changed — sing-box reloaded.'));
 				// Close the edit modal first if the sync was triggered
 				// from inside it — remountActive() would orphan it.
 				ui.hideModal();
@@ -87,7 +85,7 @@ return baseclass.extend({
 				});
 			});
 		}).catch(function() {
-			ui.addNotification(null, E('p', _('Sync failed.')), 'error');
+			notify.error(_('Sync failed.'));
 		}).finally(function() {
 			// A failed or no-op sync keeps the same DOM (no remount) —
 			// return the button to its label state.

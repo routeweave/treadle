@@ -249,7 +249,7 @@ return view.extend({
 			});
 		}).catch(function(err) {
 			if (gen !== self._mountGen) return;
-			dom.content(mountTarget, E('div', { 'class': 'alert-message warning' }, [
+			dom.content(mountTarget, E('div', { 'class': 'alert-message error' }, [
 				_('Failed to load this tab: ') + (err && err.message ? err.message : err)
 			]));
 		});

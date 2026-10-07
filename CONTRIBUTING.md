@@ -180,7 +180,7 @@ Makefile                         # OpenWrt SDK build descriptor (luci.mk)
 htdocs/luci-static/resources/view/treadle/
 ├── main.js                      # Host view — the tab shell
 ├── status.js  nodes.js  routing.js  settings.js   # One panel per tab
-└── lib/                         # Shared view helpers (formpanel, ordersave)
+└── lib/                         # Shared view helpers (formpanel, ordersave, notify)
 root/
 ├── etc/
 │   ├── config/treadle           # Default UCI config (conffile)

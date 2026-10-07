@@ -12,7 +12,7 @@ const luciGlobals = {
 	// 'require <module>' bindings
 	baseclass: "readonly", dom: "readonly", form: "readonly", rpc: "readonly",
 	session: "readonly", uci: "readonly", ui: "readonly", view: "readonly",
-	badges: "readonly", formpanel: "readonly", ordersave: "readonly",
+	badges: "readonly", formpanel: "readonly", notify: "readonly", ordersave: "readonly",
 	subs: "readonly", subsync: "readonly", uid: "readonly",
 	statusPanel: "readonly", nodesPanel: "readonly", routingPanel: "readonly",
 	settingsPanel: "readonly"

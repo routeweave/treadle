@@ -39,6 +39,7 @@
 'require session';
 'require view.treadle.lib.subs as subs';
 'require view.treadle.lib.badges as badges';
+'require view.treadle.lib.notify as notify';
 
 // Everything a poll tick needs, from one handler process:
 //   status — enabled / running / paused / version / mode, plus
@@ -1073,8 +1074,8 @@ return baseclass.extend({
 			return uci.load('treadle').then(function() {
 				sel.disabled = false;
 				sel.value = oldTag;
-				ui.addNotification(null, E('p', _('Failed to set the default node: ') +
-					((err && err.message) ? err.message : err)), 'error');
+				notify.error(_('Failed to set the default node: ') +
+					((err && err.message) ? err.message : err));
 			});
 		});
 	},
@@ -1086,7 +1087,7 @@ return baseclass.extend({
 	// silently skipped.
 	_notifyRpcError: function(label, err) {
 		var msg = (err && err.message) ? err.message : String(err);
-		ui.addNotification(null, E('p', label + ': ' + msg), 'error');
+		notify.error(label + ': ' + msg);
 	},
 
 	handleToggleEnabled: function(ev) {
@@ -1095,12 +1096,10 @@ return baseclass.extend({
 		var on = !!(cb && cb.checked);
 		return callSetEnabled(on).then(function(res) {
 			if (res && res.ok === false) {
-				ui.addNotification(null, E('p',
-					on ? _('Enable failed — check the log below.')
-					   : _('Disable failed — check the log below.')), 'error');
+				notify.error(on ? _('Enable failed — check the log below.')
+				                : _('Disable failed — check the log below.'));
 			} else {
-				ui.addNotification(null, E('p',
-					on ? _('Treadle enabled.') : _('Treadle disabled.')), 'info');
+				notify.notice(on ? _('Treadle enabled.') : _('Treadle disabled.'));
 			}
 			return self._refreshStatusNow();
 		}).catch(function(err) {
@@ -1113,11 +1112,10 @@ return baseclass.extend({
 		var self = this;
 		return callStart().then(function(res) {
 			if (res && res.ok === false) {
-				ui.addNotification(null, E('p',
-					res.error ? _('Start failed: ') + res.error
-					          : _('Start failed — check the log below.')), 'error');
+				notify.error(res.error ? _('Start failed: ') + res.error
+				                       : _('Start failed — check the log below.'));
 			} else {
-				ui.addNotification(null, E('p', _('Service started.')), 'info');
+				notify.notice(_('Service started.'));
 			}
 			return self._refreshStatusNow();
 		}).catch(function(err) {
@@ -1129,8 +1127,7 @@ return baseclass.extend({
 	handleStop: function() {
 		var self = this;
 		return callStop().then(function() {
-			ui.addNotification(null, E('p',
-				_('Service stopped — will resume on next reboot.')), 'info');
+			notify.notice(_('Service stopped — will resume on next reboot.'));
 			return self._refreshStatusNow();
 		}).catch(function(err) {
 			self._notifyRpcError(_('Stop failed'), err);
@@ -1142,9 +1139,9 @@ return baseclass.extend({
 		var self = this;
 		return callRestart().then(function(res) {
 			if (res && res.ok === false) {
-				ui.addNotification(null, E('p', _('Restart failed — check the log below.')), 'error');
+				notify.error(_('Restart failed — check the log below.'));
 			} else {
-				ui.addNotification(null, E('p', _('Service restarted.')), 'info');
+				notify.notice(_('Service restarted.'));
 			}
 			return self._refreshStatusNow();
 		}).catch(function(err) {

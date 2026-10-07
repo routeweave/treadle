@@ -24,6 +24,7 @@
 'require session';
 'require ui';
 'require view.treadle.lib.formpanel as formpanel';
+'require view.treadle.lib.notify as notify';
 
 var callGetWanDns = rpc.declare({
 	object: 'luci.treadle',
@@ -712,16 +713,16 @@ return baseclass.extend({
 		var since = Math.floor(Date.now() / 1000);
 		return promise.then(function(res) {
 			if (res && res.error) {
-				ui.addNotification(null, E('p', res.error === 'busy'
+				notify.error(res.error === 'busy'
 					? _('A sing-box check or install is already running.')
-					: _('Could not start: %s').format(res.error)), 'error');
+					: _('Could not start: %s').format(res.error));
 				return;
 			}
 			self._sbu = Object.assign({}, self._sbu, { busy: true, step: _('Starting…'), error: null, message: null });
 			self._renderSbuBody();
 			self._sbuPoll(since);
 		}).catch(function(e) {
-			ui.addNotification(null, E('p', _('Could not start: %s').format(e.message || e)), 'error');
+			notify.error(_('Could not start: %s').format(e.message || e));
 		});
 	},
 
@@ -759,7 +760,7 @@ return baseclass.extend({
 				errEl.style.display = '';
 				el.scrollIntoView({ block: 'center' });
 			}
-			ui.addNotification(null, E('p', msg), 'error');
+			notify.error(msg);
 			return false;
 		};
 		if (errEl) errEl.style.display = 'none';

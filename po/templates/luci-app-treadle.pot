@@ -460,16 +460,6 @@ msgstr ""
 msgid "Starting…"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1044
-msgid "Latency tests running"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1047
-msgid ""
-"Probes run in parallel on the device. You can switch tabs — results land as "
-"they arrive."
-msgstr ""
-
 #: htdocs/luci-static/resources/view/treadle/nodes.js:1061
 msgid "unknown error"
 msgstr ""
@@ -480,11 +470,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:1093
 msgid "runner timed out (status file never cleared)"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1098
-#, javascript-format
-msgid "Probing… %ds elapsed"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:1119
