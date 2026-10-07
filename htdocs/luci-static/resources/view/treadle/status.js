@@ -363,6 +363,9 @@ function arr(v) {
 
 return baseclass.extend({
 	_statusTimer: null,
+	// Bumped by render() and _teardown(): a poll reply, timer or resume
+	// listener from an earlier mount sees a different number and stops.
+	_pollGen: 0,
 	_onVisible: null,
 	_packageVersion: null,
 	_tick: 0,
@@ -447,14 +450,13 @@ return baseclass.extend({
 
 		this._apply(d, true);
 
-		// Polling has to wait until the panel's DOM is attached: render()
-		// builds a detached node and the host shell (main.js) appends it in a
-		// .then microtask after we return. requestAnimationFrame fires after
-		// that microtask, so _scheduleStatusRefresh's "is the panel mounted?"
-		// guard can see the badge by then.
-		requestAnimationFrame(L.bind(function() {
-			this._scheduleStatusRefresh();
-		}, this));
+		// Start polling now, attached or not. On a first page load the host
+		// shell (main.js) is handed to LuCI only after a further RPC, so a
+		// "is the panel in the document yet?" check made here can fail and
+		// would stop the poll for good. The generation tells a live mount
+		// from a torn-down one instead.
+		this._pollGen++;
+		this._scheduleStatusRefresh();
 
 		self._renderLogBar();
 		return node;
@@ -1238,24 +1240,32 @@ return baseclass.extend({
 	// handler process on the router per tick.
 	_refreshStatusNow: function(logsDue) {
 		var self = this;
+		var gen = this._pollGen;
 		var withLogs = (logsDue !== false);
 		// Omit `logs` rather than sending null: rpcd checks arguments against
 		// the method's declared types, and `logs` is declared as a number.
 		return callGetDashboard(withLogs ? TAIL_LINES : undefined).then(function(d) {
+			// A reply that lands after a tab switch must not restart the poll.
+			if (gen !== self._pollGen) return;
 			self._apply(d || {}, withLogs);
 			self._scheduleStatusRefresh();
 		});
 	},
 
+	// Reschedule after a failed refresh, unless the panel was torn down
+	// while the request was in flight.
+	_retryStatusRefresh: function(gen) {
+		if (gen === this._pollGen)
+			this._scheduleStatusRefresh();
+	},
+
 	_scheduleStatusRefresh: function() {
-		// Bail if the tab's DOM is gone (switched away) so a stray in-flight
-		// poll cannot resurrect the timer after _teardown.
-		if (!document.getElementById('treadle-status-badge'))
-			return;
+		var gen = this._pollGen;
 		if (this._statusTimer)
 			clearTimeout(this._statusTimer);
 		this._statusTimer = setTimeout(L.bind(function() {
 			this._statusTimer = null;
+			if (gen !== this._pollGen) return;
 			// A hidden browser tab skips its ticks: a LuCI tab left open in
 			// the background would otherwise keep a handler process (and a
 			// whole-syslog scan every 10 s) running on the router for as
@@ -1272,7 +1282,7 @@ return baseclass.extend({
 			// here on failure so the next tick retries.
 			this._tick++;
 			this._refreshStatusNow(this._tick % LOG_EVERY === 0)
-				.catch(L.bind(this._scheduleStatusRefresh, this));
+				.catch(L.bind(this._retryStatusRefresh, this, gen));
 		}, this), POLL_MS);
 	},
 
@@ -1369,14 +1379,15 @@ return baseclass.extend({
 	_resumeWhenVisible: function() {
 		if (this._onVisible)
 			return;
+		var gen = this._pollGen;
 		this._onVisible = L.bind(function() {
 			if (document.hidden)
 				return;
 			this._stopWaitingVisible();
-			if (!document.getElementById('treadle-status-badge'))
+			if (gen !== this._pollGen)
 				return;
 			this._refreshStatusNow(true)
-				.catch(L.bind(this._scheduleStatusRefresh, this));
+				.catch(L.bind(this._retryStatusRefresh, this, gen));
 		}, this);
 		document.addEventListener('visibilitychange', this._onVisible);
 	},
@@ -1389,6 +1400,7 @@ return baseclass.extend({
 	},
 
 	_teardown: function() {
+		this._pollGen++;
 		if (this._statusTimer) {
 			clearTimeout(this._statusTimer);
 			this._statusTimer = null;

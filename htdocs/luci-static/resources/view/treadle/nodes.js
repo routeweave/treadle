@@ -1491,9 +1491,13 @@ return baseclass.extend({
 			}
 			self._testAllTimer = setTimeout(tick, POLL_INTERVAL);
 		}).then(function(status) {
-			self._testAllRunning = false;
 			if (banner && banner.parentNode)
 				banner.parentNode.removeChild(banner);
+			// Left the tab mid-run: _teardown already reset the state (a new
+			// mount may own it by now), and there is no result to report.
+			if (status && status.aborted)
+				return;
+			self._testAllRunning = false;
 			if (status && status.error) {
 				ui.addNotification(null,
 					E('p', _('Test all failed: %s').format(status.error)),
