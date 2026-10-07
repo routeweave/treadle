@@ -1392,6 +1392,7 @@ local methods = {
 			return {
 				up_bps     = tonumber(parsed.up_bps)     or 0,
 				down_bps   = tonumber(parsed.down_bps)   or 0,
+				by_tag     = type(parsed.by_tag) == "table" and parsed.by_tag or {},
 				total_up   = tonumber(parsed.total_up)   or 0,
 				total_down = tonumber(parsed.total_down) or 0,
 				conn_count = tonumber(parsed.conn_count) or 0,

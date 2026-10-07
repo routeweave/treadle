@@ -708,13 +708,25 @@ return baseclass.extend({
 		this._open[tag] = !this._open[tag];
 		session.setLocalData('treadle.statusOpen', this._open);
 		this._sigs.inuse = null;
-		this._renderInUse(this._lastGroups || {});
+		this._renderInUse(this._lastGroups || {}, this._lastStats || {});
 	},
 
-	_renderInUse: function(g) {
+	// "↓ 1.9 MiB/s ↑ 12.0 KiB/s" for one row, or a dash when nothing moved
+	// in the last sample. A group's figure sums its members.
+	_bandwidth: function(rates, tag) {
+		var t = rates[tag];
+		if (!t || !(t.down > 0 || t.up > 0))
+			return E('span', { 'class': 'treadle-muted' }, [ '—' ]);
+		return E('span', { 'style': 'white-space:nowrap;' }, [
+			'↓ ' + formatRate(t.down) + ' ↑ ' + formatRate(t.up)
+		]);
+	},
+
+	_renderInUse: function(g, stats) {
 		var self = this;
 		var rows = this._inUseRows(g);
-		var sig = JSON.stringify([ rows, this._open ]);
+		var rates = (stats && stats.by_tag) || {};
+		var sig = JSON.stringify([ rows, rates, this._open ]);
 		if (sig === this._sigs.inuse) return;
 		this._sigs.inuse = sig;
 
@@ -753,13 +765,14 @@ return baseclass.extend({
 				E('td', { 'class': 'td', 'style': 'width:1%;' }, [ toggle ]),
 				E('td', { 'class': 'td' }, name),
 				E('td', { 'class': 'td' }, [ latency ]),
+				E('td', { 'class': 'td treadle-hide-narrow' }, [ self._bandwidth(rates, r.tag) ]),
 				E('td', { 'class': 'td treadle-hide-narrow' }, [ r.usedBy || E('span', { 'class': 'treadle-muted' }, [ _('inside another group') ]) ]),
 				E('td', { 'class': 'td treadle-muted treadle-hide-narrow' }, [ kind ])
 			]));
 			if (open)
 				trs.push(E('tr', { 'class': 'tr' }, [
 					E('td', { 'class': 'td' }),
-					E('td', { 'class': 'td', 'colspan': '4' }, [
+					E('td', { 'class': 'td', 'colspan': '5' }, [
 						// One chip per member, name and latency together, so a
 						// badge can never be read as the next member's. The
 						// member in use is bold with a thicker border, so it
@@ -790,6 +803,7 @@ return baseclass.extend({
 					E('th', { 'class': 'th' }),
 					E('th', { 'class': 'th' }, [ _('Node') ]),
 					E('th', { 'class': 'th' }, [ _('Latency') ]),
+					E('th', { 'class': 'th treadle-hide-narrow' }, [ _('Bandwidth') ]),
 					E('th', { 'class': 'th treadle-hide-narrow' }, [ _('Used by') ]),
 					E('th', { 'class': 'th treadle-hide-narrow' }, [ _('Kind') ])
 				]) ]),
@@ -1150,6 +1164,7 @@ return baseclass.extend({
 		var enabled = !!status.enabled;
 		var running = state === 'running';
 		this._lastGroups = g;
+		this._lastStats = stats;
 
 		// Reflect an out-of-band change to `enabled` (a CLI `uci set`, a
 		// concurrent admin) without firing the click handler.
@@ -1205,7 +1220,7 @@ return baseclass.extend({
 		}
 
 		if (enabled && running) {
-			this._renderInUse(g);
+			this._renderInUse(g, stats);
 		} else {
 			els.inuse.style.display = 'none';
 			this._sigs.inuse = null;

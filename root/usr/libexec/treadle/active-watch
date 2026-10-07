@@ -265,6 +265,10 @@ local post_event_until  = 0
 local prev_total_up   = nil
 local prev_total_down = nil
 local prev_stats_ts   = nil
+-- Per-connection counters from the previous fetch, keyed by connection id,
+-- so each outbound's rate can be diffed the same way. Rebuilt on every
+-- fetch, so it only ever holds the live connections.
+local prev_conn       = {}
 -- Set when sing-box restarted on a tick that skipped /connections, so the
 -- next fetch does not diff against the old process's counters.
 local stats_stale     = false
@@ -641,20 +645,60 @@ while true do
 			local mem = tonumber(conns.memory)
 			local now_ts = os.time()
 			local up_bps, down_bps = 0, 0
+			local dt = 0
 			if prev_total_up and prev_total_down and prev_stats_ts
 				and not stats_stale
 				and total_up >= prev_total_up
 				and total_down >= prev_total_down
 			then
-				local dt = now_ts - prev_stats_ts
+				dt = now_ts - prev_stats_ts
 				if dt > 0 then
 					up_bps   = math.floor((total_up   - prev_total_up)   / dt)
 					down_bps = math.floor((total_down - prev_total_down) / dt)
 				end
 			end
+			-- Rate per outbound tag. A connection counts toward every tag on
+			-- its chain (the node and any group it went through), so a
+			-- group's figure is the sum of its members. A connection first
+			-- seen this tick counts from zero: it opened inside the window.
+			-- Bytes a connection moved and closed between two ticks are
+			-- not seen; that undercounts short flows slightly.
+			local by_tag, cur_conn = {}, {}
+			local conn_list = (type(conns.connections) == "table") and conns.connections or {}
+			for _, cn in ipairs(conn_list) do
+				local cu = tonumber(cn.upload)   or 0
+				local cd = tonumber(cn.download) or 0
+				if cn.id then cur_conn[cn.id] = { cu, cd } end
+				if dt > 0 and type(cn.chains) == "table" then
+					local p = prev_conn[cn.id]
+					local du = cu - (p and p[1] or 0)
+					local dd = cd - (p and p[2] or 0)
+					if du < 0 then du = 0 end
+					if dd < 0 then dd = 0 end
+					if du > 0 or dd > 0 then
+						local seen = {}
+						for _, tag in ipairs(cn.chains) do
+							if not seen[tag] then
+								seen[tag] = true
+								local t = by_tag[tag]
+								if not t then t = { up = 0, down = 0 }; by_tag[tag] = t end
+								t.up   = t.up   + du
+								t.down = t.down + dd
+							end
+						end
+					end
+				end
+			end
+			prev_conn = cur_conn
+			for tag, t in pairs(by_tag) do
+				t.up   = math.floor(t.up   / dt)
+				t.down = math.floor(t.down / dt)
+				if t.up == 0 and t.down == 0 then by_tag[tag] = nil end
+			end
 			save_json(STATS_SNAP, {
 				up_bps     = up_bps,
 				down_bps   = down_bps,
+				by_tag     = by_tag,
 				total_up   = total_up,
 				total_down = total_down,
 				conn_count = cs,
