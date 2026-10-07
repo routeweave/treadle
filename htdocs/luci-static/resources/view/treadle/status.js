@@ -653,15 +653,16 @@ return baseclass.extend({
 
 	// Everything traffic can go through and what uses it: the default node
 	// and each enabled rule's node, merged per node, then any other group in
-	// the running config. "direct" and "block" are not nodes and are left
-	// out.
+	// the running config, then "direct", which is always a possible path.
+	// Direct takes the default's place at the top when it is the default.
+	// "block" carries no traffic and is left out.
 	_inUseRows: function(g) {
 		var groups = arr(g.groups), nodes = arr(g.nodes);
 		var groupOf = {}, nodeOf = {}, users = {}, order = [];
 		groups.forEach(function(x) { groupOf[x.tag] = x; });
 		nodes.forEach(function(x) { nodeOf[x.tag] = x; });
 		var add = function(tag, user) {
-			if (!tag || tag === 'direct' || tag === 'block') return;
+			if (!tag || tag === 'block') return;
 			if (!users[tag]) { users[tag] = { isDefault: false, rules: [] }; order.push(tag); }
 			if (user === null) users[tag].isDefault = true;
 			else users[tag].rules.push(user);
@@ -675,12 +676,18 @@ return baseclass.extend({
 			add(r.outbound, r.name || _('unnamed rule'));
 		});
 		groups.forEach(function(x) { if (!users[x.tag]) { users[x.tag] = { isDefault: false, rules: [] }; order.push(x.tag); } });
+		if (!users.direct) {
+			users.direct = { isDefault: false, rules: [] };
+			order.push('direct');
+		} else if (!users.direct.isDefault)
+			order.push(order.splice(order.indexOf('direct'), 1)[0]);
 		return order.map(function(tag) {
 			var u = users[tag], parts = [];
 			if (u.isDefault) parts.push(_('Default'));
 			if (u.rules.length === 1) parts.push(_('Rule: %s').format(u.rules[0]));
 			else if (u.rules.length > 1) parts.push(_('Rules: %s').format(u.rules.join(', ')));
-			return { tag: tag, usedBy: parts.join(' · '), group: groupOf[tag], node: nodeOf[tag] };
+			return { tag: tag, usedBy: parts.join(' · '), group: groupOf[tag], node: nodeOf[tag],
+				direct: tag === 'direct' };
 		});
 	},
 
@@ -748,19 +755,19 @@ return baseclass.extend({
 				'aria-label': (open ? _('Hide members of %s') : _('Show members of %s')).format(r.tag),
 				'click': function() { self._toggleOpen(r.tag); }
 			}, [ open ? '▾' : '▸' ]) : '';
-			var kind = x
-				? _('Group · %d nodes').format(arr(x.members).length)
+			var kind = r.direct ? _('No proxy')
+				: x ? _('Group · %d nodes').format(arr(x.members).length)
 				: self._nodeKind(r.tag);
 			// On a phone the Used by and Kind columns are hidden and the same
 			// text moves under the node name.
 			var name = [
-				E('strong', {}, [ r.tag ]),
+				E('strong', {}, [ r.direct ? _('Direct') : r.tag ]),
 				(x && x.now) ? E('span', { 'class': 'treadle-muted' }, [ '  →  ' + x.now ]) : '',
 				r.usedBy ? E('span', { 'class': 'treadle-muted treadle-show-narrow' }, [ r.usedBy ]) : '',
 				E('span', { 'class': 'treadle-muted treadle-show-narrow' }, [ kind ])
 			];
-			var latency = x
-				? self._latency(x.delay_ms, !!x.now)
+			var latency = r.direct ? E('span', { 'class': 'treadle-muted' }, [ '—' ])
+				: x ? self._latency(x.delay_ms, !!x.now)
 				: self._latency(r.node && r.node.delay_ms, !!(r.node && r.node.tested_at));
 			// Node and latency side by side: "is the node I go through
 			// healthy?" is the question this table answers first.
@@ -769,7 +776,9 @@ return baseclass.extend({
 				E('td', { 'class': 'td' }, name),
 				E('td', { 'class': 'td' }, [ latency ]),
 				E('td', { 'class': 'td treadle-hide-narrow' }, [ self._bandwidth(rates, r.tag) ]),
-				E('td', { 'class': 'td treadle-hide-narrow' }, [ r.usedBy || E('span', { 'class': 'treadle-muted' }, [ _('inside another group') ]) ]),
+				E('td', { 'class': 'td treadle-hide-narrow' }, [ r.usedBy || E('span', { 'class': 'treadle-muted' }, [
+					r.direct ? _('built-in rules only (local networks)') : _('inside another group')
+				]) ]),
 				E('td', { 'class': 'td treadle-muted treadle-hide-narrow' }, [ kind ])
 			]));
 			if (open)
