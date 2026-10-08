@@ -7,10 +7,8 @@
 // Layout (top → bottom):
 //   warnings (sing-box too old for something configured, standalone service)
 //   get started (only while nothing is configured)
-//   banner (only while the connectivity check is failing)
 //   service card — state + uptime, default-node switcher and the node in
 //     use, Start/Stop/Restart, live traffic tiles, the Enable toggle
-//   health — connectivity, DNS, subscriptions
 //   nodes in use — everything traffic can go through and what uses it;
 //     groups expand to their members
 //   activity — Treadle events or the sing-box log, optionally warnings only
@@ -241,37 +239,28 @@ function downloadConfig(json) {
 	requestAnimationFrame(function() { URL.revokeObjectURL(url); });
 }
 
-// Colours for the health dots. The badges reuse LuCI's label classes; these
-// small dots have no class of their own, so they take literal colours that
-// read on both the light and the dark themes.
-var DOT = {
-	ok:   '#26a65b',
-	warn: '#e0a43a',
-	bad:  '#dc3545',
-	off:  'rgba(128,128,128,0.6)'
-};
+// Border of the member chip in use. The badges reuse LuCI's label classes;
+// the chip has no class of its own, so it takes a literal green that reads
+// on both the light and the dark themes.
+var CHIP_ON = '#26a65b';
 
 // Same red as lib/badges.js: Bootstrap has no red label class.
 var DANGER_STYLE =
 	' background-color: var(--danger-color, var(--error-color, var(--error-color-high, #d9534f)));' +
 	' color: var(--on-danger-color, var(--on-error-color, #fff));';
 
-// Page-scoped styles. Small and structural: the grids that let the tiles,
-// health cards and member lists wrap to one column on a phone.
+// Page-scoped styles. Small and structural: the grids that let the tiles
+// and member lists wrap to one column on a phone.
 var STATUS_CSS =
 	'.treadle-status .treadle-row{display:flex;flex-wrap:wrap;align-items:center;gap:.5em 1em}' +
 	'.treadle-status .treadle-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(9em,1fr));gap:.6em;margin-top:.9em}' +
 	'.treadle-status .treadle-tile{background:rgba(128,128,128,.08);border-radius:6px;padding:.55em .8em}' +
 	'.treadle-status .treadle-tile small{display:block;opacity:.7;font-size:.8em}' +
 	'.treadle-status .treadle-tile strong{font-size:1.2em;font-variant-numeric:tabular-nums}' +
-	'.treadle-status .treadle-health{display:grid;grid-template-columns:repeat(auto-fit,minmax(15em,1fr));gap:.8em;margin:1.2em 0}' +
-	'.treadle-status .treadle-hcard{border:1px solid rgba(128,128,128,.3);border-radius:6px;padding:.7em .9em}' +
-	'.treadle-status .treadle-hcard small{opacity:.75}' +
-	'.treadle-status .treadle-dot{display:inline-block;width:.6em;height:.6em;border-radius:50%;margin-right:.45em;vertical-align:middle}' +
 	'.treadle-status .treadle-muted{opacity:.7}' +
 	'.treadle-status .treadle-members{display:flex;flex-wrap:wrap;gap:.45em;padding:.3em 0 .5em}' +
 	'.treadle-status .treadle-chip{display:inline-flex;align-items:center;gap:.55em;padding:.25em .35em .25em .65em;border:1px solid rgba(128,128,128,.4);border-radius:5px;white-space:nowrap}' +
-	'.treadle-status .treadle-chip-on{border:2px solid ' + DOT.ok + ';font-weight:bold}' +
+	'.treadle-status .treadle-chip-on{border:2px solid ' + CHIP_ON + ';font-weight:bold}' +
 	'.treadle-status .treadle-toggle{padding:0 .5em;min-width:2.4em;font-size:1.1em;line-height:1.6}' +
 	'.treadle-status .treadle-show-narrow{display:none}' +
 	'.treadle-status .treadle-log{font-family:monospace;font-size:.85em;max-height:16em;overflow-y:auto}' +
@@ -279,16 +268,6 @@ var STATUS_CSS =
 	'.treadle-status .treadle-log .treadle-msg{overflow:hidden;text-overflow:ellipsis}' +
 	'@media (max-width:600px){.treadle-status .treadle-hide-narrow{display:none}' +
 	'.treadle-status .treadle-show-narrow{display:block;font-size:.85em}}';
-
-// "93 s" / "12 min" / "5 h" / "9 d": an age in seconds, coarse on purpose.
-function formatAge(s) {
-	s = Number(s);
-	if (!(s >= 0)) return '';
-	if (s < 60)    return _('%d s').format(s);
-	if (s < 3600)  return _('%d min').format(Math.floor(s / 60));
-	if (s < 86400) return _('%d h').format(Math.floor(s / 3600));
-	return _('%d d').format(Math.floor(s / 86400));
-}
 
 function formatUptime(s) {
 	s = Number(s) || 0;
@@ -327,17 +306,6 @@ function parseLogLine(line) {
 	var msg = m ? m[2] : clean;
 	msg = msg.replace(/^(FATAL|PANIC|ERROR|WARN|INFO|DEBUG|TRACE)\[\d+\]\s*(\[[^\]]*\]\s*)?/, '');
 	return { time: m ? m[1] : '', level: lineLevel(line), msg: msg };
-}
-
-// "DoH" / "DoT" / "DoQ" / "plain DNS" for a resolver address as Settings
-// stores it.
-function resolverKind(addr) {
-	addr = String(addr || '');
-	if (/^https:\/\//.test(addr)) return _('DoH');
-	if (/^h3:\/\//.test(addr))    return _('DoH3');
-	if (/^tls:\/\//.test(addr))   return _('DoT');
-	if (/^quic:\/\//.test(addr))  return _('DoQ');
-	return _('plain DNS');
 }
 
 // A group's members for display: the one in use first, then the fastest,
@@ -405,7 +373,6 @@ return baseclass.extend({
 		var els = this._els = {};
 
 		els.compat  = E('div', {}, renderWarnings(status));
-		els.banner  = E('div', {});
 		els.badge   = E('span', { 'id': 'treadle-status-badge' });
 		els.uptime  = E('span', { 'class': 'treadle-muted' });
 		els.using   = E('span', { 'class': 'treadle-muted' });
@@ -426,7 +393,6 @@ return baseclass.extend({
 			els.pause,
 			els.tiles
 		]);
-		els.health  = E('div', { 'class': 'treadle-health' });
 		els.inuse   = E('div', { 'class': 'cbi-section' });
 		els.log     = E('div', { 'class': 'treadle-log' });
 		els.logBar  = E('div', { 'class': 'treadle-row', 'style': 'margin-bottom:0.5em;' });
@@ -441,9 +407,7 @@ return baseclass.extend({
 			(subCount === 0 && manualCount === 0 && this._outbounds.length === 0)
 				? this._renderGetStarted()
 				: '',
-			els.banner,
 			E('div', { 'class': 'cbi-section' }, [ els.running, els.enable ]),
-			els.health,
 			els.inuse,
 			E('div', { 'class': 'cbi-section' }, [ els.logBar, els.log ]),
 			els.footer
@@ -523,7 +487,7 @@ return baseclass.extend({
 			return [ E('div', { 'class': 'treadle-muted', 'style': 'margin-top:0.9em;' }, [
 				_('Live stats are off. Turn on "Live stats and latency testing" on the '),
 				this._tabLink('settings', _('Settings')),
-				_(' tab to see traffic, the nodes in use and the connectivity check.')
+				_(' tab to see traffic and the nodes in use.')
 			]) ];
 		var tiles = [
 			this._tile(_('Download'), formatRate(stats.down_bps)),
@@ -534,119 +498,6 @@ return baseclass.extend({
 		if (typeof stats.mem_inuse === 'number' && stats.mem_inuse > 0)
 			tiles.push(this._tile(_('sing-box memory'), formatBytes(stats.mem_inuse)));
 		return [ E('div', { 'class': 'treadle-tiles' }, tiles) ];
-	},
-
-	// ── Health ────────────────────────────────────────────────────────────
-
-	// The connectivity check from active-watch: one test a minute through
-	// whatever the default node resolves to.
-	_connectivityHealth: function(g, running) {
-		var c = g.connectivity;
-		var now = Number(g.now) || 0;
-		if (g.error)
-			return { state: 'off', value: _('Off'), sub: _('Needs live stats (Settings)') };
-		if (!running)
-			return { state: 'off', value: _('Not running'), sub: '' };
-		if (!c)
-			return { state: 'off', value: _('Waiting'), sub: _('The first check runs within a minute') };
-		if (c.state === 'none')
-			return { state: 'off', value: _('Not checked'), sub: _('The default node is not a proxy') };
-		var ago = (c.checked_at && now) ? formatAge(now - c.checked_at) : '';
-		if (c.state === 'ok')
-			return { state: 'ok', value: _('OK · %d ms').format(c.delay_ms),
-				sub: _('Through %s, checked %s ago').format(c.via, ago) };
-		if (c.state === 'failing')
-			return { state: 'bad', value: _('Failing'),
-				sub: _('%d checks in a row through %s').format(c.streak, c.via) };
-		return { state: 'warn', value: _('Retrying'),
-			sub: _('The last check through %s failed').format(c.via) };
-	},
-
-	_dnsHealth: function() {
-		var managed = uci.get('treadle', 'dns', 'managed_dns') !== '0';
-		var remote = uci.get('treadle', 'dns', 'remote_server') || 'tls://1.1.1.1';
-		var local = uci.get('treadle', 'dns', 'local_server') || 'wan';
-		return {
-			state: managed ? 'ok' : 'off',
-			value: managed ? _('Managed') : _('Not managed'),
-			sub: _('Remote: %s · Local: %s').format(resolverKind(remote),
-				local === 'wan' ? _('WAN resolver') : resolverKind(local))
-		};
-	},
-
-	// Stale: the last sync failed, or it is older than twice the subscription's
-	// own auto-update interval, or older than a week when auto-update is off.
-	_subscriptionHealth: function(ages) {
-		// Since the last sync that brought nodes in: a failed attempt does
-		// not make a subscription fresh.
-		var ageOf = {};
-		arr(ages).forEach(function(a) { ageOf[a.id] = (a.ok_age_s != null) ? a.ok_age_s : a.age_s; });
-		var list = uci.sections('treadle', 'subscription');
-		if (!list.length)
-			return { state: 'off', value: _('None'), sub: _('Add one on the Nodes tab') };
-		var stale = [], newest = null;
-		list.forEach(function(s) {
-			var age = ageOf[s['.name']];
-			var hours = Number(s.auto_update) || 0;
-			var limit = hours > 0 ? 2 * hours * 3600 : 7 * 86400;
-			if (typeof age === 'number' && (newest === null || age < newest)) newest = age;
-			var failed = (s.status && s.status !== 'ok') || !!s.sync_error;
-			if (failed || typeof age !== 'number' || age > limit)
-				stale.push({ name: s.name || s['.name'], age: age, failed: failed, why: s.sync_error });
-		});
-		if (stale.length) {
-			var first = stale[0];
-			return {
-				state: 'warn',
-				value: _('%d of %d stale').format(stale.length, list.length),
-				sub: first.failed
-					? (first.why ? _('%s: %s').format(first.name, first.why) : _('%s: last sync failed').format(first.name))
-					: (typeof first.age === 'number'
-						? _('%s: last synced %s ago').format(first.name, formatAge(first.age))
-						: _('%s: never synced').format(first.name))
-			};
-		}
-		return { state: 'ok', value: _('%d up to date').format(list.length),
-			sub: newest !== null ? _('Last sync %s ago').format(formatAge(newest)) : '' };
-	},
-
-	_renderHealth: function(items) {
-		return items.map(function(h) {
-			return E('div', {
-				'class': 'treadle-hcard',
-				'style': h.state === 'bad' ? 'border-color:' + DOT.bad + ';'
-					: h.state === 'warn' ? 'border-color:' + DOT.warn + ';' : ''
-			}, [
-				E('div', { 'class': 'treadle-muted', 'style': 'font-size:0.8em; text-transform:uppercase; letter-spacing:0.05em;' }, [
-					E('span', { 'class': 'treadle-dot', 'style': 'background:' + DOT[h.state] + ';' }),
-					h.label
-				]),
-				E('div', { 'style': 'font-weight:bold; margin:0.25em 0 0.15em;' }, [ h.value ]),
-				E('small', {}, [ h.sub ])
-			]);
-		});
-	},
-
-	// Red banner while the connectivity check is failing: the one state the
-	// rest of the page cannot make obvious on its own.
-	_renderBanner: function(g, running) {
-		var c = g.connectivity;
-		if (!running || g.error || !c || c.state !== 'failing')
-			return [];
-		var now = Number(g.now) || 0;
-		var since = (c.last_ok_at && now)
-			? _('Last success %s ago.').format(formatAge(now - c.last_ok_at))
-			: _('No check has succeeded since sing-box started.');
-		return [ E('div', { 'class': 'alert-message danger' }, [
-			E('strong', {}, [ _('Traffic through %s is failing').format(c.default) ]),
-			E('p', { 'style': 'margin:0.3em 0 0;' }, [
-				_('The last %d connectivity checks through %s failed.').format(c.streak, c.via), ' ',
-				since, ' ',
-				_('sing-box is running, so the node or its provider is not answering. A group moves off a failed member by itself; check the members below or the nodes on the '),
-				this._tabLink('nodes', _('Nodes')),
-				_(' tab.')
-			])
-		]) ];
 	},
 
 	// ── Nodes in use ──────────────────────────────────────────────────────
@@ -1212,20 +1063,6 @@ return baseclass.extend({
 		els.actions.style.display = enabled ? 'flex' : 'none';
 		els.tiles.style.display = (enabled && (running || stats.error)) ? '' : 'none';
 		dom.content(els.tiles, this._renderTiles(stats));
-
-		dom.content(els.banner, this._renderBanner(g, running));
-
-		var health = [
-			Object.assign({ label: _('Connectivity') }, this._connectivityHealth(g, running)),
-			Object.assign({ label: _('DNS') }, this._dnsHealth()),
-			Object.assign({ label: _('Subscriptions') }, this._subscriptionHealth(d.subs))
-		];
-		els.health.style.display = enabled ? '' : 'none';
-		var hsig = JSON.stringify(health);
-		if (hsig !== this._sigs.health) {
-			this._sigs.health = hsig;
-			dom.content(els.health, this._renderHealth(health));
-		}
 
 		if (enabled && running) {
 			this._renderInUse(g, stats);

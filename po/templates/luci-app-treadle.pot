@@ -695,23 +695,6 @@ msgstr ""
 msgid "Enable Treadle"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:535
-msgid "— sing-box runs and autostarts at boot"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:536
-msgid "— installed but dormant; no service, no autostart"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:571
-#, javascript-format
-msgid "selector · default: %s"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:572
-msgid "selector"
-msgstr ""
-
 #: htdocs/luci-static/resources/view/treadle/status.js:706
 msgid "Paused for testing — will resume on next reboot."
 msgstr ""
@@ -1088,26 +1071,6 @@ msgstr ""
 msgid "%d h %d min"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:334
-msgid "DoH"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:335
-msgid "DoH3"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:336
-msgid "DoT"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:337
-msgid "DoQ"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:338
-msgid "plain DNS"
-msgstr ""
-
 #: htdocs/luci-static/resources/view/treadle/status.js:460
 msgid "Off"
 msgstr ""
@@ -1136,8 +1099,8 @@ msgstr ""
 msgid "Live stats are off. Turn on \"Live stats and latency testing\" on the "
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:506
-msgid " tab to see traffic, the nodes in use and the connectivity check."
+#: htdocs/luci-static/resources/view/treadle/status.js:490
+msgid " tab to see traffic and the nodes in use."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/status.js:509
@@ -1158,139 +1121,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/status.js:515
 msgid "sing-box memory"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:527
-msgid "Needs live stats (Settings)"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:529
-msgid "Not running"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:531
-msgid "Waiting"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:531
-msgid "The first check runs within a minute"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:533
-msgid "Not checked"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:533
-msgid "The default node is not a proxy"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:536
-#, javascript-format
-msgid "OK · %d ms"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:537
-#, javascript-format
-msgid "Through %s, checked %s ago"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:539
-msgid "Failing"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:540
-#, javascript-format
-msgid "%d checks in a row through %s"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:541
-msgid "Retrying"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:542
-#, javascript-format
-msgid "The last check through %s failed"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:551
-msgid "Managed"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:551
-msgid "Not managed"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:552
-#, javascript-format
-msgid "Remote: %s · Local: %s"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:553
-msgid "WAN resolver"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:566
-msgid "Add one on the Nodes tab"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:580
-#, javascript-format
-msgid "%d of %d stale"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:582
-#, javascript-format
-msgid "%s: last sync failed"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:584
-#, javascript-format
-msgid "%s: last synced %s ago"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:585
-#, javascript-format
-msgid "%s: never synced"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:588
-#, javascript-format
-msgid "%d up to date"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:589
-#, javascript-format
-msgid "Last sync %s ago"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:617
-#, javascript-format
-msgid "Last success %s ago."
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:618
-msgid "No check has succeeded since sing-box started."
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:620
-#, javascript-format
-msgid "Traffic through %s is failing"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:622
-#, javascript-format
-msgid "The last %d connectivity checks through %s failed."
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:624
-msgid ""
-"sing-box is running, so the node or its provider is not answering. A "
-"group moves off a failed member by itself; check the members below or "
-"the nodes on the "
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:626
-msgid " tab."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/status.js:654
@@ -1430,10 +1260,6 @@ msgstr ""
 msgid "now using %s"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1170
-msgid "Connectivity"
-msgstr ""
-
 #: htdocs/luci-static/resources/view/treadle/status.js:770
 #, javascript-format
 msgid "%s: in use"
@@ -1547,11 +1373,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:1025
 msgid "Shown while the group runs and live stats are on"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:600
-#, javascript-format
-msgid "%s: %s"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/routing.js:303
