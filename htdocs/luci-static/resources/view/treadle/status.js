@@ -407,7 +407,8 @@ return baseclass.extend({
 			els.pause,
 			els.tiles
 		]);
-		els.inuse   = E('div', { 'class': 'cbi-section' });
+		// Spaced off the tiles above, which otherwise sit right on its heading.
+		els.inuse   = E('div', { 'class': 'cbi-section', 'style': 'margin-top:1em;' });
 		els.log     = E('div', { 'class': 'treadle-log' });
 		els.logBar  = E('div', { 'class': 'treadle-row', 'style': 'margin-bottom:0.5em;' });
 		els.footer  = E('div', { 'class': 'treadle-row treadle-muted', 'style': 'font-size:0.9em; margin:0.5em 0 2em;' });
@@ -496,22 +497,29 @@ return baseclass.extend({
 	},
 
 	// Five live numbers from active-watch's /connections snapshot, or a
-	// pointer to Settings when the clash API they come from is off.
-	_renderTiles: function(stats) {
+	// pointer to Settings when the clash API they come from is off. Until
+	// there are numbers to show — sing-box not running, or started but
+	// active-watch has not written its first snapshot (every start and stop
+	// deletes it) — the tiles stay, each showing a dash.
+	_renderTiles: function(stats, live) {
 		if (stats.error)
 			return [ E('div', { 'class': 'treadle-muted', 'style': 'margin-top:0.9em;' }, [
 				_('Live stats are off. Turn on "Live stats and latency testing" on the '),
 				this._tabLink('settings', _('Settings')),
 				_(' tab to see traffic and the nodes in use.')
 			]) ];
+		if (!live)
+			return [ E('div', { 'class': 'treadle-tiles' }, [
+				_('Download'), _('Upload'), _('Connections'), _('This session'), _('sing-box memory')
+			].map(function(label) { return this._tile(label, '—'); }, this)) ];
 		var tiles = [
 			this._tile(_('Download'), formatRate(stats.down_bps)),
 			this._tile(_('Upload'), formatRate(stats.up_bps)),
 			this._tile(_('Connections'), String(stats.conn_count || 0)),
 			this._tile(_('This session'), formatBytes(stats.total_down) + ' ↓ ' + formatBytes(stats.total_up) + ' ↑')
 		];
-		if (typeof stats.mem_inuse === 'number' && stats.mem_inuse > 0)
-			tiles.push(this._tile(_('sing-box memory'), formatBytes(stats.mem_inuse)));
+		tiles.push(this._tile(_('sing-box memory'),
+			(typeof stats.mem_inuse === 'number' && stats.mem_inuse > 0) ? formatBytes(stats.mem_inuse) : '—'));
 		return [ E('div', { 'class': 'treadle-tiles' }, tiles) ];
 	},
 
@@ -584,7 +592,7 @@ return baseclass.extend({
 		this._open[tag] = !this._open[tag];
 		session.setLocalData('treadle.statusOpen', this._open);
 		this._sigs.inuse = null;
-		this._renderInUse(this._lastGroups || {}, this._lastStats || {});
+		this._renderInUse(this._lastGroups || {}, this._lastStats || {}, this._lastRunning);
 	},
 
 	// "↓ 1.9 MiB/s ↑ 12.0 KiB/s" for one row, or a dash when nothing moved
@@ -598,15 +606,22 @@ return baseclass.extend({
 		]);
 	},
 
-	_renderInUse: function(g, stats) {
+	// Until sing-box is running and active-watch has reported on it, the
+	// table stays with its headings and one placeholder row saying why:
+	// without the report, groups cannot be told from single nodes.
+	_renderInUse: function(g, stats, running) {
 		var self = this;
-		var rows = this._inUseRows(g);
+		var live = running && Number(g.updated_at) > 0;
+		var rows = live ? this._inUseRows(g) : [];
 		var rates = (stats && stats.by_tag) || {};
-		var sig = JSON.stringify([ rows, rates, this._open ]);
+		var why = !this._lastEnabled ? _('Treadle is off.')
+			: !running ? _('sing-box is not running.')
+			: _('Waiting for the first update from sing-box…');
+		var sig = JSON.stringify([ live, why, rows, rates, this._open ]);
 		if (sig === this._sigs.inuse) return;
 		this._sigs.inuse = sig;
 
-		if (g.error || !rows.length) {
+		if (g.error || (live && !rows.length)) {
 			this._els.inuse.style.display = 'none';
 			return;
 		}
@@ -685,7 +700,11 @@ return baseclass.extend({
 					E('th', { 'class': 'th treadle-hide-narrow' }, [ _('Used by') ]),
 					E('th', { 'class': 'th treadle-hide-narrow' }, [ _('Kind') ])
 				]) ]),
-				E('tbody', {}, trs)
+				E('tbody', {}, live ? trs : [
+					E('tr', { 'class': 'tr placeholder' }, [
+						E('td', { 'class': 'td', 'colspan': '6' }, [ E('em', {}, [ why ]) ])
+					])
+				])
 			])
 		]);
 	},
@@ -1073,18 +1092,15 @@ return baseclass.extend({
 		}
 		els.pause.style.display = (enabled && state === 'paused') ? '' : 'none';
 
-		// While disabled, nothing that describes a running service is shown:
-		// only the Enable switch, the default node and the log.
+		// The page keeps its shape whatever the state: until sing-box runs
+		// and has been reported on, the tiles show dashes and the table is
+		// empty. Only the service buttons go while disabled, since there is
+		// no service.
+		this._lastRunning = running;
+		this._lastEnabled = enabled;
 		els.actions.style.display = enabled ? 'flex' : 'none';
-		els.tiles.style.display = (enabled && (running || stats.error)) ? '' : 'none';
-		dom.content(els.tiles, this._renderTiles(stats));
-
-		if (enabled && running) {
-			this._renderInUse(g, stats);
-		} else {
-			els.inuse.style.display = 'none';
-			this._sigs.inuse = null;
-		}
+		dom.content(els.tiles, this._renderTiles(stats, running && Number(stats.updated_at) > 0));
+		this._renderInUse(g, stats, running);
 
 		if (withLogs && d.logs) {
 			this._logs = d.logs;

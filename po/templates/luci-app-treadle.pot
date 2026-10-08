@@ -1673,3 +1673,15 @@ msgstr ""
 #: htdocs/luci-static/resources/view/treadle/status.js:472
 msgid "Treadle is off: sing-box does not run or start at boot. Applies immediately."
 msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/status.js:696
+msgid "sing-box is not running."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/status.js:696
+msgid "Treadle is off."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/status.js:615
+msgid "Waiting for the first update from sing-box…"
+msgstr ""
