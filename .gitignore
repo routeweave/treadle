@@ -8,3 +8,4 @@ public/
 # or referenced anywhere else in this repo.
 /CLAUDE.md
 /docs/decisions
+.pkg-cache/

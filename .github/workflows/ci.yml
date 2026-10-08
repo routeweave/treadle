@@ -113,8 +113,28 @@ jobs:
           name: packages-${{ github.sha }}
           path: dist/
 
+      # OpenWrt's packages, sing-box above all, kept between runs: the mirror
+      # sometimes aborts long downloads (see tests/smoke.sh § install).
+      - name: Restore the OpenWrt package cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .pkg-cache
+          key: openwrt-pkgs-${{ matrix.image }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: openwrt-pkgs-${{ matrix.image }}-
+
       - name: Smoke test on ${{ matrix.image }}
-        run: docker run --rm -v "$PWD:/work" "${{ matrix.image }}" /bin/sh /work/tests/smoke.sh
+        run: >-
+          docker run --rm -e SMOKE_PKG_CACHE=/work/.pkg-cache
+          -v "$PWD:/work" "${{ matrix.image }}" /bin/sh /work/tests/smoke.sh
+
+      # Saved even when the test fails: a download that completed is worth
+      # keeping whatever failed after it.
+      - name: Save the OpenWrt package cache
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .pkg-cache
+          key: openwrt-pkgs-${{ matrix.image }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   # The same smoke test with the feed's sing-box swapped for a pinned upstream
   # release, so config shapes keyed on a newer sing-box are checked too.
@@ -138,7 +158,22 @@ jobs:
           tar -xzf /tmp/sing-box.tar.gz -C /tmp
           install -m 0755 "/tmp/${name}/sing-box" upstream-sing-box
 
+      - name: Restore the OpenWrt package cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .pkg-cache
+          key: openwrt-pkgs-openwrt/rootfs:x86_64-25.12.5-${{ github.run_id }}-${{ github.run_attempt }}-upstream
+          restore-keys: openwrt-pkgs-openwrt/rootfs:x86_64-25.12.5-
+
       - name: Smoke test with sing-box ${{ env.SINGBOX_UPSTREAM_VERSION }}
         run: >-
           docker run --rm -e SMOKE_SINGBOX=/work/upstream-sing-box
+          -e SMOKE_PKG_CACHE=/work/.pkg-cache
           -v "$PWD:/work" openwrt/rootfs:x86_64-25.12.5 /bin/sh /work/tests/smoke.sh
+
+      - name: Save the OpenWrt package cache
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .pkg-cache
+          key: openwrt-pkgs-openwrt/rootfs:x86_64-25.12.5-${{ github.run_id }}-${{ github.run_attempt }}-upstream
