@@ -1495,16 +1495,19 @@ if command -v curl >/dev/null 2>&1; then
 	# polls (get_clash_stats stamps a marker), once a minute otherwise.
 	aw_ts() { jsonfilter -i "$1" -e '@.updated_at' 2>/dev/null; }
 	STS=/var/etc/treadle/.clash-stats.json
-	# Two stats writes within 25 s while watched: only the per-tick path does that.
+	# Two stats writes within 45 s while watched: only the per-tick path does
+	# that (the other writes once a minute). The ticks are 10 s apart, but one
+	# that waits on a probe or a failover nudge runs long on a slow runner, so
+	# the window leaves room for that; it ends as soon as the second write lands.
 	n=0; last=$(aw_ts "$STS"); i=0
-	while [ "$i" -lt 25 ] && [ "$n" -lt 2 ]; do
+	while [ "$i" -lt 45 ] && [ "$n" -lt 2 ]; do
 		echo '{}' | "$HANDLER" call get_clash_stats >/dev/null
 		sleep 1; i=$((i + 1))
 		cur=$(aw_ts "$STS")
 		[ -n "$cur" ] && [ "$cur" != "$last" ] && { n=$((n + 1)); last=$cur; }
 	done
 	[ "$n" -ge 2 ] && ok "active-watch fetches /connections every tick while the Status page is open" \
-		|| bad "stats written $n time(s) in 25s while watched"
+		|| bad "stats written $n time(s) in 45s while watched"
 	# Unwatched: two more ticks of the groups snapshot, no new stats write.
 	rm -f /var/etc/treadle/.status-viewed
 	idle_from=$(aw_ts "$STS"); ticks=0; prev=$(aw_ts "$ACT"); i=0
