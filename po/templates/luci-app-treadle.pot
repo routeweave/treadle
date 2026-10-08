@@ -691,10 +691,6 @@ msgstr ""
 msgid "Start"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:532
-msgid "Enable Treadle"
-msgstr ""
-
 #: htdocs/luci-static/resources/view/treadle/status.js:706
 msgid "Paused for testing — will resume on next reboot."
 msgstr ""
@@ -910,6 +906,7 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/routing.js:535
 #: htdocs/luci-static/resources/view/treadle/routing.js:641
+#: htdocs/luci-static/resources/view/treadle/status.js:483
 msgid "On"
 msgstr ""
 
@@ -1018,6 +1015,7 @@ msgid "Settings"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/main.js:76
+#: htdocs/luci-static/resources/view/treadle/status.js:477
 msgid "Treadle"
 msgstr ""
 
@@ -1085,14 +1083,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/status.js:465
 msgid "Stopped"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:485
-msgid "sing-box runs and starts at boot · applies immediately"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/status.js:486
-msgid "installed but dormant: no service, no autostart · applies immediately"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/status.js:504
@@ -1670,4 +1660,16 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/settings.js:782
 msgid "Raw sing-box overrides: save failed."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/status.js:455
+msgid "Treadle off"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/status.js:471
+msgid "Treadle is on: sing-box runs and starts at boot. Applies immediately."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/status.js:472
+msgid "Treadle is off: sing-box does not run or start at boot. Applies immediately."
 msgstr ""

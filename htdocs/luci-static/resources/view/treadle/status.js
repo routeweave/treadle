@@ -7,8 +7,8 @@
 // Layout (top → bottom):
 //   warnings (sing-box too old for something configured, standalone service)
 //   get started (only while nothing is configured)
-//   service card — state + uptime, default-node switcher and the node in
-//     use, Start/Stop/Restart, live traffic tiles, the Enable toggle
+//   service card — the Enable switch, state + uptime, default-node switcher
+//     and the node in use, Start/Stop/Restart, live traffic tiles
 //   nodes in use — everything traffic can go through and what uses it;
 //     groups expand to their members
 //   activity — Treadle events or the sing-box log, optionally warnings only
@@ -239,10 +239,13 @@ function downloadConfig(json) {
 	requestAnimationFrame(function() { URL.revokeObjectURL(url); });
 }
 
-// Border of the member chip in use. The badges reuse LuCI's label classes;
-// the chip has no class of its own, so it takes a literal green that reads
-// on both the light and the dark themes.
+// Border of the member chip in use and the track of the Enable switch. The
+// badges reuse LuCI's label classes; these have no class of their own, so
+// they take literal colours that read on both the light and the dark themes.
+// The switch's are darker: white text on them must stay readable.
 var CHIP_ON = '#26a65b';
+var SWITCH_ON = '#1e8449';
+var SWITCH_OFF = '#767676';
 
 // Same red as lib/badges.js: Bootstrap has no red label class.
 var DANGER_STYLE =
@@ -261,6 +264,15 @@ var STATUS_CSS =
 	'.treadle-status .treadle-members{display:flex;flex-wrap:wrap;gap:.45em;padding:.3em 0 .5em}' +
 	'.treadle-status .treadle-chip{display:inline-flex;align-items:center;gap:.55em;padding:.25em .35em .25em .65em;border:1px solid rgba(128,128,128,.4);border-radius:5px;white-space:nowrap}' +
 	'.treadle-status .treadle-chip-on{border:2px solid ' + CHIP_ON + ';font-weight:bold}' +
+	'.treadle-status .treadle-switch{position:relative;display:inline-flex;flex:none;cursor:pointer;margin:0}' +
+	'.treadle-status .treadle-switch input{position:absolute;top:0;left:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}' +
+	'.treadle-status .treadle-switch span{position:relative;display:inline-flex;align-items:center;justify-content:flex-end;box-sizing:border-box;min-width:60px;height:26px;padding:0 9px 0 28px;border-radius:13px;background:' + SWITCH_OFF + ';color:#fff;font-size:11px;font-weight:bold;letter-spacing:.04em;text-transform:uppercase;transition:background .15s}' +
+	'.treadle-status .treadle-switch span::before{content:"";position:absolute;top:4px;left:4px;width:18px;height:18px;border-radius:50%;background:#fff;transition:left .15s}' +
+	'.treadle-status .treadle-switch span::after{content:attr(data-off)}' +
+	'.treadle-status .treadle-switch input:checked + span{justify-content:flex-start;padding:0 28px 0 10px;background:' + SWITCH_ON + '}' +
+	'.treadle-status .treadle-switch input:checked + span::before{left:calc(100% - 22px)}' +
+	'.treadle-status .treadle-switch input:checked + span::after{content:attr(data-on)}' +
+	'.treadle-status .treadle-switch input:focus-visible + span{outline:2px solid ' + SWITCH_ON + ';outline-offset:2px}' +
 	'.treadle-status .treadle-toggle{padding:0 .5em;min-width:2.4em;font-size:1.1em;line-height:1.6}' +
 	'.treadle-status .treadle-show-narrow{display:none}' +
 	'.treadle-status .treadle-log{font-family:monospace;font-size:.85em;max-height:16em;overflow-y:auto}' +
@@ -380,12 +392,14 @@ return baseclass.extend({
 		els.pause   = E('div', { 'class': 'treadle-muted', 'style': 'margin-top:0.4em; display:none;' },
 			[ _('Paused for testing — will resume on next reboot.') ]);
 		els.tiles   = E('div', {});
-		els.enable  = E('div', { 'class': 'treadle-row', 'style': 'margin-top:0.9em;' },
-			this._renderEnable(status.enabled));
+		els.enable  = E('span', { 'style': 'display:inline-flex;' }, this._renderEnable(status.enabled));
 		els.running = E('div', {}, [
+			// One text size across the line: the badge and the dropdown are
+			// sized in em, and the label inherits, so they follow the row;
+			// the theme sizes selects and labels in px otherwise.
 			E('div', { 'class': 'treadle-row' }, [
-				els.badge, els.uptime,
-				E('label', { 'for': 'treadle-default-node', 'class': 'treadle-muted' }, [ _('Default node') ]),
+				els.enable, els.badge, els.uptime,
+				E('label', { 'for': 'treadle-default-node', 'class': 'treadle-muted', 'style': 'font-size:inherit;' }, [ _('Default node') ]),
 				this._renderNodeSwitcher(uci.get('treadle', 'routing', 'final_outbound') || ''),
 				els.using,
 				els.actions
@@ -407,7 +421,7 @@ return baseclass.extend({
 			(subCount === 0 && manualCount === 0 && this._outbounds.length === 0)
 				? this._renderGetStarted()
 				: '',
-			E('div', { 'class': 'cbi-section' }, [ els.running, els.enable ]),
+			E('div', { 'class': 'cbi-section' }, [ els.running ]),
 			els.inuse,
 			E('div', { 'class': 'cbi-section' }, [ els.logBar, els.log ]),
 			els.footer
@@ -439,9 +453,9 @@ return baseclass.extend({
 	},
 
 	_renderBadge: function(state, enabled) {
-		var base = 'padding:0.25em 0.8em; border-radius:999px; font-size:1.05em; text-transform:none;';
+		var base = 'padding:0.25em 0.8em; border-radius:999px; font-size:1em; text-transform:none;';
 		if (!enabled)
-			return E('span', { 'class': 'label', 'style': base }, [ _('Off') ]);
+			return E('span', { 'class': 'treadle-muted' }, [ _('Treadle off') ]);
 		if (state === 'running')
 			return E('span', { 'class': 'label success', 'style': base }, [ _('Running') ]);
 		if (state === 'paused')
@@ -449,27 +463,28 @@ return baseclass.extend({
 		return E('span', { 'class': 'label', 'style': base + DANGER_STYLE }, [ _('Stopped') ]);
 	},
 
+	// The persistent Enable control, drawn as an On/Off switch so it reads as
+	// a setting and not as an action like Stop beside it. A real checkbox
+	// underneath, so keyboard and screen readers work. The tooltip says
+	// "applies immediately" because this switch commits through rpcd on
+	// click — unlike everything else in Treadle, there is no Save & Apply
+	// step between the click and the service action.
 	_renderEnable: function(enabled) {
-		// "applies immediately" because this toggle commits through rpcd on
-		// click — unlike everything else in Treadle, there is no Save & Apply
-		// step between the click and the service action.
+		var tip = enabled
+			? _('Treadle is on: sing-box runs and starts at boot. Applies immediately.')
+			: _('Treadle is off: sing-box does not run or start at boot. Applies immediately.');
 		var cb = E('input', {
 			'type': 'checkbox',
+			'role': 'switch',
 			'id': 'treadle-enable-checkbox',
-			'class': 'cbi-input-checkbox',
-			'style': 'margin:0;',
+			'aria-label': _('Treadle'),
 			'click': ui.createHandlerFn(this, 'handleToggleEnabled')
 		});
 		if (enabled) cb.checked = true;
-		return [
+		return [ E('label', { 'class': 'treadle-switch', 'title': tip }, [
 			cb,
-			E('label', { 'for': 'treadle-enable-checkbox', 'style': 'margin:0; cursor:pointer;' }, [ _('Enable Treadle') ]),
-			E('span', { 'class': 'treadle-muted', 'style': 'font-size:0.9em;' }, [
-				enabled
-					? _('sing-box runs and starts at boot · applies immediately')
-					: _('installed but dormant: no service, no autostart · applies immediately')
-			])
-		];
+			E('span', { 'data-on': _('On'), 'data-off': _('Off'), 'aria-hidden': 'true' })
+		]) ];
 	},
 
 	_tile: function(label, value, unit) {
@@ -844,7 +859,8 @@ return baseclass.extend({
 		var sel = E('select', {
 			'id': 'treadle-default-node',
 			'class': 'cbi-input-select',
-			'style': 'font-size:0.85em; max-width:20em;',
+			// The theme sets selects in px; 1em follows the row's text.
+			'style': 'font-size:1em; max-width:20em;',
 			'title': _('Default node — traffic not matched by any routing rule goes here. Changing it applies immediately.'),
 			'change': function(ev) { self._handleNodeSwitch(ev.currentTarget); }
 		});
@@ -1025,29 +1041,28 @@ return baseclass.extend({
 		this._lastGroups = g;
 		this._lastStats = stats;
 
-		// Reflect an out-of-band change to `enabled` (a CLI `uci set`, a
-		// concurrent admin) without firing the click handler.
+		// Redraw the switch when the router's state changes: after a click,
+		// so the tooltip follows, or after an out-of-band change to `enabled`
+		// (a CLI `uci set`, a concurrent admin), without firing the click
+		// handler. A failed toggle snaps back the same way.
 		var cb = els.enable.querySelector('input');
-		if (cb && cb.checked !== enabled)
+		if (this._sigs.enable !== enabled || (cb && cb.checked !== enabled)) {
+			this._sigs.enable = enabled;
 			dom.content(els.enable, this._renderEnable(enabled));
+		}
 
 		dom.content(els.compat, renderWarnings(status));
 		dom.content(els.badge, [ this._renderBadge(state, enabled) ]);
 		els.uptime.textContent = (running && status.uptime_s != null)
 			? _('for %s').format(formatUptime(status.uptime_s)) : '';
 
-		// "now using HK-03 · 106 ms" when the default is a group; just the
-		// latency when it is a single node.
+		// "now using HK-03" when the default is a group. No latency here:
+		// the Default row of "Nodes in use" shows it.
 		var fin = uci.get('treadle', 'routing', 'final_outbound') || '';
 		var using = '';
 		arr(g.groups).forEach(function(x) {
 			if (x.tag === fin && x.now)
-				using = _('now using %s').format(x.now) +
-					(x.delay_ms ? ' · ' + x.delay_ms + ' ms' : '');
-		});
-		arr(g.nodes).forEach(function(x) {
-			if (x.tag === fin && x.delay_ms)
-				using = x.delay_ms + ' ms';
+				using = _('now using %s').format(x.now);
 		});
 		els.using.textContent = running ? using : '';
 
@@ -1059,7 +1074,7 @@ return baseclass.extend({
 		els.pause.style.display = (enabled && state === 'paused') ? '' : 'none';
 
 		// While disabled, nothing that describes a running service is shown:
-		// only the badge, the Enable toggle and the log.
+		// only the Enable switch, the default node and the log.
 		els.actions.style.display = enabled ? 'flex' : 'none';
 		els.tiles.style.display = (enabled && (running || stats.error)) ? '' : 'none';
 		dom.content(els.tiles, this._renderTiles(stats));
