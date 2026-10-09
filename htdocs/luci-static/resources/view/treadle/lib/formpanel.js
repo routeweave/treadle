@@ -43,8 +43,8 @@ return baseclass.extend({
 
 	// Move a GridSection's Delete from every row into its edit dialog, next
 	// to Dismiss and Save: rows keep only the buttons used every day, and a
-	// delete is no longer one stray click away. It stages the removal like
-	// the row button did; Save & Apply commits it.
+	// delete takes a deliberate step. It stages the removal; Save & Apply
+	// commits it.
 	deleteInModal: function(s) {
 		var render = s.renderRowActions;
 		s.renderRowActions = function(section_id) {

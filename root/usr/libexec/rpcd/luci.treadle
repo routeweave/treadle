@@ -97,7 +97,7 @@ local function uci_cursor()
 	-- Use the raw libuci C binding rather than the luci.model.uci Lua wrapper.
 	-- The wrapper does not reliably expose named-section creation via the
 	-- 3-argument cursor:set(config, section, type) call, and its cursor object
-	-- omits close() from its metatable (causing the nil-method crash we saw).
+	-- omits close() from its metatable.
 	-- The C binding has a complete, stable API and works correctly on all
 	-- OpenWrt versions including 25.12.
 	return require("uci").cursor()
@@ -324,9 +324,9 @@ local function reconcile_subscriptions()
 			c:set("treadle", id, "status", "stale")
 			changed = true
 		end
-		-- Subscriptions no longer have an on/off switch: it only ever
-		-- stopped syncing, which auto-update 0 (manual only) does. One
-		-- switched off keeps that meaning; the option goes either way.
+		-- Migrate the per-subscription on/off switch an older Treadle had:
+		-- off only stopped syncing, which auto-update 0 (manual only) does,
+		-- so a switched-off one becomes that. The option goes either way.
 		if s.enabled ~= nil then
 			if s.enabled == "0" then c:set("treadle", id, "auto_update", "0") end
 			c:delete("treadle", id, "enabled")
@@ -449,7 +449,7 @@ end
 
 -- sing-box version is static between package upgrades; cache the first
 -- line of `sing-box version` (e.g. "sing-box version 1.12.4") in tmpfs so
--- callers — the 5s Overview poll, every subscription sync — do not fork
+-- callers — the Status page's poll, every subscription sync — do not fork
 -- sing-box on each call. /var is tmpfs, so the cache is cleared on reboot
 -- and re-detected fresh. Returns nil when sing-box is not present.
 local function singbox_version()
@@ -570,8 +570,6 @@ local function sbu_fork(cmd)
 	return { started = true }
 end
 
--- Fetch a subscription URL and update its UCI state.
--- Returns a result table { status, node_count } on success.
 -- The one line of uclient-fetch's stderr worth showing for a failed
 -- download: "HTTP error 403", "Connection error: …", "SSL error …".
 -- Anything carrying a URL (the "Downloading '<url>'" line, or an error that
@@ -591,6 +589,8 @@ local function fetch_error(text)
 	return nil
 end
 
+-- Fetch a subscription URL and update its UCI state.
+-- Returns a result table { status, node_count } on success.
 local function sync_one(id)
 	-- id is interpolated into a temp-file path (and a shell command via it)
 	-- and used as a UCI section reference. Reject anything that is not a
@@ -631,10 +631,10 @@ local function sync_one(id)
 	-- anyone holding it gets the user's paid service and their whole node
 	-- list. get_logs feeds syslog straight into the Status page log box, so a
 	-- logged URL is one support screenshot away from being handed out, and
-	-- syslog is forwarded off-box wherever log_proto/log_ip are set. Redacting
-	-- it down to the scheme was tried and read as a broken URL rather than as
-	-- a deliberate omission; nothing diagnostic is lost by dropping it, since
-	-- the line already names the subscription.
+	-- syslog is forwarded off-box wherever log_proto/log_ip are set. Cut down
+	-- to the scheme it reads as a broken URL rather than a deliberate
+	-- omission; nothing diagnostic is lost by dropping it, since the line
+	-- already names the subscription.
 	log_treadle("info", "sync '" .. sub_name .. "': fetching")
 
 	-- uclient-fetch is always present on OpenWrt (part of uclient).
@@ -754,10 +754,8 @@ local function sync_one(id)
 	-- libuci-lua, a missing option returns (nil, errmsg), and without the
 	-- parens that second string would be passed as tonumber's `base`
 	-- argument and throw "bad argument #2". sync_one runs under pcall, so
-	-- the throw silently bailed out before the c2:set/commit below — first
-	-- syncs of a subscription (the only time node_count is unset) never
-	-- persisted status/last_sync/node_count and surfaced as "Sync failed"
-	-- in the UI despite the file write succeeding.
+	-- the throw would silently skip the c2:set/commit below on a first sync,
+	-- the only time node_count is unset.
 	local old_count = tonumber((c2:get("treadle", id, "node_count"))) or 0
 	c2:set("treadle", id, "last_sync", now)
 	c2:set("treadle", id, "status", status)
@@ -804,9 +802,9 @@ local methods = {
 	-- the page asks for it; rpcd itself passes just the args table.
 	get_status = {
 		call = function(_, cur, no_package)
-			-- Wrap UCI in pcall: luci.model.uci may not be present on all
-			-- builds; a thrown error here would propagate through the outer
-			-- pcall, causing os.exit(1) and an UBUS_STATUS_NOT_FOUND reply.
+			-- Open UCI under pcall: a thrown error here would propagate
+			-- through the outer pcall, causing os.exit(1) and an
+			-- UBUS_STATUS_NOT_FOUND reply.
 			local enabled = false
 			local standalone = false
 			local c_ok, c = true, cur
@@ -815,7 +813,7 @@ local methods = {
 				local val = c:get("treadle", "global", "enabled")
 				-- The sing-box package's own service, which Treadle never
 				-- uses. SagerNet's package ships it enabled with a demo
-				-- Shadowsocks server (decision 0153), so say so if it is on.
+				-- Shadowsocks server, so say so if it is on.
 				standalone = (c:get("sing-box", "main", "enabled") == "1")
 				if not cur then c:close() end
 				enabled = (val == "1")
@@ -1011,12 +1009,10 @@ local methods = {
 			-- every match and trimming at the end. The split has to happen
 			-- here rather than in the pipeline — a single `tail` before the
 			-- split cannot guarantee n of *each* category — so the scan
-			-- still walks the whole syslog ring buffer, but it no longer
-			-- allocates a table slot per line to do it. That mattered:
-			-- on a box whose sing-box is logging steadily, the sing-box
-			-- side is the overwhelming majority of matches and essentially
-			-- all of them were appended only to be discarded, on every
-			-- single 2s Status poll.
+			-- still walks the whole syslog ring buffer, but without a table
+			-- slot per line. On a box whose sing-box logs steadily, its
+			-- lines are nearly every match, and appending them all would
+			-- allocate on every 2 s Status poll only to discard them.
 			if n < 1 then n = 1 end
 			local function ring() return { buf = {}, len = 0 } end
 			local function push(r, line)
@@ -1215,7 +1211,7 @@ local methods = {
 	},
 
 	-- Detect the first DNS server advertised on the WAN interface. Used by the
-	-- DNS settings tab to label the "WAN DNS" auto-detect choice.
+	-- Settings tab's DNS section to label the "WAN DNS" auto-detect choice.
 	get_wan_dns = {
 		call = function()
 			return { wan_dns = lib.detect_wan_dns(_jsonc_ok and _jsonc or nil) }
@@ -1241,7 +1237,7 @@ local methods = {
 	},
 
 	-- Return the node list of one subscription, projected to the fields the
-	-- Subscriptions tab's "Nodes" modal renders (tag, type, server, port). The
+	-- Nodes tab's subscription node list renders (tag, type, server, port). The
 	-- on-disk file also carries a `payload` per node — the full sing-box
 	-- outbound used by build-config — which is many KB per node and not
 	-- needed in the UI; stripping it here keeps the response small.
@@ -1273,7 +1269,7 @@ local methods = {
 	-- a fresh /proxies GET — keeps the RPC cheap (no extra HTTP round
 	-- trip on every Status-page tick), and ties the UI to the same view
 	-- the daemon logs against, so what the Treadle log says flipped matches
-	-- what the Groups panel shows is active.
+	-- what the Status page shows is active.
 	--
 	-- Joins UCI on the group tag to surface `interval` / `tolerance` so
 	-- the user can read each group's tuning right next to the evidence
@@ -1515,7 +1511,7 @@ local methods = {
 		end
 	},
 
-	-- SagerNet sing-box updates (decision 0153). The work runs in
+	-- SagerNet sing-box updates. The work runs in
 	-- /usr/libexec/treadle/singbox-update, forked detached like the test
 	-- runner; it writes its progress to SBU_STATUS, which the Settings page
 	-- polls through get_singbox_update. Checking makes an outbound request
@@ -1557,15 +1553,6 @@ local methods = {
 	}
 }
 
--- Everything the Status page refreshes, in one handler process. The page
--- polls every 2 s, and rpcd starts a fresh Lua process (and loads this
--- whole handler) for every call, so four separate calls cost four times
--- over. Log tails are the expensive part; the page asks for them only on
--- some ticks by passing `logs` (the tail length), and omits it otherwise.
--- The installed Treadle version (a scan of the package database) changes
--- only on an upgrade, so it is included only when `versions` is set, which
--- the page does once on load. The parts share one UCI cursor.
--- Added after the table so the call can reach the other methods.
 -- Seconds since each subscription's last sync. last_sync is stored as the
 -- router's local time ("YYYY-MM-DD HH:MM", see sync_one), which os.time
 -- reads back as local time too; the browser's clock and zone do not matter.
@@ -1590,6 +1577,15 @@ local function subscription_ages(c)
 	return out
 end
 
+-- Everything the Status page refreshes, in one handler process. The page
+-- polls every 2 s, and rpcd starts a fresh Lua process (and loads this
+-- whole handler) for every call, so four separate calls cost four times
+-- over. Log tails are the expensive part; the page asks for them only on
+-- some ticks by passing `logs` (the tail length), and omits it otherwise.
+-- The installed Treadle version (a scan of the package database) changes
+-- only on an upgrade, so it is included only when `versions` is set, which
+-- the page does once on load. The parts share one UCI cursor.
+-- Added after the table so the call can reach the other methods.
 methods.get_dashboard = {
 	args = { logs = 0, versions = false },
 	call = function(args)

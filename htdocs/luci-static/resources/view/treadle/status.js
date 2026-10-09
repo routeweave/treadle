@@ -14,7 +14,7 @@
 //   activity — Treadle events or the sing-box log, optionally warnings only
 //   footer — versions, inbound mode, counts, generated config
 //
-// Two distinct controls for the service, as before:
+// Two distinct controls for the service:
 //   * Enable (persistent, UCI global.enabled) — installed-but-dormant vs.
 //     installed-and-running. Off hides everything that describes a running
 //     service; the service won't autostart and the watchdog stays idle.
@@ -188,9 +188,6 @@ function runtimeInfo() {
 	};
 }
 
-// Trigger a browser download of the given JSON text as sing-box.json. Uses a
-// Blob URL rather than a data: URL — large configs would otherwise blow past
-// the data-URL length limit some browsers still enforce.
 // Warning for what the last build left out because the installed sing-box
 // cannot run it (get_status `compat`, from build-config). Each feature key
 // names what to upgrade; an unknown key still gets a generic line.
@@ -225,6 +222,9 @@ function renderWarnings(status) {
 	return renderCompat(status.compat).concat(renderStandalone(status.standalone_singbox));
 }
 
+// Trigger a browser download of the given JSON text as sing-box.json. Uses a
+// Blob URL rather than a data: URL — large configs would otherwise blow past
+// the data-URL length limit some browsers still enforce.
 function downloadConfig(json) {
 	var blob = new Blob([ json ], { type: 'application/json' });
 	var url  = URL.createObjectURL(blob);
@@ -913,8 +913,7 @@ return baseclass.extend({
 		var label = (sel.selectedIndex >= 0)
 			? sel.options[sel.selectedIndex].text : newTag;
 		// Apply commits the whole staged set — when edits from other tabs
-		// are riding along, never commit them silently (same courtesy the
-		// mode switch extends to staged changes).
+		// are riding along, never commit them silently.
 		return uci.changes().then(function(changes) {
 			var n = 0;
 			for (var k in changes) {

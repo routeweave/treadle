@@ -12,7 +12,7 @@
 --   singbox-update install <version>
 --   singbox-update revert
 --
--- Why each step exists (decision 0153):
+-- Why each step exists:
 --   * Stable releases only, from the GitHub API's releases/latest, which also
 --     carries each asset's SHA-256 ("digest"). The package itself is unsigned.
 --   * SagerNet's package is named sing-box, like OpenWrt's, so it installs as
@@ -28,7 +28,7 @@
 --     removes the package with --force-depends and installs the verified
 --     feed file.
 --   * After a change Treadle is restarted (its start wrapper rebuilds the
---     config for the new version, decision 0120). If sing-box does not come
+--     config for the new version). If sing-box does not come
 --     up, the OpenWrt feed package is reinstalled.
 
 local jsonc = require "luci.jsonc"

@@ -45,7 +45,7 @@ var callSetExtraConfig = rpc.declare({
 	expect: { '': {} }
 });
 
-// SagerNet sing-box updates (decision 0153): the helper runs in the
+// SagerNet sing-box updates: the helper runs in the
 // background and get_singbox_update reports its progress.
 var callGetSingboxUpdate = rpc.declare({
 	object: 'luci.treadle',

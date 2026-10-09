@@ -275,6 +275,30 @@ names.
 - rpcd methods always exit 0 and report failure in their JSON reply; a
   non-zero exit reaches LuCI as "Object not found".
 
+### Comments
+
+Comment-only lines are stripped from the installed package, so a comment
+costs nothing on a router. It costs reading time instead, and a wrong one
+misleads, so:
+
+- **Why, not what.** Explain what the code cannot say: a constraint, a
+  gotcha, the reason for a non-obvious choice, an obvious alternative that
+  does not work. Do not narrate what the next line does.
+- **The present only.** Describe the code as it is. How it used to work,
+  what was tried and reverted, and which bug led here belong in the commit
+  message. Code that exists for older installs (a migration, the cleanup of
+  an earlier layout) says what it handles, in the present tense.
+- **Nothing the reader cannot open.** No references to the decision log,
+  which is not published, or to audit or issue IDs from outside this
+  repository; state the reason in a sentence instead. Point at functions
+  and files, not line numbers.
+- **A long block is a smell.** A comment over about 15 lines usually
+  belongs in `docs/` or the commit message, with a one-line summary left in
+  the code. File headers and reference tables (a capability list, a status
+  code table) are the usual exceptions.
+
+`scripts/lint.sh` fails on a numbered reference to the decision log.
+
 ### Files and packaging
 
 - Every source file starts with `SPDX-License-Identifier: GPL-3.0-only`
@@ -288,7 +312,7 @@ names.
 
 - One logical change per commit, with a message that explains why.
 - Test fixtures and examples use placeholder values only: `example.com`,
-  RFC 5737 addresses (`192.0.11.0/24`, `198.51.100.0/24`, `203.0.113.0/24`),
+  RFC 5737 addresses (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`),
   the all-zero UUID, `<password>`. Never paste a real subscription, node,
   or router log or config.
 

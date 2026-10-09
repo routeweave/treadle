@@ -52,6 +52,16 @@ run "shellcheck (scripts)" shellcheck -S warning scripts/*.sh tests/*.sh
 # shellcheck disable=SC2086
 run "luacheck (Lua 5.1)" luacheck -q $ROUTER_LUA
 run "node field parity (editor vs link import)" sh scripts/check-node-fields.sh
+
+# The decision log is not published, so nothing here may cite an entry of it
+# (CONTRIBUTING.md § Comments): "decision" plus a number, a bare four-digit
+# entry number in parentheses, or an audit ID. A file mode written the same
+# way trips it too: write it without the parentheses.
+no_private_refs() {
+	! grep -rnE '[Dd]ecisions? #?[0-9]{3,4}|\(0[0-9]{3}[),;]|SEC-[0-9]' \
+		root htdocs scripts tests .github Makefile
+}
+run "no references to the unpublished decision log" no_private_refs
 run "eslint (LuCI views)" npx --yes "eslint@$ESLINT_VERSION" htdocs
 
 [ "$fail" -eq 0 ] && printf 'All checks passed.\n'

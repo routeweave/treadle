@@ -34,9 +34,9 @@ install_crons() {
 	local changed
 	changed=0
 
-	# Sweep the pre-consolidation sync-subscriptions / fetch-rulesets lines
-	# (and the pre-jitter fixed `0 * * * *` sync line) left by an older Treadle;
-	# the hourly tick now subsumes both.
+	# Remove the cron lines an older Treadle installed: separate
+	# sync-subscriptions / fetch-rulesets entries and a fixed `0 * * * *` sync
+	# line. The hourly tick does both jobs.
 	if grep -qsE 'treadle/(sync-subscriptions|fetch-rulesets)' /etc/crontabs/root 2>/dev/null; then
 		sed -i -e '/treadle\/sync-subscriptions/d' -e '/treadle\/fetch-rulesets/d' \
 			/etc/crontabs/root
@@ -68,15 +68,12 @@ install_crons() {
 # OpenWrt's dnsmasq.init computes it deterministically, per instance, as
 #   config_get dnsmasqconfdir "$cfg" confdir "/tmp/dnsmasq${cfg:+.$cfg}.d"
 # Mirror that exactly: derive it from the dnsmasq UCI section name plus an
-# explicit `confdir` override if the user set one. The previous version
-# parsed the conf-dir= line out of dnsmasq's *generated*
-# /var/etc/dnsmasq.conf.<section> instead — which at boot is unreliable: it
-# may not exist yet, be half-written by an in-flight dnsmasq restart, or be
-# read before its conf-dir= line. Every such failure fell back to
-# /tmp/dnsmasq.d, a directory dnsmasq on 25.12 never reads, so the drop-in
-# landed where it had no effect and dnsmasq kept answering LAN clients from
-# the WAN/ISP (DNS-poisoned) resolvers. UCI is always readable, so deriving
-# the path from it works regardless of dnsmasq's runtime state.
+# explicit `confdir` override if the user set one. Not parsed from the
+# conf-dir= line of dnsmasq's generated /var/etc/dnsmasq.conf.<section>: at
+# boot that file may not exist yet, be half-written by a dnsmasq restart, or
+# lack the line, and a wrong guess (/tmp/dnsmasq.d, which dnsmasq on 25.12
+# never reads) leaves LAN clients on the WAN resolvers. UCI is always
+# readable, whatever dnsmasq's runtime state.
 dnsmasq_confdir() {
 	local section confdir
 	section=$(uci -q show dhcp.@dnsmasq[0] 2>/dev/null \
@@ -180,7 +177,7 @@ treadle_declare_instance() {
 	# instance on an out-of-band config edit and, after a package upgrade
 	# swaps /usr/bin/sing-box, the next start_service run (any UCI commit,
 	# WAN-up, manual restart) re-execs the new binary instead of leaving the
-	# pre-upgrade process running. Same `file`-hash trick as active-watch above.
+	# pre-upgrade process running. Same `file`-hash trick as active-watch below.
 	procd_set_param file "$1" "$SINGBOX"
 	procd_close_instance
 }
@@ -214,7 +211,7 @@ treadle_declare_active_watch() {
 	procd_close_instance
 }
 
-# Warm sing-box's rule-set cache before an initial start (0144). sing-box
+# Warm sing-box's rule-set cache before an initial start. sing-box
 # 1.12/1.13 exit when a remote rule-set that is not cached fails to download
 # at startup, and the shipped route (through the default urltest, whose first
 # member is used before it is tested) fails that way when that member is down.
@@ -263,7 +260,7 @@ treadle_warm_rule_sets() {
 	return 0
 }
 
-# True when some urltest group orders its members from the snapshot (0131),
+# True when some urltest group orders its members from the snapshot,
 # i.e. when taking a new snapshot can change the config at all.
 treadle_order_rotates() {
 	uci -q show treadle | grep -qE "\.urltest_member_order='(shuffle|latency)'$"
@@ -280,7 +277,7 @@ treadle_order_snapshot() {
 
 start_service() {
 	# Serialise concurrent invocations. set_enabled / start / restart /
-	# set_mode / set_extra_config all commit UCI and may also fork
+	# set_extra_config all commit UCI and may also fork
 	# /etc/init.d/treadle start explicitly, plus the procd reload trigger
 	# fires on every commit — so two start_service runs can race on the
 	# same ${config_path}.next file (build, validate, atomic rename).
@@ -318,8 +315,8 @@ start_service() {
 		chmod 0700 "$d"
 	done
 
-	# luci.treadle caches `sing-box version` in tmpfs to keep the 5s Overview
-	# poll from forking sing-box. Drop it on every (re)start so a package
+	# luci.treadle caches `sing-box version` in tmpfs to keep the Status
+	# page's poll from forking sing-box. Drop it on every (re)start so a package
 	# upgrade's new version is re-detected on the next read — otherwise the
 	# footer shows the pre-upgrade version until a reboot clears tmpfs.
 	rm -f /var/etc/treadle/.singbox-version
@@ -394,9 +391,9 @@ start_service() {
 	fi
 
 	# Several safety nets rely on config_path living on tmpfs (/var/etc/treadle):
-	# the "refuse to start with no working config after reboot" gate at line
-	# 327, and the fact that a saved-broken config can't persist across a
-	# reboot. A user who points config_path at flash storage (e.g.
+	# the refusal of an initial start with no working config (the config
+	# check below), and the fact that a saved-broken config can't persist
+	# across a reboot. A user who points config_path at flash storage (e.g.
 	# /etc/sing-box/config.json) loses both guarantees. Warn once per start
 	# so the implication is visible in the Treadle log without being noisy.
 	case "$config_path" in
@@ -412,7 +409,7 @@ start_service() {
 	# sing-box that is currently running fine.
 	tmp_cfg="${config_path}.next"
 
-	# urltest member order (0131) comes from a snapshot that only changes
+	# urltest member order comes from a snapshot that only changes
 	# when sing-box starts or restarts anyway, so the order rotates without
 	# ever causing a restart of its own. An initial start takes a new one
 	# before building; a restart takes one once the first build shows the
@@ -593,11 +590,10 @@ reload_service() {
 }
 
 service_triggers() {
-	# React to settings Saves and to the WAN coming up. The interface trigger
-	# replaces the old standalone /etc/hotplug.d/iface/40-treadle script: procd
-	# owns it and registers it only as part of this service, so it cannot
-	# fire — and be refused — before the boot-time start, the way a
-	# free-standing hotplug script raced S95treadle.
+	# React to settings Saves and to the WAN coming up. A procd interface
+	# trigger rather than a hotplug script: procd registers it only as part of
+	# this service, so it cannot fire, and be refused, before the boot-time
+	# start.
 	procd_add_reload_trigger treadle
 	procd_add_interface_trigger "interface.*.up" wan /etc/init.d/treadle reload
 }

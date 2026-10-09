@@ -11,9 +11,9 @@
 --   1. Builds an ephemeral probe config (`build-config --probe`) containing
 --      every concrete node Treadle knows about — manual + all subscriptions —
 --      with a loopback clash API on 127.0.0.1:9091 and nothing else, and
---      starts a second, short-lived sing-box instance from it. The running
---      (production) config stays lean: it no longer carries unreferenced
---      nodes just to make them testable.
+--      starts a second, short-lived sing-box instance from it, so the
+--      running (production) config need not carry unreferenced nodes just
+--      to make them testable.
 --   2. Probes each requested tag via /proxies/<tag>/delay on the probe
 --      instance, in parallel batches of CONCURRENCY uclient-fetch processes
 --      (shell-forked & + wait).
@@ -30,14 +30,10 @@
 -- behind; the next run reclaims it via the pidfile (with a /proc/cmdline
 -- identity check so a recycled pid is never killed by mistake).
 --
--- The earlier implementation probed the LIVE instance's clash API, which
--- required the `include_all_nodes` flag to bloat the running config with
--- every subscription node. Before that, it called /group/<tag>/delay as a
--- single big HTTP call — sing-box's internal probe concurrency for that
--- endpoint is capped, and on a real config with ~100 unreachable nodes the
--- batch took 4+ minutes. Per-tag probes with our own concurrency knob
--- bring the wall clock down to ~one minute for the same set, with the
--- bonus that cells fill in progressively rather than all at once.
+-- Per-tag probes rather than one /group/<tag>/delay call: sing-box caps
+-- that endpoint's internal concurrency, so a set with ~100 unreachable
+-- nodes takes minutes, where our own CONCURRENCY knob takes about one, and
+-- cells fill in as each batch lands.
 
 local jsonc = require "luci.jsonc"
 local lib   = dofile("/usr/libexec/treadle/treadlelib.lua")
@@ -62,31 +58,26 @@ local CONCURRENCY      = 16            -- parallel uclient-fetch processes
 -- Per-probe budget (clash query param) and the uclient-fetch wall clock
 -- around it. The two move together: the fetch must outlive the probe, or
 -- it gives up first and a perfectly good node is recorded as a timeout
--- with no status to explain it. 3000/5 was too tight — nodes measuring
--- ~1.7 s idle (distant anytls hops) cleared it alone but not against the
--- CONCURRENCY-way TLS handshake contention of a real batch, so they
--- flapped between a latency and "timeout" run to run.
+-- with no status to explain it. Nodes measuring ~1.7 s idle (distant
+-- anytls hops) need headroom: against the CONCURRENCY-way TLS handshake
+-- contention of a real batch, a ~3 s budget makes them flap between a
+-- latency and "timeout" from run to run.
 --
 -- The budget must also clear sing-box's own TCP dial timeout (~5 s), or
--- the two race and the *label* becomes nondeterministic. A node whose
--- connect is blackholed fails the dial at 5.00 s; the clash API reports
--- that as 503 ("connect failed"). At a 5000 ms budget the probe deadline
--- expires at the same instant, and whichever fires first decides the
--- status — measured on a blocked endpoint, 9 sequential probes returned
--- 503 every time, while the same 9 run CONCURRENCY-way returned 504
--- ("timeout") for 6 of them. Same failure, two labels, depending only on
--- scheduling. 8000/12 puts the budget clear of the dial timeout so the
--- dial error always wins and a blackholed endpoint reads "connect
--- failed", which is the actionable one: it says the endpoint is
--- unreachable from here, not that the node is slow. Dead nodes cost no
--- extra wall clock either way — they still fail at the 5 s dial, not at
--- the budget.
+-- the two race and the *label* becomes nondeterministic: a blackholed
+-- connect fails the dial at 5.00 s, which the clash API reports as 503
+-- ("connect failed"), and a 5000 ms budget expires at the same instant as
+-- 504 ("timeout"), the winner decided by scheduling. Clear of the dial
+-- timeout, the dial error always wins and a blackholed endpoint reads
+-- "connect failed", the actionable label: unreachable from here, not slow.
+-- Dead nodes cost no extra wall clock either way; they still fail at the
+-- 5 s dial.
 local PROBE_TIMEOUT_MS = 8000          -- per-probe (clash query param)
 local REQ_TIMEOUT_S    = 12            -- uclient-fetch wall clock per probe
 -- Must be https://. sing-box's clash API discards a plaintext test URL
 -- outright — `if strings.HasPrefix(url, "http://") { url = "" }` in
 -- getProxyDelay — and falls back to its own built-in default, so an
--- http:// value here was silently ignored on every supported version.
+-- http:// value here is silently ignored on every supported version.
 local TEST_URL         = "https://www.gstatic.com/generate_204"
 
 local function shell_quote(s)
@@ -313,7 +304,7 @@ if type(cache.results) ~= "table" then cache.results = {} end
 -- clash API's own JSON message never reaches us — the status line it
 -- prints on stderr (captured per probe, together with its exit code, by
 -- the batch script below) is the only evidence of what went wrong.
--- Reporting all of it as "timeout" hid two very different failures: a
+-- Reporting all of it as "timeout" would hide two very different failures: a
 -- node that is merely slow, and a tag the probe instance has never heard
 -- of.
 --   rc 8 → HTTP error status. 404 means the tag is absent from the probe

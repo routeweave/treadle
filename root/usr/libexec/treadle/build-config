@@ -829,7 +829,7 @@ local function build_node_from_uci(s)
 		if s.urltest_interrupt_exist_connections == "1" then
 			ob.interrupt_exist_connections = true
 		end
-		-- Member order and cap (0131). Internal markers, applied and
+		-- Member order and cap. Internal markers, applied and
 		-- stripped in build_outbounds step 3 like _outbound_regex.
 		if s.urltest_member_order == "shuffle" or s.urltest_member_order == "latency" then
 			ob._member_order = s.urltest_member_order
@@ -870,13 +870,13 @@ local OUTBOUND_RESERVED_TAGS = lib.RESERVED_TAGS
 
 -- ─── subscription payload sanitiser ─────────────────────────────────────
 --
--- Subscription bodies are remote, untrusted JSON. The legacy path spliced
--- the parsed payload table verbatim into all_map[tag] = p, so a hostile
--- provider could ship arbitrary sing-box outbound keys — detour to bypass
--- the user's routing intent, ssh.private_key_path to read router host keys,
--- transport.tls to override the configured TLS block, etc. Mitigate with a
--- per-type field whitelist that mirrors what build_node_from_uci accepts
--- from manual nodes. Anything not on the list is dropped at load time.
+-- Subscription bodies are remote, untrusted JSON. Spliced in verbatim, a
+-- payload would let a hostile provider ship arbitrary sing-box outbound
+-- keys — detour to bypass the user's routing intent, ssh.private_key_path
+-- to read router host keys, transport.tls to override the configured TLS
+-- block, etc. So each type has a field whitelist that mirrors what
+-- build_node_from_uci accepts from manual nodes; anything not on the list
+-- is dropped at load time.
 --
 -- Adding a new sing-box protocol means adding it here AND in build_node_from_uci.
 
@@ -1128,14 +1128,14 @@ end
 -- "5s" would change nothing. Measured on a router: with the field unset a
 -- TCP dial fails after 5.0 s, with 2s after 2.0 s and with 15s after 15.0 s,
 -- so it is honoured exactly for TCP protocols. Hysteria2 and TUIC ignore it:
--- their QUIC handshake gives up after 5 s whatever it says (decision 0142).
+-- their QUIC handshake gives up after 5 s whatever it says.
 -- The setting therefore exists to change the limit, in either direction.
 --
 -- Nothing is emitted for an empty, zero or "5s" value (a config saved when
 -- "5s" was the shipped default keeps working and stops carrying a redundant
 -- field). A malformed value is dropped with a warning rather than passed
--- through: sing-box would reject the whole config over one typo, which per
--- 0046 strands the user on the last working generation with no visible reason.
+-- through: sing-box would reject the whole config over one typo, which
+-- strands the user on the last working config with no visible reason.
 local SINGBOX_CONNECT_TIMEOUT = "5s"
 local _connect_timeout
 local function connect_timeout(c)
@@ -1217,7 +1217,7 @@ local function load_all_nodes(c)
 	return all_ordered, all_map
 end
 
--- ─── urltest member order (0131) ────────────────────────────────────────
+-- ─── urltest member order ──────────────────────────────────────────────
 --
 -- A group's member order is built from a frozen snapshot — a seed plus a
 -- copy of the latency results — never from live data, so the same inputs
@@ -1328,10 +1328,9 @@ local function build_outbounds(c)
 	-- The candidate tags go to grep in a private temp file (os.tmpname is
 	-- mkstemp: unique, 0600, on tmpfs), not on the command line. popen hands
 	-- the whole command to `sh -c` as one argument, which Linux caps at
-	-- 128 KiB: a few thousand long tags overflowed it, popen failed, and the
-	-- group silently lost every member. grep's own failure (exit 2, e.g. an
-	-- invalid ERE) used to be hidden the same way; both are now reported,
-	-- naming the group, and the group keeps no members as before.
+	-- 128 KiB, and a few thousand long tags exceed it. That failure and
+	-- grep's own (exit 2, e.g. an invalid ERE) are reported, naming the
+	-- group, which then keeps no members.
 	local function regex_match_set(pattern, tags, group)
 		local set = {}
 		if pattern == "" or #tags == 0 then return set end
@@ -1368,7 +1367,7 @@ local function build_outbounds(c)
 		return set
 	end
 
-	-- Reorder and cap a group's members (0131). `list` order is the input
+	-- Reorder and cap a group's members. `list` order is the input
 	-- order unchanged. `shuffle` and `latency` start from the members
 	-- sorted by tag and Fisher–Yates-shuffled with a generator seeded from
 	-- the snapshot and the group tag; `latency` then stably ranks fresh
@@ -1458,22 +1457,19 @@ local function build_outbounds(c)
 				-- urltest_regex_sources is set to a non-empty list, ONLY
 				-- subscriptions in that list contribute candidates (plus
 				-- manual nodes, always). When unset, every source is
-				-- considered — the original behaviour, and the only
-				-- non-breaking default for existing regex-mode groups.
-				-- An earlier attempt to reverse this default (SEC-3) was
-				-- reverted because it silently emptied every regex group
-				-- whose user hadn't yet typed an explicit source list,
-				-- in turn dropping the group, the routes pointing at it,
-				-- and finally the user's DNS.
+				-- considered: a restrictive default would empty every
+				-- regex group whose user has not chosen sources, dropping
+				-- the group, the routes pointing at it and the DNS that
+				-- depends on them.
 				local src_set = nil
 				if type(src_list) == "table" and #src_list > 0 then
 					src_set = {}
 					for _, sid in ipairs(src_list) do src_set[sid] = true end
 				end
-				-- Per-source admit counts for the SEC-3 audit log. A regex
-				-- group that auto-admits subscription nodes is the SEC-3
-				-- attack surface (hostile sub ships nodes matching the
-				-- user's pattern, slots itself into the auto-pool).
+				-- Per-source admit counts for the audit log. A regex group
+				-- that auto-admits subscription nodes is an attack surface
+				-- (a hostile sub ships nodes matching the user's pattern
+				-- and slots itself into the auto-pool).
 				-- Logging each source's contribution lets the user notice
 				-- a new sub joining; gating is left to the optional
 				-- urltest_regex_sources whitelist.
@@ -1550,9 +1546,9 @@ local function build_outbounds(c)
 	-- ── Step 4: assemble final list — builtins first, then referenced nodes ──
 	-- Preserve original file order so urltest member ordering is predictable.
 	-- (See direct_outbound for why the seed carries domain_resolver:"local".)
-	-- block is no longer a builtin outbound — a rule that drops traffic now
-	-- compiles to a reject rule action (see build_route). sing-box removed
-	-- the legacy `block` special outbound in 1.13.
+	-- There is no block outbound: a rule that drops traffic compiles to a
+	-- reject rule action (see build_route), since sing-box 1.13 has no
+	-- special `block` outbound.
 	local timeout   = connect_timeout(c)
 	local outbounds = { direct_outbound() }
 	local endpoints = {}
@@ -1719,8 +1715,8 @@ end
 -- or a node hostname via dnsmasq would loop. local_server picks the
 -- upstream — "wan" or blank auto-detects the WAN-assigned resolver,
 -- anything else is a literal address. tls://1.1.1.1 (literal IP, no
--- recursion) is the fallback when WAN is down at boot; the iface hotplug
--- regenerates the config once WAN comes up. Shared by build_dns and
+-- recursion) is the fallback when WAN is down at boot; the init script's
+-- WAN-up trigger regenerates the config once WAN comes up. Shared by build_dns and
 -- build_probe_config.
 --
 -- A local_server given by hostname cannot resolve itself: its lookups go
@@ -1991,8 +1987,9 @@ end
 -- never hands ICMP to sing-box. A tun captures ICMP, and only direct (and
 -- WireGuard/Tailscale endpoints) can carry it: a ping that reaches a rule
 -- pointing at a proxy is refused, and the client gets a fake reply from the
--- router. A ping has no port, so whether it reached such a rule depended on
--- the user's rule order. Placed before every user rule, so it always wins.
+-- router. A ping has no port, so whether it reached such a rule would
+-- depend on the user's rule order. Placed before every user rule, so it
+-- always wins.
 -- 1.12 has no `icmp` network and does not route ICMP through a tun anyway.
 local function add_icmp_direct(c, route)
 	if not SB.icmp_network then return end
@@ -2210,9 +2207,9 @@ local LOG_LEVELS = {
 -- syslog, and logread already stamps every line — so a timestamped line
 -- carries two clock readings, and they disagree (syslog prints local time,
 -- sing-box prints UTC), which is worse than merely redundant when reading
--- raw logread output. The Status page never showed the second one anyway:
--- LOG_RE in status.js has always matched it as an optional group and
--- dropped it. What is reclaimed is space in the syslog ring buffer, which
+-- raw logread output. The Status page does not show the second one either:
+-- LOG_RE in status.js matches it as an optional group and drops it. What is
+-- reclaimed is space in the syslog ring buffer, which
 -- is the binding constraint on how much history survives — a steadily
 -- logging sing-box can evict the whole buffer in well under an hour,
 -- taking Treadle's own control-plane narrative with it.
@@ -2279,7 +2276,7 @@ end
 -- this surfaces the cause and keeps the new save valid.
 --
 -- `originset[tag]` carries the origin info for that tag (one of "manual",
--- "subscription <id>", "group"). Used to emit the SEC-4 audit line below:
+-- "subscription <id>", "group"). Used to emit the leaf-node audit line below:
 -- when a route or DNS reference resolves to a subscription LEAF node (not a
 -- group), it's unusual — the field is typically aimed at a group tag — and
 -- a hostile subscription that happened to ship a node matching the user's
@@ -2310,13 +2307,13 @@ local function build_config(c)
 
 	-- Post-build validation: route.final and every dns.servers[].detour must
 	-- resolve to a tag that build_outbounds actually emitted (plus the
-	-- builtins direct/block). Stale Advanced final_outbound and DNS detour
+	-- builtins direct/block). Stale final_outbound and DNS detour
 	-- references — surfaced by a deleted manual node or a renamed
 	-- subscription tag — would otherwise produce a config sing-box rejects,
 	-- and the init.d fallback would hide that from the user indefinitely.
 	local tagset    = {}
 	local originset = {}
-	-- Subscription uid → display name, so the SEC-4 audit line shows the
+	-- Subscription uid → display name, so the leaf-node audit line shows the
 	-- friendly name instead of the 16-hex section id.
 	local sub_names = sub_display_names(c)
 	local function classify(ob)
@@ -2348,7 +2345,7 @@ local function build_config(c)
 		route     = route
 	}
 	-- endpoints (WireGuard) is emitted only when non-empty, so a config with
-	-- no WireGuard nodes stays byte-identical to before.
+	-- no WireGuard nodes carries no empty array.
 	if #endpoints > 0 then
 		config.endpoints = endpoints
 	end
@@ -2383,7 +2380,7 @@ local function build_config(c)
 	-- uclient-fetch reach the API without a custom Authorization header (a
 	-- flag uclient-fetch has no spelling for). The API is opt-in via
 	-- `clash_api_enabled` — default off, nothing listens until the user
-	-- toggles it from Settings → Advanced.
+	-- turns on live stats and latency testing under Settings → Nodes.
 	if c:get("treadle", "global", "clash_api_enabled") == "1" then
 		experimental.clash_api = {
 			external_controller = "127.0.0.1:9090"
@@ -2442,8 +2439,8 @@ local function build_probe_config(c)
 			-- PROBE_TIMEOUT_MS, with REQ_TIMEOUT_S outside it), tuned against
 			-- real batch contention. A second, shorter deadline underneath it
 			-- would fail the dial before that budget is spent and record a
-			-- distant-but-healthy node as down — the exact flapping the
-			-- PROBE_TIMEOUT_MS comment documents having already paid for.
+			-- distant-but-healthy node as down — the flapping the
+			-- PROBE_TIMEOUT_MS comment describes.
 			place_node(ob, outbounds, endpoints)
 		end
 	end
@@ -2478,7 +2475,7 @@ end
 -- sing-box 1.12/1.13 exit when a rule-set that is not cached fails to
 -- download at startup, and the shipped route (through the default urltest,
 -- whose first member is used before it has been tested) fails that way
--- whenever that member is down (0118). From a warm cache sing-box starts
+-- whenever that member is down. From a warm cache sing-box starts
 -- without touching the network, whatever the download route. Derived from the
 -- real built config, so the tags, URLs, formats and cache path are those the
 -- real instance will look up. Returns nil when there is nothing to warm: no
@@ -2531,8 +2528,8 @@ local c = uci_mod.cursor()
 -- --bootstrap: build the rule-set cache warm-up config (side-effect-free
 -- like --preview; writes nothing and exits 0 when there is nothing to warm).
 -- --order-snapshot: write a new urltest member-order snapshot and exit
--- without building (0131; the init script calls it only when sing-box is
--- about to restart anyway).
+-- without building (the init script calls it only when sing-box is about
+-- to restart anyway).
 local out_path
 local args = {}
 for _, a in ipairs(arg) do args[#args + 1] = a end

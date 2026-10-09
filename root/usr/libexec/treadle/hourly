@@ -11,8 +11,8 @@
 
 . /lib/functions.sh
 
-# Subscriptions: sync-subscriptions walks each enabled subscription and
-# fetches only those whose auto_update interval (in hours) has elapsed.
+# Subscriptions: sync-subscriptions walks each subscription and fetches
+# only those whose auto_update interval (in hours) has elapsed.
 [ -x /usr/libexec/treadle/sync-subscriptions ] && \
 	/usr/libexec/treadle/sync-subscriptions
 

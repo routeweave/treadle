@@ -47,9 +47,8 @@ M.ALLOWED_PROTOCOLS = {
 -- dialled by sing-box at all. A node carrying one is rejected at parse
 -- time rather than built without its transport: silently dropping the
 -- transport block produces an outbound that looks fine, is selectable,
--- and fails every handshake (the failure the Nodes panel reported as
--- "HTTP 503"). Shared by luci.treadle's parsers and build-config's
--- sanitiser so all three subscription formats agree.
+-- and fails every handshake. Shared by luci.treadle's parsers and
+-- build-config's sanitiser so all three subscription formats agree.
 M.SUPPORTED_TRANSPORTS = {
 	ws          = true,
 	grpc        = true,
@@ -67,7 +66,7 @@ M.SUPPORTED_TRANSPORTS = {
 --
 -- `packet-up` and `stream-up` are NOT mappable: they correlate several
 -- requests through a session id sing-box has no way to emit, so nodes in
--- those modes keep the old rejection. An absent or `auto` mode resolves
+-- those modes are still rejected. An absent or `auto` mode resolves
 -- client-side to stream-one whenever REALITY is configured, which is how
 -- every xhttp node observed in the wild ships.
 M.XHTTP_MAPPABLE_MODES = {

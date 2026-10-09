@@ -146,11 +146,8 @@ return baseclass.extend({
 
 		// tag → [ live <span> elements that should reflect this tag's
 		// latency ]. Built up as cells render, drained when stale (DOM
-		// disconnected). Used instead of a querySelectorAll on a
-		// data-attribute, because tag values include emoji (🇭🇰, 🇯🇵, …) and
-		// CSS attribute selector escapes for surrogate-pair characters are
-		// not portable across browsers — the old code threw a SyntaxError
-		// on the first emoji tag and broke the whole batch promise.
+		// disconnected). A map rather than a selector query: see
+		// _registerLatencyCell.
 		this._latencyCells = {};
 
 		// Live data for the Groups and Subscriptions columns.
@@ -1034,7 +1031,7 @@ return baseclass.extend({
 		o.depends('urltest_mode', 'regex');
 
 		// Restrict regex matching to nodes from selected sources. Empty =
-		// match across every source (the behaviour before this field existed).
+		// match across every source.
 		// Sentinel `_manual` covers UCI-defined manual nodes; remaining values
 		// are subscription uids (the subscription section's name). `_manual`
 		// is non-hex and cannot collide with a uid.
@@ -1229,9 +1226,8 @@ return baseclass.extend({
 						});
 						// Same code path as the global Test all — the
 						// background runner accepts an optional tag list
-						// to scope the run. Avoids the per-tag RPC pool
-						// (which was 18× slower than the runner due to
-						// rpcd dispatch overhead on every call).
+						// to scope the run. One RPC per tag would pay
+						// rpcd's per-call process start for each.
 						self._doTestAll(tags);
 					}
 				}, [ _('Test all in this subscription') ]));
@@ -1376,9 +1372,8 @@ return baseclass.extend({
 	},
 
 	// Section "Test all" handler — dispatches directly. Probing is
-	// non-destructive and the spinning button already shows a run is in
-	// progress, so a confirm step only added friction (the per-subscription
-	// batch button never had one either).
+	// non-destructive and the spinning button shows the run, so there is no
+	// confirm step.
 	_testAll: function() {
 		var tags = this._collectAllTags();
 		if (tags.length === 0) {

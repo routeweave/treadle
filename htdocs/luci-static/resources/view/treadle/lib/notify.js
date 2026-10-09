@@ -2,7 +2,7 @@
 // Copyright (C) 2026 RouteWeave
 
 // Notification banners for every panel, so the severity classes and the
-// sticky-or-fading choice live in one place (decision 0169).
+// sticky-or-fading choice live in one place.
 //
 //  error    stays until dismissed — it names what went wrong, and must not
 //           vanish while the user is looking elsewhere on the page

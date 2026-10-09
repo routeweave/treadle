@@ -790,8 +790,8 @@ local function build_clash_outbound(fields)
 		local insec  = clash_truthy(fields["skip-cert-verify"])
 		-- REALITY is always TLS, and providers routinely ship the node with
 		-- no `tls: true` alongside it — the reality-opts block IS the
-		-- indicator. Without this the whole tls block was omitted and the
-		-- handshake failed with no diagnostic at all.
+		-- indicator. Without this the whole tls block would be omitted and
+		-- the handshake fail with no diagnostic at all.
 		local pbk    = fields["reality-opts.public-key"]
 		local indic  = sni or alpn or cfp or insec or pbk or clash_truthy(fields["tls"])
 		if not (indic or tls_implicit(typ)) then return end
@@ -1018,9 +1018,9 @@ local function extract_clash(body)
 	-- a dash makes it a list, a "k: v" pair makes it a mapping.
 	--
 	-- Nested mapping keys are stored dotted ("ws-opts.headers.Host"), not
-	-- flattened onto the top level. Flattening lost which block a key came
-	-- from, so `path` under ws-opts and under h2-opts were the same field
-	-- and nothing could read either one back reliably.
+	-- flattened onto the top level. Flattening would lose which block a key
+	-- came from: `path` under ws-opts and under h2-opts would be one field,
+	-- and neither could be read back reliably.
 	local function set_field(k, v, indent)
 		if indent then
 			while #nest > 0 and indent <= nest[#nest].indent do

@@ -35,7 +35,7 @@ LUCI_URL:=$(PKG_URL)
 # that moment: a conffiles or prerm block placed after the include is invisible to
 # an SDK build, which then ships a package that overwrites /etc/config/treadle on
 # upgrade and does not stop the service on removal. (Only postinst is predefined
-# by luci.mk, behind an ifndef, so it was never affected.) scripts/package.sh
+# by luci.mk, behind an ifndef, so its position does not matter.) scripts/package.sh
 # refuses to build when one of these comes after the include.
 define Package/luci-app-treadle/conffiles
 /etc/config/treadle

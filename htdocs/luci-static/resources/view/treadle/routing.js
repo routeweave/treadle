@@ -31,12 +31,11 @@ var callRefreshRulesets = rpc.declare({
 	expect: { '': {} }
 });
 
-// Catalog refresh is the once-a-week background fetch from GitHub. It used
-// to be implicit in list_rulesets (any read triggered the refresh on stale
-// cache), but that put outbound network requests on the ACL read side. Now
-// the load() call asks for the cached data, then explicitly requests a
-// refresh only when the cache is older than the TTL. The refresh is
-// fire-and-forget; the next page load picks up the new names.
+// Catalog refresh is the once-a-week background fetch from GitHub. It is a
+// separate write-side call so that no read makes an outbound request: load()
+// asks for the cached data, then requests a refresh only when the cache is
+// older than the TTL. The refresh is fire-and-forget; the next page load
+// picks up the new names.
 var RULESET_CACHE_TTL_S = 7 * 24 * 3600;
 
 var callListDhcpLeases = rpc.declare({
@@ -684,9 +683,9 @@ return baseclass.extend({
 		var m = new form.Map('treadle');
 
 		// ── rules ───────────────────────────────────────────────────────
-		// The default node is not a section of its own any more: it is the
-		// table's fixed last row, "Everything else", added in renderContents
-		// below, because it is where traffic goes after every rule.
+		// The default node is not a section of its own: it is the table's
+		// fixed last row, "Everything else", added in renderContents below,
+		// because it is where traffic goes after every rule.
 		var s = m.section(form.GridSection, 'rule', _('Rules'),
 			_('Checked top to bottom; the first rule that matches decides the ' +
 			  'node, and traffic no rule matches goes to "Everything else". ' +
@@ -875,10 +874,9 @@ return baseclass.extend({
 			return node;
 		};
 		// Repopulate the Value combobox when the user flips MAC ↔ IP, so
-		// the visible suggestions always match the current kind. Same
-		// cross-map rule as servers.js: inside the modal `this.map` is the
-		// clone, lookupOption finds the modal's sibling, getUIElement
-		// returns the live widget.
+		// the visible suggestions always match the current kind. Inside the
+		// modal `this.map` is the clone, lookupOption finds the modal's
+		// sibling, getUIElement returns the live widget.
 		bpKind.onchange = function(ev, section_id, value) {
 			var bpValueOpts = this.map.lookupOption('value', section_id);
 			var opt = bpValueOpts && bpValueOpts[0];

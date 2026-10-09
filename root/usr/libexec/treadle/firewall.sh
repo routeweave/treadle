@@ -47,11 +47,9 @@ uci_get() { uci -q get "treadle.$1.$2" 2>/dev/null; }
 # mode; in tun mode build-config emits the equivalent
 # source_ip_cidr direct rule into the sing-box config instead.
 #
-# One awk pass over `uci show treadle` instead of three `uci get` forks (plus
-# a grep) per section — everything needed is already in that one dump, and
-# at ~4 forks per bypass entry the old loop scaled with the bypass list on
-# every service start. Validation matches the old greps exactly: nft accepts
-# only colon-separated MACs (stricter than the JS validator), the IPv6 shape
+# One awk pass over `uci show treadle` rather than several `uci get` forks
+# per section, so the cost of a service start does not grow with the bypass
+# list. Validation: nft accepts only colon-separated MACs (stricter than the JS validator), the IPv6 shape
 # check (2-7 colons, hex groups up to 4 chars, optional /prefix) catches
 # typos before nft -f errors out on the whole ruleset. `uci show` always
 # wraps option values in single quotes; substr() peels them without the awk
@@ -291,7 +289,7 @@ start() {
 
 	# Fake-IP ranges must be TPROXY'd, not bypassed by the reserved-range
 	# accept rules — the addresses are synthetic and only sing-box can demap
-	# them. Defaults mirror build-config / the DNS settings tab.
+	# them. Defaults mirror build-config / the Settings tab's DNS section.
 	fakeip=$(uci_get dns fakeip_enabled)
 	fakeip_v4=$(uci_get dns fakeip_range_v4)
 	[ -n "$fakeip_v4" ] || fakeip_v4='198.18.0.0/15'
@@ -319,8 +317,8 @@ stop() {
 	remove_iprules
 }
 
-# Only start/stop are used (by /etc/init.d/treadle); start is already
-# idempotent — it begins with stop — so a separate restart adds nothing.
+# Only start/stop are used (by /etc/init.d/treadle); start is idempotent
+# (see start), so a separate restart adds nothing.
 case "$1" in
 	start)   start ;;
 	stop)    stop; treadle_log info "firewall: TPROXY ruleset removed" ;;

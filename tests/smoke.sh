@@ -171,7 +171,8 @@ echo '{"versions":true}' | "$HANDLER" call get_dashboard > "$OUT/dash-ver.json"
 	|| bad "get_dashboard versions: $(head -c 300 "$OUT/dash-ver.json")"
 
 # The Status box shows every sing-box line, unfiltered, including the ICMP
-# echo session timeout that sing-box 1.13 logs at error level (decision 0150).
+# echo session timeout that sing-box 1.13 logs at error level (log noise
+# from sing-box itself, not something Treadle filters).
 # The container has no syslog, so a stand-in logread supplies the lines. The
 # JSON encoder escapes the slash in "i/o", so that line is matched on its
 # address and the start of its error text.
@@ -243,9 +244,9 @@ after=$(date -r "$nf" +%s)
 	&& ok "unchanged re-sync left the node file untouched" \
 	|| bad "re-sync: status=$(jsonfilter -i "$OUT/resync.json" -e '@.status') mtime $before -> $after"
 
-# Subscriptions have no on/off switch any more: reconcile_subscriptions,
-# run on every start, turns a switched-off one into auto-update 0 (manual
-# only, which is all the switch ever did) and drops the option.
+# reconcile_subscriptions, run on every start, migrates the per-subscription
+# on/off switch an older Treadle had: a switched-off one becomes auto-update 0
+# (manual only, all the switch did) and the option is dropped.
 uci set treadle.0123456789abcd01.enabled=0
 uci set treadle.0123456789abcd01.auto_update=6
 uci commit treadle
@@ -362,8 +363,9 @@ build() {
 
 step "configs"
 # The shipped default is tun, and a missing option builds the same thing, so
-# the conffile, the builder and the UI agree (see decision 0118 for what a
-# mismatch costs). tproxy stays selectable, which the loop below covers.
+# the conffile, the builder and the UI agree; otherwise an option the user
+# never touched would behave differently from what the UI shows. tproxy stays
+# selectable, which the loop below covers.
 shipped_mode=$(uci -q get treadle.inbounds.mode)
 [ "$shipped_mode" = "tun" ] && ok "shipped inbound mode is tun" \
 	|| bad "shipped inbound mode is '$shipped_mode', want tun"
@@ -1020,10 +1022,10 @@ rm -f /etc/treadle/nodes/0123456789abcd69.json
 
 step "large subscription"
 
-# A regex group's candidate tags once reached grep on the command line, which
-# `sh -c` receives as a single argument capped at 128 KiB: past a few thousand
-# long tags popen failed and the group silently lost every member. 4000 tags
-# of 45 bytes are ~190 KB quoted. The node file is written the way a sync
+# A regex group's candidate tags reach grep through a temp file: on the
+# command line, `sh -c` receives them as a single argument capped at 128 KiB,
+# which a few thousand long tags exceed. 4000 tags of 45 bytes are ~190 KB
+# quoted. The node file is written the way a sync
 # stores it, for a subscription that is never actually fetched.
 LARGE_N=4000
 uci batch <<'EOF'
@@ -1176,7 +1178,7 @@ uci commit treadle
 # download at startup, and the shipped route (through the default urltest,
 # whose first member is a placeholder here) fails that way. A rules-only
 # sing-box downloads over the WAN into the real cache file first, so the real
-# start finds them cached (0144). The rule-set is a local HTTP file, so this
+# start finds them cached. The rule-set is a local HTTP file, so this
 # needs no outside network. From 1.14 an empty placeholder already prevents
 # the exit, so the cold start is only a failure before that.
 step "rule-set cache warm-up"
@@ -1306,8 +1308,7 @@ EOF
 # --- connect timeout --------------------------------------------------------
 
 # sing-box already bounds a dial at 5 s, so nothing is stamped unless the user
-# sets a different limit (decision 0142). Proxy outbounds carry it, groups and
-# direct do not.
+# sets a different limit. Proxy outbounds carry it, groups and direct do not.
 step "connect timeout"
 uci delete treadle.global.connect_timeout 2>/dev/null
 uci commit treadle
@@ -1530,7 +1531,7 @@ fi
 # --- sing-box updates from SagerNet ------------------------------------------
 # The check reads a recorded releases/latest reply (no GitHub call, no rate
 # limit); the install and revert paths need the real packages and are tested
-# by hand on 25.12 and 24.10 (decision 0153).
+# by hand on 25.12 and 24.10.
 
 step "sing-box updates"
 SBU=/usr/libexec/treadle/singbox-update

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 RouteWeave
 
 // Latency badge rendering shared by the Nodes panel (Latency column, the
-// subscription-nodes modal) and the Status panel (Groups column), so the
+// subscription-nodes modal) and the Status panel (Nodes in use), so the
 // thresholds and colours cannot drift between the two.
 
 'use strict';

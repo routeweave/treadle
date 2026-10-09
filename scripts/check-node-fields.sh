@@ -4,9 +4,9 @@
 #
 # A manual node's settings travel two ways: the node editor writes them to UCI
 # and build_node_from_uci (build-config) reads them back; a pasted share link goes
-# the other way, through outbound_to_uci (subparse.lua). Decision 0133 says the
-# second must gain a line whenever the first gains a field. This makes the rule
-# fail a build instead of relying on someone remembering it:
+# the other way, through outbound_to_uci (subparse.lua). The second must gain a
+# line whenever the first gains a field. This makes that rule fail a build
+# instead of relying on someone remembering it:
 #
 #   sh scripts/check-node-fields.sh
 #

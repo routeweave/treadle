@@ -2,11 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (C) 2026 RouteWeave
 #
-# Emit the release-notes body shared by ci.yml (snapshot) and release.yml:
-# header lines from stdin first, then the APK / IPK install instructions
-# for the two given asset URLs. One copy so the wording cannot drift
-# between the rolling snapshot and tagged releases (the two inline
-# copies it replaces already had).
+# Emit release.yml's release-notes body: header lines from stdin first,
+# then the APK / IPK install instructions for the two given asset URLs.
 #
 # Usage: release-notes.sh <apk-url> <ipk-url>  (header on stdin)
 

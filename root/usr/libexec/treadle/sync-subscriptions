@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (C) 2026 RouteWeave
 #
-# Called hourly by cron. Syncs each enabled subscription whose auto_update
+# Called hourly by cron. Syncs each subscription whose auto_update
 # interval (in hours) has elapsed since last_sync. Exits quickly when nothing
 # is due.
 #

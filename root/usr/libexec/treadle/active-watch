@@ -141,10 +141,9 @@ end
 -- urltest group, carrying the active member tag and (when available) its
 -- most recent latency. Internal helper groups (tag starts with "_") are
 -- filtered out here: the underscore-prefix check excludes them, and the
--- type filter below excludes any Selector that might appear (Treadle no
--- longer creates selector nodes, but a clash-format subscription could in
--- theory ship one — those are dropped at sanitisation time today, but the
--- defensive filter costs nothing).
+-- type filter below excludes any Selector. Treadle never emits one and
+-- sanitisation drops those a subscription ships, so the filter is only a
+-- backstop.
 local function group_state(parsed)
 	local out = {}
 	if type(parsed.proxies) ~= "table" then return out end

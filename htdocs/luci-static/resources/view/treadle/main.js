@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 RouteWeave
 
-// Single-page host view. Treadle is one menu entry; every former page is a
-// panel mounted lazily into one cbi-map. This keeps the "Treadle" title above
+// Single-page host view. Treadle is one menu entry; every page is a panel
+// mounted lazily into one cbi-map. This keeps the "Treadle" title above
 // a single in-view tab bar (LuCI only auto-renders a sibling tab bar when a
 // menu node has siblings — with one entry there are none).
 
@@ -73,8 +73,8 @@ return view.extend({
 
 	// Save & Apply reloads the page; restore the last active tab from LuCI's
 	// session store — the same mechanism the stock form-tab pages use to
-	// survive an apply. No URL hash is involved. An unknown stored id (the
-	// removed Basic tab) falls back to the first tab in _activate.
+	// survive an apply. No URL hash is involved. An unknown stored id (a tab
+	// an older Treadle had) falls back to the first tab in _activate.
 	_initialRoute: function() {
 		return session.getLocalData('treadle.activeTab') || this._tabs[0].id;
 	},

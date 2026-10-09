@@ -7,10 +7,10 @@
 -- rule-set repositories via the GitHub tree API and writes the discovered
 -- names to /etc/treadle/rulesets-cache.json.
 --
--- Rule-sets themselves are no longer downloaded by Treadle: routing rules
--- reference sing-box `remote` rule-sets, which sing-box fetches and refreshes
--- itself. This script only feeds UI suggestions and is invoked on demand by
--- luci.treadle's list_rulesets when the cache is stale.
+-- Treadle does not download rule-sets itself: routing rules reference
+-- sing-box `remote` rule-sets, which sing-box fetches and refreshes. This
+-- script only feeds UI suggestions and is run by luci.treadle's
+-- refresh_rulesets, which the Routing tab calls when the cache is stale.
 --
 -- Self-locks via busybox `lock`; concurrent invocations exit silently.
 
