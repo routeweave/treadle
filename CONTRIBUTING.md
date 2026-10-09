@@ -155,9 +155,10 @@ packages as an artifact instead of publishing them.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| **CI**      | Pull request, push to `main` | Lint, package build and staged-tree check, smoke, system and browser tests on OpenWrt 25.12 (apk) and 24.10 (opkg). |
-| **Release** | Push of a `v*` tag           | Runs the CI workflow on the release version, then signs the `.apk` it tested with the feed key and creates an immutable GitHub release. A failing check publishes nothing. Run by hand, it does everything but publish. |
-| **Feed**    | After a successful Release, or CI on a `main` push | Rebuilds the GitHub Pages site: the signed feed from every `v*` release, and the rolling snapshot from the newest passing `main` build. |
+| **Test**    | Called by CI and Release     | Lint, package build and staged-tree check, smoke, system and browser tests on OpenWrt 25.12 (apk) and 24.10 (opkg). |
+| **CI**      | Pull request, push to `main` | Runs Test. On a `main` push that passes, publishes the feed with that build as the snapshot. Runs on `main` queue rather than cancel each other. |
+| **Release** | Push of a `v*` tag           | Runs Test on the release version, then signs the `.apk` it tested with the feed key, creates an immutable GitHub release and republishes the feed. A failing check publishes nothing. Run by hand, it does everything but publish. |
+| **Feed**    | Called by CI and Release, or by hand | Rebuilds the GitHub Pages site: the signed feed from every `v*` release, and the rolling snapshot. Run by hand with `dry_run`, it builds the site as an artifact without deploying. |
 
 Every action is pinned to a commit SHA, with the tag in a trailing comment;
 Dependabot proposes updates monthly.
@@ -182,7 +183,8 @@ branch you have checked out.
 ├── actions/install-usign/       # CI: build OpenWrt's usign
 ├── dependabot.yml               # Keeps the pinned actions current
 └── workflows/
-    ├── ci.yml                   # Checks on every PR and main push
+    ├── test.yml                 # The checks, called by ci.yml and release.yml
+    ├── ci.yml                   # Every PR and main push; publishes main's snapshot
     ├── release.yml              # Release on v* tag push
     └── pages.yml                # Publish the feed to GitHub Pages
 scripts/

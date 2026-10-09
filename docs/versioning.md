@@ -123,7 +123,7 @@ wins over the Makefile. Snapshot ordering belongs in the version body, which
 is what the timestamp is for.
 
 `TREADLE_RELEASE` exists solely for `release.yml`'s `v<X.Y.Z>-r<N>` tags.
-`ci.yml`, which builds snapshots, deliberately sets nothing.
+`ci.yml`, which builds snapshots through `test.yml`, deliberately sets nothing.
 
 ## apk format constraints
 

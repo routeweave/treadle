@@ -6,53 +6,38 @@
 # $FEED_OUT/snapshot/luci-app-treadle-snapshot.{apk,ipk} plus a .sha256 for
 # each and a VERSION file. Run by pages.yml.
 #
-# The packages come from a CI run's `packages-<sha>` artifact:
-# $TRIGGER_RUN when a CI run triggered this, otherwise the newest successful
-# CI run on a push to main. CI keeps those artifacts for 30 days; when none
-# is left, the files the live site serves now are kept, so a quiet month
-# never makes the snapshot disappear. With neither (the very first deploy),
-# the site simply has no snapshot yet.
+# When ci.yml publishes a main build, the packages it just tested are in
+# $SNAPSHOT_DIR. Every other run (a release, a manual rebuild) keeps the
+# files the live site serves now, so the snapshot only ever moves to a newer
+# tested main. With neither (the very first deploy), the site simply has no
+# snapshot yet.
 #
 # Environment:
-#   GH_TOKEN          token with actions:read, for gh
-#   GITHUB_REPOSITORY owner/repo (set by Actions)
 #   FEED_OUT          the site directory
-#   PAGES_URL         the site's public URL, for the keep-what-is-live fallback
-#   TRIGGER_RUN       optional: the CI run id to take the packages from
+#   PAGES_URL         the site's public URL, for keeping the live snapshot
+#   SNAPSHOT_DIR      optional: a directory holding the build's .apk and .ipk
+#   SNAPSHOT_COMMIT   the commit that build is from, recorded in VERSION
 
 set -eu
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 [ -n "${FEED_OUT:-}" ] || die "FEED_OUT is not set"
-[ -n "${GITHUB_REPOSITORY:-}" ] || die "GITHUB_REPOSITORY is not set"
 
 OUT="$FEED_OUT/snapshot"
 NAME=luci-app-treadle-snapshot
-TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$OUT"
 
-run=${TRIGGER_RUN:-}
-if [ -z "$run" ]; then
-	run=$(gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --branch main \
-		--event push --status success --limit 1 \
-		--json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || true)
-fi
-
-from_ci() {
-	[ -n "$run" ] || return 1
-	gh run download "$run" -R "$GITHUB_REPOSITORY" --pattern 'packages-*' \
-		--dir "$TMP/ci" >/dev/null 2>&1 || return 1
+from_build() {
+	[ -n "${SNAPSHOT_DIR:-}" ] || return 1
 	for ext in apk ipk; do
-		src=$(find "$TMP/ci" -type f -name "*.$ext" | head -n 1)
-		[ -n "$src" ] || return 1
+		src=$(find "$SNAPSHOT_DIR" -type f -name "*.$ext" | head -n 1)
+		[ -n "$src" ] || die "no .$ext in $SNAPSHOT_DIR"
 		cp "$src" "$OUT/$NAME.$ext"
 	done
-	version=$(basename "$(find "$TMP/ci" -type f -name '*.apk' | head -n 1)" .apk)
+	version=$(basename "$(find "$SNAPSHOT_DIR" -type f -name '*.apk' | head -n 1)" .apk)
 	version=${version#luci-app-treadle-}
-	commit=$(gh run view "$run" -R "$GITHUB_REPOSITORY" --json headSha --jq .headSha 2>/dev/null || true)
-	printf 'version %s\ncommit %s\n' "$version" "${commit:-unknown}" > "$OUT/VERSION"
-	printf 'snapshot: %s from CI run %s\n' "$version" "$run"
+	printf 'version %s\ncommit %s\n' "$version" "${SNAPSHOT_COMMIT:-unknown}" > "$OUT/VERSION"
+	printf 'snapshot: %s from this run\n' "$version"
 }
 
 from_live() {
@@ -60,11 +45,11 @@ from_live() {
 	for f in "$NAME.apk" "$NAME.ipk" VERSION; do
 		curl -fsSL -o "$OUT/$f" "${PAGES_URL%/}/snapshot/$f" || return 1
 	done
-	printf 'snapshot: no CI build available, keeping the live one (%s)\n' \
+	printf 'snapshot: keeping the live one (%s)\n' \
 		"$(sed -n 's/^version //p' "$OUT/VERSION")"
 }
 
-if ! from_ci && ! from_live; then
+if ! from_build && ! from_live; then
 	rm -rf "$OUT"
 	printf 'snapshot: none available yet, site published without one\n'
 	exit 0

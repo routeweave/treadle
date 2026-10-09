@@ -1,243 +1,40 @@
 name: CI
 
-# Every pull request and every push to main runs the same checks: static
-# lint, a package build with a syntax check of what actually ships, and an
-# end-to-end smoke test on real OpenWrt userlands (one apk-era, one
-# opkg-era release). A push to main that passes all of them triggers the
-# Feed workflow (pages.yml), which publishes that build as the rolling
-# snapshot, so the snapshot is always the latest tested main.
+# Every pull request and every push to main runs the checks in test.yml. A
+# push to main that passes all of them then publishes that build as the
+# rolling snapshot (pages.yml), from the packages this same run tested, so
+# the snapshot is always the latest tested main.
 #
-# release.yml calls this same workflow with the release version, so a
-# release is built and tested by exactly these jobs and publishes the
-# packages they tested. The inputs are empty on every other event.
-#
-# Actions are pinned by commit SHA; the tag each SHA was taken from is in
-# the trailing comment. Dependabot keeps both in step.
+# Pull requests cancel their own superseded runs. Runs on main queue
+# instead: each one may be deploying the site, and a deploy is never cut off
+# halfway.
 
 on:
   pull_request:
   push:
     branches: [main]
   workflow_dispatch:
-  workflow_call:
-    inputs:
-      version:
-        description: TREADLE_VERSION for package.sh (a release's x.y.z)
-        type: string
-        default: ''
-      release:
-        description: TREADLE_RELEASE for package.sh (a release's -r<N>)
-        type: string
-        default: ''
 
 permissions:
   contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  # Headless Chromium for tests/browser.mjs. Dependabot does not track it
-  # (there is no package.json); bump it by hand.
-  PLAYWRIGHT_VERSION: 1.55.1
-  SHELLCHECK_VERSION: v0.11.0
-  SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
-  # Upstream sing-box release the smoke test also runs against, ahead of what
-  # the OpenWrt feeds carry, so build-config's newer-version branches are
-  # checked before any router gets that version. Dependabot does not track
-  # this: bump the version and the linux-amd64-musl tarball's SHA-256 (from
-  # the release's asset digests) together.
-  SINGBOX_UPSTREAM_VERSION: 1.14.2
-  SINGBOX_UPSTREAM_SHA256: 8f6cb4bcf94d2b33c65d52e0d5b142db29a938336f1ff7267f397ac3758fc297
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  lint:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+  test:
+    uses: ./.github/workflows/test.yml
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-
-      # The distro shellcheck predates the busybox dialect the router
-      # scripts are checked against, so fetch a pinned release.
-      - name: Install shellcheck and luacheck
-        run: |
-          curl -fsSL -o /tmp/sc.tar.xz \
-            "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
-          echo "${SHELLCHECK_SHA256}  /tmp/sc.tar.xz" | sha256sum -c -
-          tar -xJf /tmp/sc.tar.xz -C /tmp
-          sudo install -m 0755 "/tmp/shellcheck-${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq lua-check gettext
-          shellcheck --version | head -n2
-          luacheck --version | head -n1
-
-      - name: Lint
-        run: sh scripts/lint.sh
-
-  build:
-    runs-on: ubuntu-24.04
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0   # package.sh reads tags and HEAD's commit date
-
-      - name: Install apk-tools
-        uses: ./.github/actions/install-apk-tools
-
-      - name: Build packages
-        env:
-          TREADLE_VERSION: ${{ inputs.version }}
-          TREADLE_RELEASE: ${{ inputs.release }}
-        run: scripts/package.sh
-
-      - name: Check version against apk's parser
-        id: version
-        run: |
-          BUILT=$(basename "$(ls dist/*.apk | head -n1)" .apk)
-          BUILT="${BUILT#luci-app-treadle-}"
-          echo "version=${BUILT}" >> "$GITHUB_OUTPUT"
-          scripts/version-check.sh "$BUILT"
-
-      - name: Syntax-check the staged package tree
-        run: |
-          sudo apt-get install -y -qq lua5.1
-          sh scripts/check-stage.sh
-
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: packages-${{ github.sha }}
-          path: dist/
-          retention-days: 30
-          if-no-files-found: error
-
-  smoke:
-    needs: build
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        image:
-          - openwrt/rootfs:x86_64-25.12.5    # apk
-          - openwrt/rootfs:x86_64-v24.10.8   # opkg
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: packages-${{ github.sha }}
-          path: dist/
-
-      # OpenWrt's packages, sing-box above all, kept between runs: the mirror
-      # sometimes aborts long downloads (see tests/smoke.sh § install).
-      - name: Restore the OpenWrt package cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .pkg-cache
-          key: openwrt-pkgs-${{ matrix.image }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: openwrt-pkgs-${{ matrix.image }}-
-
-      - name: Smoke test on ${{ matrix.image }}
-        run: >-
-          docker run --rm -e SMOKE_PKG_CACHE=/work/.pkg-cache
-          -v "$PWD:/work" "${{ matrix.image }}" /bin/sh /work/tests/smoke.sh
-
-      # The same package in a container booted with procd as PID 1, so rpcd,
-      # uhttpd, fw4 and the init script run as on a router: rpcd ACLs over
-      # /ubus, LuCI, the tproxy ruleset (hence NET_ADMIN), and sing-box
-      # started, reloaded and stopped through procd.
-      - name: System test on ${{ matrix.image }}
-        env:
-          IMAGE: ${{ matrix.image }}
-        run: |
-          docker run -d --name owrt --cap-add NET_ADMIN \
-            -e SMOKE_PKG_CACHE=/work/.pkg-cache -v "$PWD:/work" "$IMAGE" /work/tests/boot.sh
-          for i in $(seq 1 60); do
-            docker exec owrt test -f /tmp/booted 2>/dev/null && break
-            sleep 1
-          done
-          docker exec owrt test -f /tmp/booted || { docker logs owrt; exit 1; }
-          echo "booted after ~${i} s"
-          docker exec owrt sh /work/tests/system.sh
-
-      # Every Treadle tab opened in headless Chromium against that container:
-      # the views only run in a browser, so a broken require or a runtime
-      # error in one shows up nowhere else before a router.
-      - name: Browser test on ${{ matrix.image }}
-        run: |
-          IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' owrt)
-          pw="$RUNNER_TEMP/playwright"
-          mkdir -p "$pw"
-          cp tests/browser.mjs "$pw/"
-          ( cd "$pw" && npm install --silent --no-save --no-audit --no-fund "playwright@${PLAYWRIGHT_VERSION}" \
-              && npx playwright install --with-deps chromium >/dev/null )
-          node "$pw/browser.mjs" "http://$IP" "$PWD/screenshots"
-
-      - name: Keep the screenshots
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: screenshots-${{ strategy.job-index }}
-          path: screenshots/
-          retention-days: 7
-          if-no-files-found: ignore
-
-      - name: System log
-        if: failure()
-        run: docker exec owrt logread | tail -n 100 || true
-
-      # Saved even when the test fails: a download that completed is worth
-      # keeping whatever failed after it.
-      - name: Save the OpenWrt package cache
-        if: always()
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .pkg-cache
-          key: openwrt-pkgs-${{ matrix.image }}-${{ github.run_id }}-${{ github.run_attempt }}
-
-  # The same smoke test with the feed's sing-box swapped for a pinned upstream
-  # release, so config shapes keyed on a newer sing-box are checked too.
-  smoke-upstream-singbox:
-    needs: build
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: packages-${{ github.sha }}
-          path: dist/
-
-      - name: Fetch sing-box ${{ env.SINGBOX_UPSTREAM_VERSION }}
-        run: |
-          name="sing-box-${SINGBOX_UPSTREAM_VERSION}-linux-amd64-musl"
-          curl -fsSL -o /tmp/sing-box.tar.gz \
-            "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_UPSTREAM_VERSION}/${name}.tar.gz"
-          echo "${SINGBOX_UPSTREAM_SHA256}  /tmp/sing-box.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/sing-box.tar.gz -C /tmp
-          install -m 0755 "/tmp/${name}/sing-box" upstream-sing-box
-
-      - name: Restore the OpenWrt package cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .pkg-cache
-          key: openwrt-pkgs-openwrt/rootfs:x86_64-25.12.5-${{ github.run_id }}-${{ github.run_attempt }}-upstream
-          restore-keys: openwrt-pkgs-openwrt/rootfs:x86_64-25.12.5-
-
-      - name: Smoke test with sing-box ${{ env.SINGBOX_UPSTREAM_VERSION }}
-        run: >-
-          docker run --rm -e SMOKE_SINGBOX=/work/upstream-sing-box
-          -e SMOKE_PKG_CACHE=/work/.pkg-cache
-          -v "$PWD:/work" openwrt/rootfs:x86_64-25.12.5 /bin/sh /work/tests/smoke.sh
-
-      - name: Save the OpenWrt package cache
-        if: always()
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .pkg-cache
-          key: openwrt-pkgs-openwrt/rootfs:x86_64-25.12.5-${{ github.run_id }}-${{ github.run_attempt }}-upstream
+  publish:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/pages.yml
+    with:
+      snapshot: true
+    secrets: inherit
+    permissions:
+      contents: read
+      actions: read     # download this run's packages
+      pages: write
+      id-token: write
