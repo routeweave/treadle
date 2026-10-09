@@ -15,7 +15,7 @@
 #
 # Nothing here needs procd, rpcd or a network interface: the handler and
 # the generators are called directly, the way rpcd and the init script
-# call them.
+# call them. tests/system.sh covers that path through procd.
 
 set -u
 
@@ -36,61 +36,12 @@ step() { printf '\n== %s\n' "$*"; }
 mkdir -p "$OUT" /var/lock /var/run /tmp/dnsmasq.d
 
 # --- install -----------------------------------------------------------------
-#
-# Everything but Treadle's own package comes from the OpenWrt package servers,
-# and downloads.openwrt.org sometimes aborts long downloads. When the install
-# fails on a download, the feeds are pointed at the next mirror below and the
-# install runs again there. Packages are signed (apk checks each package,
-# opkg the index and its checksums), so a mirror cannot change what gets
-# installed, and the feeds switch as a whole, so an index and its packages
-# always come from one server. Two backups from openwrt.org/mirrors, both
-# checked to carry both tested releases; the first has delivered every time
-# the origin failed on a runner. More only lengthens a run that fails anyway.
-# SMOKE_PKG_CACHE, when set, keeps downloaded packages between runs (CI).
 
 step "install"
-MIRRORS="https://downloads.openwrt.org
-https://openwrt.pixeldeck.net
-https://ftp.halifax.rwth-aachen.de/openwrt"
-CACHE=${SMOKE_PKG_CACHE:-}
-
-if command -v apk >/dev/null 2>&1; then
-	PKG=$(ls "$WORK"/dist/*.apk 2>/dev/null | head -n1)
-	[ -n "$PKG" ] || die "no .apk in dist/"
-	FEEDS=/etc/apk/repositories.d/distfeeds.list
-	PM="apk"
-	[ -n "$CACHE" ] && PM="apk --cache-dir $CACHE/apk --cache-packages" && mkdir -p "$CACHE/apk"
-	pm_install() { $PM add "$@"; }
-	pm_install_pkg() { $PM add --allow-untrusted "$PKG"; }
-else
-	PKG=$(ls "$WORK"/dist/*.ipk 2>/dev/null | head -n1)
-	[ -n "$PKG" ] || die "no .ipk in dist/"
-	FEEDS=/etc/opkg/distfeeds.conf
-	PM="opkg"
-	[ -n "$CACHE" ] && PM="opkg --cache $CACHE/opkg" && mkdir -p "$CACHE/opkg"
-	pm_install() { $PM install "$@"; }
-	pm_install_pkg() { $PM install "$PKG"; }
-fi
-
-from=https://downloads.openwrt.org
-installed=
-for mirror in $MIRRORS; do
-	if [ "$mirror" != "$from" ]; then
-		sed -i "s|$from/|$mirror/|" "$FEEDS"
-		from=$mirror
-		echo "the last server failed a download; trying $mirror"
-	fi
-	$PM update >/dev/null 2>&1 || continue
-	pm_install uhttpd >/dev/null 2>&1 || continue
-	pm_install_pkg > "$OUT/install.log" 2>&1
-	rc=$?
-	grep -qE 'wget: exited|wget returned|Failed to download|Connection (aborted|reset)' "$OUT/install.log" \
-		&& continue
-	installed=1
-	break
-done
-[ -n "$installed" ] || die "no OpenWrt mirror delivered the packages (not a Treadle failure)"
-[ -n "$CACHE" ] && command -v apk >/dev/null 2>&1 && $PM cache clean >/dev/null 2>&1
+# shellcheck source=tests/install.sh
+. "$WORK/tests/install.sh"
+# uhttpd serves the fixture subscriptions over loopback below.
+install_treadle uhttpd
 cat "$OUT/install.log"
 # The package's own files must land whatever the post-install script does;
 # a post-install error is reported separately so it is visible, not fatal.

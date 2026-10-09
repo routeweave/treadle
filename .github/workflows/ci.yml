@@ -144,6 +144,28 @@ jobs:
           docker run --rm -e SMOKE_PKG_CACHE=/work/.pkg-cache
           -v "$PWD:/work" "${{ matrix.image }}" /bin/sh /work/tests/smoke.sh
 
+      # The same package in a container booted with procd as PID 1, so rpcd,
+      # uhttpd, fw4 and the init script run as on a router: rpcd ACLs over
+      # /ubus, LuCI, the tproxy ruleset (hence NET_ADMIN), and sing-box
+      # started, reloaded and stopped through procd.
+      - name: System test on ${{ matrix.image }}
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          docker run -d --name owrt --cap-add NET_ADMIN \
+            -e SMOKE_PKG_CACHE=/work/.pkg-cache -v "$PWD:/work" "$IMAGE" /work/tests/boot.sh
+          for i in $(seq 1 60); do
+            docker exec owrt test -f /tmp/booted 2>/dev/null && break
+            sleep 1
+          done
+          docker exec owrt test -f /tmp/booted || { docker logs owrt; exit 1; }
+          echo "booted after ~${i} s"
+          docker exec owrt sh /work/tests/system.sh
+
+      - name: System log
+        if: failure()
+        run: docker exec owrt logread | tail -n 100 || true
+
       # Saved even when the test fails: a download that completed is worth
       # keeping whatever failed after it.
       - name: Save the OpenWrt package cache

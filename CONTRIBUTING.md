@@ -55,8 +55,11 @@ Run these before pushing; CI runs the same ones on every pull request.
 ```sh
 sh scripts/lint.sh                    # shellcheck, luacheck, eslint
 scripts/package.sh && sh scripts/check-stage.sh   # build, then syntax-check what ships
-docker run --rm -v "$PWD:/work" openwrt/rootfs:x86_64-25.12.4 \
+docker run --rm -v "$PWD:/work" openwrt/rootfs:x86_64-25.12.5 \
     /bin/sh /work/tests/smoke.sh      # end-to-end on OpenWrt (needs dist/)
+docker run -d --name owrt --cap-add NET_ADMIN -v "$PWD:/work" \
+    openwrt/rootfs:x86_64-25.12.5 /work/tests/boot.sh   # boot with procd
+docker exec owrt sh /work/tests/system.sh   # once /tmp/booted exists
 ```
 
 `lint.sh` needs shellcheck 0.10 or newer (for the busybox dialect),
@@ -65,6 +68,11 @@ luacheck and npx. `check-stage.sh` needs `luac5.1` and node.
 the real sing-box, syncs the synthetic subscriptions in
 `tests/fixtures/sub/`, and runs `sing-box check` on every config shape
 `build-config` produces. Fixtures use placeholder values only.
+`tests/system.sh` runs in a container booted with procd as PID 1
+(`tests/boot.sh`), so it goes through what a router runs: the rpcd ACLs
+over uhttpd's `/ubus`, the LuCI login and view, the tproxy ruleset, and
+sing-box started, reloaded and stopped by procd through the RPCs the
+Status page uses. Only real traffic still needs a router.
 
 ### Installing your build on a router
 
@@ -141,7 +149,7 @@ packages as an artifact instead of publishing them.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| **CI**      | Pull request, push to `main` | Lint, package build and staged-tree check, smoke test on OpenWrt 25.12 (apk) and 24.10 (opkg). |
+| **CI**      | Pull request, push to `main` | Lint, package build and staged-tree check, smoke and system tests on OpenWrt 25.12 (apk) and 24.10 (opkg). |
 | **Release** | Push of a `v*` tag           | Runs the CI workflow on the release version, then signs the `.apk` it tested with the feed key and creates an immutable GitHub release. A failing check publishes nothing. Run by hand, it does everything but publish. |
 | **Feed**    | After a successful Release, or CI on a `main` push | Rebuilds the GitHub Pages site: the signed feed from every `v*` release, and the rolling snapshot from the newest passing `main` build. |
 
@@ -182,6 +190,8 @@ scripts/
 └── push-to-router.sh            # Install a branch's CI build on a router
 tests/
 ├── smoke.sh                     # End-to-end test in an OpenWrt container
+├── system.sh  boot.sh           # The same through procd, rpcd and LuCI
+├── install.sh                   # Package install with mirror fallback (shared)
 └── fixtures/sub/                # Synthetic subscriptions, all four formats
 Makefile                         # OpenWrt SDK build descriptor (luci.mk)
 htdocs/luci-static/resources/view/treadle/
