@@ -38,6 +38,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # Headless Chromium for tests/browser.mjs. Dependabot does not track it
+  # (there is no package.json); bump it by hand.
+  PLAYWRIGHT_VERSION: 1.55.1
   SHELLCHECK_VERSION: v0.11.0
   SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
   # Upstream sing-box release the smoke test also runs against, ahead of what
@@ -161,6 +164,28 @@ jobs:
           docker exec owrt test -f /tmp/booted || { docker logs owrt; exit 1; }
           echo "booted after ~${i} s"
           docker exec owrt sh /work/tests/system.sh
+
+      # Every Treadle tab opened in headless Chromium against that container:
+      # the views only run in a browser, so a broken require or a runtime
+      # error in one shows up nowhere else before a router.
+      - name: Browser test on ${{ matrix.image }}
+        run: |
+          IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' owrt)
+          pw="$RUNNER_TEMP/playwright"
+          mkdir -p "$pw"
+          cp tests/browser.mjs "$pw/"
+          ( cd "$pw" && npm install --silent --no-save --no-audit --no-fund "playwright@${PLAYWRIGHT_VERSION}" \
+              && npx playwright install --with-deps chromium >/dev/null )
+          node "$pw/browser.mjs" "http://$IP" "$PWD/screenshots"
+
+      - name: Keep the screenshots
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: screenshots-${{ strategy.job-index }}
+          path: screenshots/
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: System log
         if: failure()

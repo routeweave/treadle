@@ -72,7 +72,10 @@ the real sing-box, syncs the synthetic subscriptions in
 (`tests/boot.sh`), so it goes through what a router runs: the rpcd ACLs
 over uhttpd's `/ubus`, the LuCI login and view, the tproxy ruleset, and
 sing-box started, reloaded and stopped by procd through the RPCs the
-Status page uses. Only real traffic still needs a router.
+Status page uses. Only real traffic still needs a router. In CI,
+`tests/browser.mjs` then opens every Treadle tab in headless Chromium
+against that container and fails on any JS error; the screenshots are
+kept as a build artifact.
 
 ### Installing your build on a router
 
@@ -149,7 +152,7 @@ packages as an artifact instead of publishing them.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| **CI**      | Pull request, push to `main` | Lint, package build and staged-tree check, smoke and system tests on OpenWrt 25.12 (apk) and 24.10 (opkg). |
+| **CI**      | Pull request, push to `main` | Lint, package build and staged-tree check, smoke, system and browser tests on OpenWrt 25.12 (apk) and 24.10 (opkg). |
 | **Release** | Push of a `v*` tag           | Runs the CI workflow on the release version, then signs the `.apk` it tested with the feed key and creates an immutable GitHub release. A failing check publishes nothing. Run by hand, it does everything but publish. |
 | **Feed**    | After a successful Release, or CI on a `main` push | Rebuilds the GitHub Pages site: the signed feed from every `v*` release, and the rolling snapshot from the newest passing `main` build. |
 
@@ -191,6 +194,7 @@ scripts/
 tests/
 ├── smoke.sh                     # End-to-end test in an OpenWrt container
 ├── system.sh  boot.sh           # The same through procd, rpcd and LuCI
+├── browser.mjs                  # Every tab in headless Chromium (CI)
 ├── install.sh                   # Package install with mirror fallback (shared)
 └── fixtures/sub/                # Synthetic subscriptions, all four formats
 Makefile                         # OpenWrt SDK build descriptor (luci.mk)
