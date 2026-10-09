@@ -75,7 +75,10 @@ the real sing-box, syncs the synthetic subscriptions in
 (`tests/boot.sh`), so it goes through what a router runs: the rpcd ACLs
 over uhttpd's `/ubus`, the LuCI login and view, the tproxy ruleset, and
 sing-box started, reloaded and stopped by procd through the RPCs the
-Status page uses. Only real traffic still needs a router. In CI,
+Status page uses. Only real traffic still needs a router. Both run in CI
+on prebuilt test images (`tests/image/`) with every dependency installed,
+so Treadle's package goes in offline; on a plain `openwrt/rootfs` image, as
+in the commands above, they install from the feeds. In CI,
 `tests/browser.mjs` then opens every Treadle tab in headless Chromium
 against that container and fails on any JS error; the screenshots are
 kept as a build artifact.
@@ -158,6 +161,7 @@ packages as an artifact instead of publishing them.
 | **Test**    | Called by CI and Release     | Lint, package build and staged-tree check, smoke, system and browser tests on OpenWrt 25.12 (apk) and 24.10 (opkg). |
 | **CI**      | Pull request, push to `main` | Runs Test. On a `main` push that passes, publishes the feed with that build as the snapshot. Runs on `main` queue rather than cancel each other. |
 | **Release** | Push of a `v*` tag           | Runs Test on the release version, then signs the `.apk` it tested with the feed key, creates an immutable GitHub release and republishes the feed. A failing check publishes nothing. Run by hand, it does everything but publish. |
+| **Test images** | Weekly, a `main` push that changes them, or by hand | Builds the test images (`tests/image/`): each tested OpenWrt release with Treadle's dependencies preinstalled, pushed to GHCR. Test runs on them and so downloads nothing from the OpenWrt mirrors; without an image it falls back to a full install. A pull request that changes them builds without pushing. |
 | **Feed**    | Called by CI and Release, or by hand | Rebuilds the GitHub Pages site: the signed feed from every `v*` release, and the rolling snapshot. Run by hand with `dry_run`, it builds the site as an artifact without deploying. |
 
 Every action is pinned to a commit SHA, with the tag in a trailing comment;
@@ -186,6 +190,7 @@ branch you have checked out.
     ├── test.yml                 # The checks, called by ci.yml and release.yml
     ├── ci.yml                   # Every PR and main push; publishes main's snapshot
     ├── release.yml              # Release on v* tag push
+    ├── test-images.yml          # Builds the test images for GHCR
     └── pages.yml                # Publish the feed to GitHub Pages
 scripts/
 ├── package.sh                   # Standalone APK + IPK builder
@@ -202,7 +207,8 @@ tests/
 ├── smoke.sh                     # End-to-end test in an OpenWrt container
 ├── system.sh  boot.sh           # The same through procd, rpcd and LuCI
 ├── browser.mjs                  # Every tab in headless Chromium (CI)
-├── install.sh                   # Package install with mirror fallback (shared)
+├── install.sh                   # Package install: offline on a test image, else from the feeds
+├── image/                       # The test images (Dockerfile, prepare.sh)
 └── fixtures/sub/                # Synthetic subscriptions, all four formats
 Makefile                         # OpenWrt SDK build descriptor (luci.mk)
 htdocs/luci-static/resources/view/treadle/

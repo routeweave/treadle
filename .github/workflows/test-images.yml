@@ -1,0 +1,65 @@
+name: Test images
+
+# Builds the test images (tests/image/): each tested OpenWrt release with
+# Treadle's dependencies and the tests' own packages preinstalled, pushed to
+# ghcr.io/<owner>/treadle-test:<release>. test.yml runs on them, so a CI run
+# downloads nothing from the OpenWrt mirrors; without one it falls back to
+# the plain OpenWrt image and a full install.
+#
+# Rebuilt weekly, so the images follow the feeds' package updates, and
+# whenever what goes into them changes on main. A pull request that changes
+# them builds without pushing. Only main pushes images.
+
+on:
+  schedule:
+    - cron: '17 3 * * 1'   # Mondays, 03:17 UTC
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - tests/image/**
+      - tests/install.sh
+      - Makefile
+      - .github/workflows/test-images.yml
+  pull_request:
+    paths:
+      - tests/image/**
+      - tests/install.sh
+      - Makefile
+      - .github/workflows/test-images.yml
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        # The same strings as test.yml's matrix; the tag is the part after
+        # the colon.
+        image:
+          - openwrt/rootfs:x86_64-25.12.5
+          - openwrt/rootfs:x86_64-v24.10.8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build
+        env:
+          BASE: ${{ matrix.image }}
+        run: |
+          tag="ghcr.io/${GITHUB_REPOSITORY_OWNER}/treadle-test:${BASE#openwrt/rootfs:}"
+          docker build -f tests/image/Dockerfile --build-arg BASE="$BASE" -t "$tag" .
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+
+      - name: Push
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker push "$TAG"

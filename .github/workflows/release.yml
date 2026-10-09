@@ -91,6 +91,9 @@ jobs:
   test:
     needs: version
     uses: ./.github/workflows/test.yml
+    permissions:
+      contents: read
+      packages: read   # the test images
     with:
       version: ${{ needs.version.outputs.version }}
       release: ${{ needs.version.outputs.release }}

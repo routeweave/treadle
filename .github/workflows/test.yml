@@ -110,6 +110,9 @@ jobs:
   smoke:
     needs: build
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read   # pull the test image
     strategy:
       fail-fast: false
       matrix:
@@ -124,8 +127,28 @@ jobs:
           name: packages-${{ github.sha }}
           path: dist/
 
-      # OpenWrt's packages, sing-box above all, kept between runs: the mirror
-      # sometimes aborts long downloads (see tests/smoke.sh § install).
+      # The prebuilt test image (tests/image/, test-images.yml) when there is
+      # one: every dependency installed, so the run downloads nothing. Else
+      # the plain OpenWrt image, and the tests install from the feeds.
+      - name: Pick the test image
+        id: img
+        env:
+          BASE: ${{ matrix.image }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test_image="ghcr.io/${GITHUB_REPOSITORY_OWNER}/treadle-test:${BASE#openwrt/rootfs:}"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin >/dev/null 2>&1 || true
+          if docker pull -q "$test_image" >/dev/null 2>&1; then
+            echo "image=$test_image" >> "$GITHUB_OUTPUT"
+            echo "using $test_image"
+          else
+            echo "::notice::$test_image is not available; using $BASE with a full install"
+            echo "image=$BASE" >> "$GITHUB_OUTPUT"
+          fi
+
+      # OpenWrt's packages, sing-box above all, kept between runs for when
+      # there is no test image: the mirror sometimes aborts long downloads
+      # (see tests/install.sh).
       - name: Restore the OpenWrt package cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -136,7 +159,7 @@ jobs:
       - name: Smoke test on ${{ matrix.image }}
         run: >-
           docker run --rm -e SMOKE_PKG_CACHE=/work/.pkg-cache
-          -v "$PWD:/work" "${{ matrix.image }}" /bin/sh /work/tests/smoke.sh
+          -v "$PWD:/work" "${{ steps.img.outputs.image }}" /bin/sh /work/tests/smoke.sh
 
       # The same package in a container booted with procd as PID 1, so rpcd,
       # uhttpd, fw4 and the init script run as on a router: rpcd ACLs over
@@ -144,7 +167,7 @@ jobs:
       # started, reloaded and stopped through procd.
       - name: System test on ${{ matrix.image }}
         env:
-          IMAGE: ${{ matrix.image }}
+          IMAGE: ${{ steps.img.outputs.image }}
         run: |
           docker run -d --name owrt --cap-add NET_ADMIN \
             -e SMOKE_PKG_CACHE=/work/.pkg-cache -v "$PWD:/work" "$IMAGE" /work/tests/boot.sh
@@ -196,6 +219,9 @@ jobs:
   smoke-upstream-singbox:
     needs: build
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read   # pull the test image
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -213,6 +239,25 @@ jobs:
           tar -xzf /tmp/sing-box.tar.gz -C /tmp
           install -m 0755 "/tmp/${name}/sing-box" upstream-sing-box
 
+      # The prebuilt test image (tests/image/, test-images.yml) when there is
+      # one: every dependency installed, so the run downloads nothing. Else
+      # the plain OpenWrt image, and the tests install from the feeds.
+      - name: Pick the test image
+        id: img
+        env:
+          BASE: openwrt/rootfs:x86_64-25.12.5
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test_image="ghcr.io/${GITHUB_REPOSITORY_OWNER}/treadle-test:${BASE#openwrt/rootfs:}"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin >/dev/null 2>&1 || true
+          if docker pull -q "$test_image" >/dev/null 2>&1; then
+            echo "image=$test_image" >> "$GITHUB_OUTPUT"
+            echo "using $test_image"
+          else
+            echo "::notice::$test_image is not available; using $BASE with a full install"
+            echo "image=$BASE" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Restore the OpenWrt package cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -224,7 +269,7 @@ jobs:
         run: >-
           docker run --rm -e SMOKE_SINGBOX=/work/upstream-sing-box
           -e SMOKE_PKG_CACHE=/work/.pkg-cache
-          -v "$PWD:/work" openwrt/rootfs:x86_64-25.12.5 /bin/sh /work/tests/smoke.sh
+          -v "$PWD:/work" "${{ steps.img.outputs.image }}" /bin/sh /work/tests/smoke.sh
 
       - name: Save the OpenWrt package cache
         if: always()
