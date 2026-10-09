@@ -63,7 +63,10 @@ docker exec owrt sh /work/tests/system.sh   # once /tmp/booted exists
 ```
 
 `lint.sh` needs shellcheck 0.10 or newer (for the busybox dialect),
-luacheck and npx. `check-stage.sh` needs `luac5.1` and node.
+luacheck, node, npx and GNU gettext. Besides the linters it cross-checks
+the views, the rpcd ACL, the handler and the menu
+(`scripts/check-consistency.mjs`), and checks the translation template is
+current. `check-stage.sh` needs `luac5.1` and node.
 `tests/smoke.sh` installs the built package in an OpenWrt container with
 the real sing-box, syncs the synthetic subscriptions in
 `tests/fixtures/sub/`, and runs `sing-box check` on every config shape
@@ -185,7 +188,9 @@ branch you have checked out.
 scripts/
 ├── package.sh                   # Standalone APK + IPK builder
 ├── check-stage.sh               # Syntax-check the tree package.sh stages
-├── lint.sh                      # shellcheck + luacheck + eslint
+├── lint.sh                      # shellcheck + luacheck + eslint + the checks below
+├── check-consistency.mjs        # Views, ACL, handler and menu agree
+├── update-pot.sh                # Regenerates (or --check) the .pot
 ├── version-check.sh             # Version scheme asserted against apk's parser
 ├── feed.sh  feed-keygen.sh      # Signed apk + opkg feed assembly, key setup
 ├── pages-snapshot.sh            # Adds the rolling snapshot to the Pages site
@@ -345,6 +350,8 @@ session-style names like `claude/foo-bar-1234`.
 
 ## Translations
 
-Translatable strings in JS views use `_(…)`. The `.pot` template is
-extracted at build time and lives at `po/templates/luci-app-treadle.pot`.
-Add `.po` files under `po/<lang>/luci-app-treadle.po`.
+Translatable strings in JS views use `_(…)`. The template,
+`po/templates/luci-app-treadle.pot`, is generated from them by
+`sh scripts/update-pot.sh` (GNU gettext's `xgettext`); run it after adding,
+changing or removing a string, or `lint.sh` fails. Add `.po` files under
+`po/<lang>/luci-app-treadle.po`.

@@ -7,9 +7,10 @@
 #
 #   sh scripts/lint.sh
 #
-# Requires shellcheck (>= 0.10, for the busybox dialect), luacheck and
-# npx (for eslint). Each check reports every problem it finds, and the
-# script exits non-zero if any check failed.
+# Requires shellcheck (>= 0.10, for the busybox dialect), luacheck, node
+# and npx (for eslint), and GNU gettext's xgettext (for the .pot check).
+# Each check reports every problem it finds, and the script exits non-zero
+# if any check failed.
 
 set -u
 
@@ -52,6 +53,8 @@ run "shellcheck (scripts)" shellcheck -S warning scripts/*.sh tests/*.sh
 # shellcheck disable=SC2086
 run "luacheck (Lua 5.1)" luacheck -q $ROUTER_LUA
 run "node field parity (editor vs link import)" sh scripts/check-node-fields.sh
+run "views, ACL, handler and menu in step" node scripts/check-consistency.mjs
+run "translation template in step with the views" sh scripts/update-pot.sh --check
 
 # The decision log is not published, so nothing here may cite an entry of it
 # (CONTRIBUTING.md § Comments): "decision" plus a number, a bare four-digit

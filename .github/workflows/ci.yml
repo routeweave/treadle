@@ -71,7 +71,7 @@ jobs:
           tar -xJf /tmp/sc.tar.xz -C /tmp
           sudo install -m 0755 "/tmp/shellcheck-${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
           sudo apt-get update -qq
-          sudo apt-get install -y -qq lua-check
+          sudo apt-get install -y -qq lua-check gettext
           shellcheck --version | head -n2
           luacheck --version | head -n1
 
