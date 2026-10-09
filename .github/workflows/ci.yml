@@ -7,6 +7,10 @@ name: CI
 # Feed workflow (pages.yml), which publishes that build as the rolling
 # snapshot, so the snapshot is always the latest tested main.
 #
+# release.yml calls this same workflow with the release version, so a
+# release is built and tested by exactly these jobs and publishes the
+# packages they tested. The inputs are empty on every other event.
+#
 # Actions are pinned by commit SHA; the tag each SHA was taken from is in
 # the trailing comment. Dependabot keeps both in step.
 
@@ -15,6 +19,16 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: TREADLE_VERSION for package.sh (a release's x.y.z)
+        type: string
+        default: ''
+      release:
+        description: TREADLE_RELEASE for package.sh (a release's -r<N>)
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -74,6 +88,9 @@ jobs:
         uses: ./.github/actions/install-apk-tools
 
       - name: Build packages
+        env:
+          TREADLE_VERSION: ${{ inputs.version }}
+          TREADLE_RELEASE: ${{ inputs.release }}
         run: scripts/package.sh
 
       - name: Check version against apk's parser

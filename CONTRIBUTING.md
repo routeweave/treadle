@@ -130,12 +130,19 @@ same source, and tag that `v0.11.0-r2`.
 Snapshots from the next commit on are `0.11.0_git<timestamp>-r1`
 automatically.
 
+The tag publishes nothing until the release build passes the same checks
+as a pull request: lint, the staged-tree check and the smoke tests on both
+OpenWrt releases. The packages it publishes are the ones those tests
+installed. To try a change to `release.yml` without a tag, run it from the
+Actions tab on the branch: it builds, tests and signs, and keeps the
+packages as an artifact instead of publishing them.
+
 ## CI
 
 | Workflow | Trigger | What it does |
 |---|---|---|
 | **CI**      | Pull request, push to `main` | Lint, package build and staged-tree check, smoke test on OpenWrt 25.12 (apk) and 24.10 (opkg). |
-| **Release** | Push of a `v*` tag           | Builds, signs the `.apk` with the feed key, and creates an immutable GitHub release. |
+| **Release** | Push of a `v*` tag           | Runs the CI workflow on the release version, then signs the `.apk` it tested with the feed key and creates an immutable GitHub release. A failing check publishes nothing. Run by hand, it does everything but publish. |
 | **Feed**    | After a successful Release, or CI on a `main` push | Rebuilds the GitHub Pages site: the signed feed from every `v*` release, and the rolling snapshot from the newest passing `main` build. |
 
 Every action is pinned to a commit SHA, with the tag in a trailing comment;

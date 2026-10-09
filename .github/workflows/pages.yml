@@ -42,14 +42,15 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    # Always on a manual dispatch; after a successful Release; after CI only
-    # for a successful push to main (pull-request runs never publish).
+    # Always on a manual dispatch; after a successful Release from a tag push
+    # (a dry run publishes nothing); after CI only for a successful push to
+    # main (pull-request runs never publish).
     if: >-
       ${{ github.event_name == 'workflow_dispatch'
           || (github.event.workflow_run.conclusion == 'success'
+              && github.event.workflow_run.event == 'push'
               && (github.event.workflow_run.name == 'Release'
-                  || (github.event.workflow_run.event == 'push'
-                      && github.event.workflow_run.head_branch == 'main'))) }}
+                  || github.event.workflow_run.head_branch == 'main')) }}
     # No environment here: github-pages only admits main, and a dry run from
     # a branch must get as far as building the site. Only deploy binds it.
     permissions:

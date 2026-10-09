@@ -7,8 +7,18 @@ name: Release
 # release already created in the UI. Assets stay immutable: a re-run that
 # would overwrite an existing asset fails instead of clobbering it.
 #
+# The packages are built and tested by the CI workflow itself, called with
+# the release version: lint, the stripped-tree syntax check and the smoke
+# tests on both OpenWrt releases. Only when all of them pass are the same
+# packages signed and published, so what ships is what the smoke tests
+# installed, and a tag on a commit that fails them publishes nothing.
+#
 # The .apk is signed here with the feed key, so the release asset and the
 # package the feed serves are the same bytes with the same checksum.
+#
+# workflow_dispatch builds, tests and signs the Makefile's version without
+# publishing anything; the signed packages are kept as an artifact. That is
+# how to test this workflow on a branch.
 #
 # Tag format (see docs/versioning.md):
 #   v0.1.0       — normal release; PKG_RELEASE defaults to 1
@@ -18,45 +28,30 @@ on:
   push:
     tags:
       - 'v[0-9]*'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  release:
+  version:
     runs-on: ubuntu-24.04
-    permissions:
-      contents: write   # create the GitHub release
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
+      version: ${{ steps.ver.outputs.version }}
+      release: ${{ steps.ver.outputs.release }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        # No fetch-depth: 0 — TREADLE_VERSION is parsed from the tag and
-        # package.sh skips its git block when TREADLE_VERSION is set.
-
-      - name: Install apk-tools
-        uses: ./.github/actions/install-apk-tools
-
-      - name: Parse tag
-        id: ver
-        run: |
-          TAG="${GITHUB_REF_NAME}"           # v0.1.0 or v0.1.0-r2
-          STRIPPED="${TAG#v}"
-          case "$STRIPPED" in
-            *-r*) VERSION="${STRIPPED%-r*}"; RELEASE="${STRIPPED##*-r}" ;;
-            *)    VERSION="$STRIPPED";       RELEASE="1" ;;
-          esac
-          echo "tag=${TAG}"         >> "$GITHUB_OUTPUT"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "release=${RELEASE}" >> "$GITHUB_OUTPUT"
-          echo "Building release ${TAG} (version=${VERSION} release=${RELEASE})"
 
       # The Makefile is authoritative for the version on every build path;
       # the tag is the release *decision*, not a second place to declare a
       # version. A mismatch is a mistake in one of the two, and guessing
-      # which would be worse than stopping.
-      - name: Verify tag matches Makefile
+      # which would be worse than stopping. A dry run has no tag and takes
+      # the Makefile's version as is.
+      - name: Read the version and check it against the tag
+        id: ver
         env:
-          VERSION: ${{ steps.ver.outputs.version }}
-          RELEASE: ${{ steps.ver.outputs.release }}
+          EVENT: ${{ github.event_name }}
         run: |
           mk_var() {
             awk -F':=' -v key="$1" \
@@ -65,6 +60,17 @@ jobs:
           }
           MK_VERSION=$(mk_var PKG_VERSION)
           MK_RELEASE=$(mk_var PKG_RELEASE)
+          if [ "$EVENT" = push ]; then
+            TAG="${GITHUB_REF_NAME}"           # v0.1.0 or v0.1.0-r2
+            STRIPPED="${TAG#v}"
+            case "$STRIPPED" in
+              *-r*) VERSION="${STRIPPED%-r*}"; RELEASE="${STRIPPED##*-r}" ;;
+              *)    VERSION="$STRIPPED";       RELEASE="1" ;;
+            esac
+          else
+            VERSION="$MK_VERSION"; RELEASE="$MK_RELEASE"
+            TAG="v${VERSION}-r${RELEASE}"
+          fi
           echo "tag:      version=${VERSION} release=${RELEASE}"
           echo "Makefile: version=${MK_VERSION} release=${MK_RELEASE}"
           fail=0
@@ -74,21 +80,43 @@ jobs:
             echo "::error::Update the Makefile to match the tag (or retag), then re-run."
             exit 1
           fi
-          echo "Makefile and tag agree."
+          echo "tag=${TAG}"         >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "release=${RELEASE}" >> "$GITHUB_OUTPUT"
+          echo "Building ${TAG} (version=${VERSION} release=${RELEASE})"
 
-      - name: Build packages
-        env:
-          TREADLE_VERSION: ${{ steps.ver.outputs.version }}
-          TREADLE_RELEASE: ${{ steps.ver.outputs.release }}
-        run: scripts/package.sh
+  test:
+    needs: version
+    uses: ./.github/workflows/ci.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      release: ${{ needs.version.outputs.release }}
 
-      - name: Check version and staged tree
+  publish:
+    needs: [version, test]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write   # create the GitHub release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install apk-tools
+        uses: ./.github/actions/install-apk-tools
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: packages-${{ github.sha }}
+          path: dist/
+
+      - name: Check the tested packages carry the release version
         env:
-          FULL_VERSION: ${{ steps.ver.outputs.version }}-r${{ steps.ver.outputs.release }}
+          FULL_VERSION: ${{ needs.version.outputs.version }}-r${{ needs.version.outputs.release }}
         run: |
-          scripts/version-check.sh "$FULL_VERSION"
-          sudo apt-get install -y -qq lua5.1
-          sh scripts/check-stage.sh
+          ls -l dist/
+          for f in "dist/luci-app-treadle-${FULL_VERSION}.apk" \
+                   "dist/luci-app-treadle_${FULL_VERSION}_all.ipk"; do
+            [ -f "$f" ] || { echo "::error::$f is missing from the tested build"; exit 1; }
+          done
 
       # --allow-untrusted: the runner has no /etc/apk/keys, so apk cannot
       # verify the signature it is itself applying. Routers verify it.
@@ -104,12 +132,21 @@ jobs:
           rm -rf "$RUNNER_TEMP/keys"
           for f in dist/*.apk; do sha256sum "$f" | awk '{print $1}' > "$f.sha256"; done
 
+      - name: Keep the signed packages (dry run)
+        if: github.event_name != 'push'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-dry-run
+          path: dist/
+          if-no-files-found: error
+
       - name: Publish GitHub release
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.ver.outputs.tag }}
-          VERSION: ${{ steps.ver.outputs.version }}
-          RELEASE: ${{ steps.ver.outputs.release }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+          RELEASE: ${{ needs.version.outputs.release }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
             # Created from the GitHub UI together with the tag: attach the
