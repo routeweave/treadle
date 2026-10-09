@@ -43,16 +43,15 @@ mkdir -p "$OUT" /var/lock /var/run /tmp/dnsmasq.d
 # install runs again there. Packages are signed (apk checks each package,
 # opkg the index and its checksums), so a mirror cannot change what gets
 # installed, and the feeds switch as a whole, so an index and its packages
-# always come from one server. The mirrors are from openwrt.org/mirrors,
-# chosen near GitHub's runners and checked to carry both tested releases.
+# always come from one server. Two backups from openwrt.org/mirrors, both
+# checked to carry both tested releases; the first has delivered every time
+# the origin failed on a runner. More only lengthens a run that fails anyway.
 # SMOKE_PKG_CACHE, when set, keeps downloaded packages between runs (CI).
 
 step "install"
 MIRRORS="https://downloads.openwrt.org
 https://openwrt.pixeldeck.net
-https://mirrors.cicku.me/openwrt
-https://ftp.halifax.rwth-aachen.de/openwrt
-https://ftp.nluug.nl/os/Linux/distr/openwrt"
+https://ftp.halifax.rwth-aachen.de/openwrt"
 CACHE=${SMOKE_PKG_CACHE:-}
 
 if command -v apk >/dev/null 2>&1; then
