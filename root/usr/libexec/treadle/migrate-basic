@@ -10,7 +10,7 @@
 -- does not change on upgrade:
 --
 --   one server      → routing.final_outbound
---   several servers → a manual urltest group, made the final outbound
+--   several servers → a manual group, made the final outbound
 --   country bypass  → a rule: sagernet geoip (+ geosite where it exists) → direct
 --   common ports    → a rule: those ports → the server(s); final → direct
 --   router traffic  → inbounds.tproxy_self = 0 (Basic never proxied it)
@@ -109,12 +109,12 @@ elseif #members > 1 then
 	local id = lib.generate_uid()
 	c:set("treadle", id, "node")
 	c:set("treadle", id, "tag", tag)
-	c:set("treadle", id, "type", "urltest")
+	c:set("treadle", id, "type", "group")
 	c:set("treadle", id, "order", tostring(nodes))
-	c:set("treadle", id, "urltest_mode", "manual")
-	c:set("treadle", id, "urltest_outbounds", members)
-	c:set("treadle", id, "urltest_url", "https://www.gstatic.com/generate_204")
-	c:set("treadle", id, "urltest_tolerance", "50")
+	c:set("treadle", id, "group_mode", "manual")
+	c:set("treadle", id, "group_members", members)
+	c:set("treadle", id, "group_test_url", "https://www.gstatic.com/generate_204")
+	c:set("treadle", id, "group_tolerance", "50")
 	default = tag
 end
 

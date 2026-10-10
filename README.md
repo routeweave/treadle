@@ -11,8 +11,9 @@ page — no JSON to hand-edit.
 - **Subscriptions and manual nodes.** Fetch and refresh remote node
   lists; hand-add nodes for VLESS, VMess, Trojan, Shadowsocks,
   Hysteria2, TUIC, AnyTLS, WireGuard, and SOCKS.
-- **Selectors and urltest groups.** Pick servers manually or let Treadle
-  pick the fastest; per-node latency testing is built in.
+- **Groups.** Pick a server yourself, or gather several into a group that
+  moves to another member when one fails; per-node latency testing is
+  built in.
 - **Routing rules with AND/OR conditions** — domain match, IP/CIDR,
   rule-set, protocol, port. Each rule has its own outbound.
 - **Rule-set management.** Local sources, scheduled refresh, generated

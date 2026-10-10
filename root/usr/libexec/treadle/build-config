@@ -798,12 +798,14 @@ local function build_node_from_uci(s)
 		peer.allowed_ips = { "0.0.0.0/0", "::/0" }
 		ob.peers = { peer }
 
-	elseif typ == "urltest" then
-		local mode = s.urltest_mode or "manual"
+	elseif typ == "group" then
+		-- A Treadle group is built as a sing-box urltest.
+		ob.type = "urltest"
+		local mode = s.group_mode or "manual"
 		if mode == "regex" then
 			-- Store the pattern for regex expansion in build_outbounds step 3
-			ob._outbound_regex = s.urltest_regex or ""
-			local srcs = s.urltest_regex_sources
+			ob._outbound_regex = s.group_pattern or ""
+			local srcs = s.group_sources
 			if type(srcs) == "string" and srcs ~= "" then
 				srcs = { srcs }
 			end
@@ -812,7 +814,7 @@ local function build_node_from_uci(s)
 			end
 			ob.outbounds = {}
 		else
-			local raw = s.urltest_outbounds
+			local raw = s.group_members
 			if type(raw) == "table" then
 				ob.outbounds = raw
 			elseif type(raw) == "string" and raw ~= "" then
@@ -821,20 +823,20 @@ local function build_node_from_uci(s)
 				ob.outbounds = {}
 			end
 		end
-		if s.urltest_url and s.urltest_url ~= "" then ob.url = s.urltest_url end
-		if s.urltest_interval and s.urltest_interval ~= "" then ob.interval = s.urltest_interval end
-		if s.urltest_tolerance and s.urltest_tolerance ~= "" then
-			ob.tolerance = tonumber(s.urltest_tolerance)
+		if s.group_test_url and s.group_test_url ~= "" then ob.url = s.group_test_url end
+		if s.group_interval and s.group_interval ~= "" then ob.interval = s.group_interval end
+		if s.group_tolerance and s.group_tolerance ~= "" then
+			ob.tolerance = tonumber(s.group_tolerance)
 		end
-		if s.urltest_interrupt_exist_connections == "1" then
+		if s.group_interrupt == "1" then
 			ob.interrupt_exist_connections = true
 		end
 		-- Member order and cap. Internal markers, applied and
 		-- stripped in build_outbounds step 3 like _outbound_regex.
-		if s.urltest_member_order == "shuffle" or s.urltest_member_order == "latency" then
-			ob._member_order = s.urltest_member_order
+		if s.group_member_order == "shuffle" or s.group_member_order == "latency" then
+			ob._member_order = s.group_member_order
 		end
-		local max_members = tonumber(s.urltest_max_members)
+		local max_members = tonumber(s.group_max_members)
 		if max_members and max_members >= 1 then
 			ob._max_members = math.floor(max_members)
 		end
@@ -1010,7 +1012,7 @@ end
 -- all_map / seen (mutated in place). First-seen-wins, so manual nodes loaded
 -- before this call take precedence. Each imported node is tagged with `_source`
 -- = the subscription's uid (matches the basename of its on-disk JSON file,
--- and the value urltest_regex_sources stores to scope a regex group to
+-- and the value group_sources stores to scope a regex group to
 -- specific subscriptions).
 local function load_subscription_nodes(c, all_ordered, all_map, seen)
 	-- Files are keyed by each subscription's uid, which IS its UCI
@@ -1071,7 +1073,7 @@ local function load_subscription_nodes(c, all_ordered, all_map, seen)
 								-- from overwriting a tag the user has already
 								-- defined locally — the only realistic
 								-- tag-hijack vector. Tags merely referenced
-								-- elsewhere (urltest_outbounds, rule.outbound,
+								-- elsewhere (group_members, rule.outbound,
 								-- …) are EXPECTED to be filled
 								-- by subscription nodes; gating those would
 								-- break the primary urltest workflow.
@@ -1454,7 +1456,7 @@ local function build_outbounds(c)
 				ob._outbound_regex = nil  -- strip before handing to sing-box
 				ob._outbound_regex_sources = nil
 				-- Source restriction (optional, additive): when
-				-- urltest_regex_sources is set to a non-empty list, ONLY
+				-- group_sources is set to a non-empty list, ONLY
 				-- subscriptions in that list contribute candidates (plus
 				-- manual nodes, always). When unset, every source is
 				-- considered: a restrictive default would empty every
@@ -1472,7 +1474,7 @@ local function build_outbounds(c)
 				-- and slots itself into the auto-pool).
 				-- Logging each source's contribution lets the user notice
 				-- a new sub joining; gating is left to the optional
-				-- urltest_regex_sources whitelist.
+				-- group_sources whitelist.
 				local by_source = {}
 				if type(ob.outbounds) ~= "table" or #ob.outbounds == 0 then
 					ob.outbounds = {}

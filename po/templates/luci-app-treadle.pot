@@ -113,7 +113,7 @@ msgid "Reset"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/main.js:227
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1113
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1112
 #: htdocs/luci-static/resources/view/treadle/status.js:1164
 #: htdocs/luci-static/resources/view/treadle/status.js:1199
 msgid "Loading…"
@@ -170,7 +170,7 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:239
 #: htdocs/luci-static/resources/view/treadle/nodes.js:900
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1134
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1133
 #: htdocs/luci-static/resources/view/treadle/routing.js:722
 #: htdocs/luci-static/resources/view/treadle/routing.js:810
 msgid "Name"
@@ -260,7 +260,7 @@ msgid "Not carried over from the link: %s"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:376
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1047
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1046
 msgid "Manual nodes"
 msgstr ""
 
@@ -294,7 +294,7 @@ msgid "TLS"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:409
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1135
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1134
 msgid "Type"
 msgstr ""
 
@@ -305,19 +305,19 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:431
 #: htdocs/luci-static/resources/view/treadle/nodes.js:476
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1136
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1135
 msgid "Server"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:449
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1139
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1138
 #: htdocs/luci-static/resources/view/treadle/status.js:698
 msgid "Latency"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:464
 #: htdocs/luci-static/resources/view/treadle/nodes.js:467
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1167
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1166
 msgid "Test"
 msgstr ""
 
@@ -643,7 +643,7 @@ msgid "Groups"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:931
-msgid "Pick the fastest node among their members. Rules and the default node can point at a group."
+msgid "A group uses one of its members at a time and moves to another when that one fails or a faster one is found. Rules and the default node can point at a group."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:935
@@ -659,6 +659,7 @@ msgid "e.g. Auto"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:958
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1002
 msgid "Members from"
 msgstr ""
 
@@ -680,7 +681,7 @@ msgid "all subscriptions"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:974
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1008
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1007
 msgid "Members"
 msgstr ""
 
@@ -698,98 +699,94 @@ msgid "timeout"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:1003
-msgid "Selection mode"
+msgid "Fixed list (pick nodes)"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:1004
-msgid "Manual (select nodes)"
+msgid "Tag pattern (match by name)"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1005
-msgid "Regex (match by tag)"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1022
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1021
 msgid "Tag pattern"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1023
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1022
 msgid "POSIX extended regular expression (ERE) matched against each node tag. Use <code>|</code> for alternation, <code>[0-9]</code> for digits, <code>.</code> for any character, <code>^</code>/<code>$</code> to anchor. Note this is POSIX, not PCRE — <code>\\d</code> / <code>\\w</code> are not supported; write <code>[0-9]</code> / <code>[A-Za-z0-9_]</code> instead."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1030
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1029
 msgid "e.g. ^HK-|^SG-"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1038
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1037
 msgid "Sources"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1039
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1038
 msgid "Subscriptions whose nodes are evaluated against the pattern. Leave empty to match nodes from every source (current and future). Restrict to specific subscriptions if you want a new feed to require an explicit opt-in before its tags can join this group — useful when the pattern is broad (e.g. country names) and a future provider might ship matching tags. The Treadle log records which sources contributed members on each build."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1060
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1059
 msgid "Test URL"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1071
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1070
 msgid "Interval"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1075
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1074
 msgid "Tolerance (ms)"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1080
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1079
 msgid "Member order"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1081
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1080
 msgid "sing-box prefers the first members of a group whenever their latencies are within the tolerance, so in list order a group keeps using its first few nodes. Random spreads that across the group; latency puts the fastest measured nodes first, in random order among near-equals. The order changes only when sing-box restarts for another reason, never on its own."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1087
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1086
 msgid "List order"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1088
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1087
 msgid "Random"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1089
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1088
 msgid "Latency, then random"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1092
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1091
 msgid "Maximum members"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1093
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1092
 msgid "Keep only this many members, in the order above, preferring nodes on different servers. Each member costs one test per interval. Empty keeps all."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1097
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1096
 msgid "all"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1100
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1099
 msgid "Interrupt existing connections"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1101
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1100
 msgid "Drop connections routed through this group when its active member changes, so apps reconnect through the new node. Useful for HTTP/web; noisy for SSH and other long-lived sessions."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1112
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1249
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1111
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1248
 #, javascript-format
 msgid "Nodes — %s"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1118
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1215
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1255
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1117
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1214
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1254
 #: htdocs/luci-static/resources/view/treadle/status.js:1166
 #: htdocs/luci-static/resources/view/treadle/status.js:1181
 #: htdocs/luci-static/resources/view/treadle/status.js:1191
@@ -799,69 +796,69 @@ msgstr ""
 msgid "Close"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1130
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1129
 msgid "No nodes. Sync this subscription to populate the list."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1192
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1191
 msgid "Type to filter by name, type or server…"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1233
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1232
 msgid "Test all in this subscription"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1235
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1234
 #, javascript-format
 msgid "Nodes — %s (%d)"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1250
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1249
 msgid "Failed to load nodes."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1323
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1398
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1322
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1397
 msgid "A latency test run is already in progress."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1340
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1414
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1339
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1413
 msgid "unknown error"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1341
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1340
 msgid "Test failed: "
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1380
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1379
 msgid "No nodes to test."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1415
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1414
 msgid "Test all failed: "
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1461
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1460
 msgid "runner timed out (status file never cleared)"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1488
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1487
 #, javascript-format
 msgid "Test all failed: %s"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1494
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1493
 #, javascript-format
 msgid "Tested %d nodes — %d timed out."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1495
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1494
 #, javascript-format
 msgid "Tested %d nodes."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1555
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1554
 #, javascript-format
 msgid "Renamed \"%s\" to \"%s\" — %d routing reference(s) updated to follow."
 msgstr ""

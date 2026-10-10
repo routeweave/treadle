@@ -44,7 +44,7 @@
 //            package_version only when `versions` is passed (page load):
 //            it changes only on an upgrade, and reading it scans the
 //            package database
-//   groups — each urltest group's active member (clash `now`) from the
+//   groups — each group's active member (clash `now`) from the
 //            snapshot the active-watch daemon writes every 10 s, the same
 //            view that backs the syslog change-log; { error: "clash API
 //            disabled", groups: [] } when the feature is off
@@ -568,7 +568,7 @@ return baseclass.extend({
 	// "Node · manual" or "Node · <subscription>": where a single node comes from.
 	_nodeKind: function(tag) {
 		var manual = uci.sections('treadle', 'node').some(function(s) {
-			return s.tag === tag && s.type !== 'urltest';
+			return s.tag === tag && s.type !== 'group';
 		});
 		if (manual) return _('Node · manual');
 		var subName = subs.nameMap();

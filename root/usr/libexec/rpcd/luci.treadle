@@ -251,9 +251,9 @@ end
 
 -- Detect whether the active outbound set changed since sing-box was last
 -- (re)started, and reload if so. "Active" means anything build-config emits —
--- the final outbound, every enabled rule's outbound, and urltest members
+-- the final outbound, every enabled rule's outbound, and group members
 -- expanded transitively. We compare a freshly-generated preview to the file
--- at treadle.global.config_path: if a sync added nodes that no rule or urltest
+-- at treadle.global.config_path: if a sync added nodes that no rule or group
 -- references the generated output is byte-identical and we skip.
 -- Returns true when a reload was triggered.
 local function reload_if_config_changed()
@@ -1185,7 +1185,7 @@ local methods = {
 		end
 	},
 
-	-- Return all nodes for use in outbound dropdowns (routing, urltest members).
+	-- Return all nodes for use in outbound dropdowns (routing, group members).
 	-- Manual nodes come from UCI node sections; subscription nodes from JSON files.
 	list_outbounds = {
 		call = function()
@@ -1263,7 +1263,7 @@ local methods = {
 		end
 	},
 
-	-- Return the live state of every urltest group: the currently active
+	-- Return the live state of every group: the currently active
 	-- member (the clash `now` field) plus its last-known latency. Source
 	-- is the snapshot file the active-watch daemon writes every 10s, not
 	-- a fresh /proxies GET — keeps the RPC cheap (no extra HTTP round
@@ -1287,15 +1287,15 @@ local methods = {
 				return { error = "clash API disabled", groups = {} }
 			end
 
-			-- Index UCI urltest group sections by tag so the snapshot
+			-- Index UCI group sections by tag so the snapshot
 			-- tag maps back to the user's configured interval/tolerance.
 			local uci_groups = {}
 			c:foreach("treadle", "node", function(s)
-				if s.type == "urltest" then
+				if s.type == "group" then
 					if s.tag and s.tag ~= "" then
 						uci_groups[s.tag] = {
-							interval  = s.urltest_interval or "",
-							tolerance = s.urltest_tolerance or ""
+							interval  = s.group_interval or "",
+							tolerance = s.group_tolerance or ""
 						}
 					end
 				end

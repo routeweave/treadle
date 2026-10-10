@@ -44,6 +44,7 @@ root/usr/libexec/treadle/test-all-runner
 root/usr/libexec/treadle/fetch-catalog
 root/usr/libexec/treadle/singbox-update
 root/usr/libexec/treadle/migrate-basic
+root/usr/libexec/treadle/migrate-groups
 root/usr/libexec/treadle/treadlelib.lua
 root/usr/libexec/treadle/subparse.lua"
 

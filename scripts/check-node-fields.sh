@@ -32,9 +32,9 @@ HANDLER="${NODE_FIELDS_HANDLER:-$REPO_DIR/root/usr/libexec/treadle/subparse.lua}
 # form to map from. Add to this only for a node kind a link cannot describe, and
 # say which kind; a field of a link-capable protocol belongs in outbound_to_uci.
 #   override_*  the `direct` outbound
-#   urltest_*   the urltest group node
+#   group_*     group nodes
 #   wg_*        WireGuard endpoints
-EXEMPT='^(override_|urltest_|wg_)'
+EXEMPT='^(override_|group_|wg_)'
 
 # Body of a top-level `local function NAME(` up to its closing `end` in column 0.
 body() {

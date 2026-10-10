@@ -225,15 +225,15 @@ age=$(jsonfilter -i "$OUT/dash-subs.json" -e '@.subs[@.id="0123456789abcd01"].ag
 
 # --- routing fixture ---------------------------------------------------------
 
-# A regex urltest group over every imported node as the final outbound,
+# A regex group over every imported node as the final outbound,
 # plus one rule with a domain condition, so the advanced build emits
 # groups, rules and DNS rules rather than an all-direct config.
 uci batch <<'EOF'
 set treadle.0123456789abcd10=node
-set treadle.0123456789abcd10.type=urltest
+set treadle.0123456789abcd10.type=group
 set treadle.0123456789abcd10.tag=ALL
-set treadle.0123456789abcd10.urltest_mode=regex
-set treadle.0123456789abcd10.urltest_regex=.*
+set treadle.0123456789abcd10.group_mode=regex
+set treadle.0123456789abcd10.group_pattern=.*
 set treadle.routing.final_outbound=ALL
 set treadle.0123456789abcd20=rule
 set treadle.0123456789abcd20.enabled=1
@@ -509,7 +509,7 @@ echo '{}' | "$HANDLER" call get_config > "$OUT/get_config.json"
 	&& ok "get_config returns a preview" \
 	|| bad "get_config: $(head -c 400 "$OUT/get_config.json")"
 
-# --- urltest member order ----------------------------------------------------
+# --- group member order ------------------------------------------------------
 
 step "member order"
 SNAP=/var/etc/treadle/member-order.json
@@ -529,8 +529,8 @@ snapshot() {
   "SG-05": { "delay_ms": 60, "tested_at": $((now - 86400)) } } }
 EOF
 }
-uci set treadle.0123456789abcd10.urltest_member_order=latency
-uci set treadle.0123456789abcd10.urltest_max_members=6
+uci set treadle.0123456789abcd10.group_member_order=latency
+uci set treadle.0123456789abcd10.group_max_members=6
 uci commit treadle
 
 snapshot 12345
@@ -555,8 +555,8 @@ servers=$(for t in "$@"; do jsonfilter -i "$OUT/order_latency.json" \
 [ "$servers" -eq 6 ] && ok "cap prefers members on distinct servers" \
 	|| bad "6 members span only $servers servers"
 
-uci set treadle.0123456789abcd10.urltest_member_order=shuffle
-uci delete treadle.0123456789abcd10.urltest_max_members
+uci set treadle.0123456789abcd10.group_member_order=shuffle
+uci delete treadle.0123456789abcd10.group_max_members
 uci commit treadle
 snapshot 111
 build "order shuffle a"
@@ -590,14 +590,76 @@ else
 fi
 
 rm -f "$SNAP" "$LAT"
-uci delete treadle.0123456789abcd10.urltest_member_order
+uci delete treadle.0123456789abcd10.group_member_order
 uci commit treadle
+
+# --- group migration ---------------------------------------------------------
+
+# Groups were stored as `type 'urltest'` with `urltest_*` options. The
+# migration renames them; the config built afterwards must be the one the
+# same groups built before.
+step "group migration"
+MIGG=/usr/libexec/treadle/migrate-groups
+uci batch <<'EOF'
+set treadle.0123456789abcd11=node
+set treadle.0123456789abcd11.type=group
+set treadle.0123456789abcd11.tag=FIXED
+set treadle.0123456789abcd11.group_mode=manual
+add_list treadle.0123456789abcd11.group_members=HK-05
+add_list treadle.0123456789abcd11.group_members=SG-01
+set treadle.0123456789abcd11.group_test_url=https://cp.cloudflare.com/generate_204
+set treadle.0123456789abcd11.group_interval=1m
+set treadle.0123456789abcd11.group_tolerance=80
+set treadle.0123456789abcd11.group_interrupt=1
+set treadle.0123456789abcd20.outbound=FIXED
+commit treadle
+EOF
+build "groups new names"
+jsonfilter -i "$OUT/groups_new_names.json" -e '@.outbounds[@.tag="FIXED"].type' | grep -qx urltest \
+	&& [ "$(jsonfilter -i "$OUT/groups_new_names.json" -e '@.outbounds[@.tag="FIXED"].tolerance')" = 80 ] \
+	&& ok "a group is built as a sing-box urltest with its options" \
+	|| bad "FIXED: $(jsonfilter -i "$OUT/groups_new_names.json" -e '@.outbounds[@.tag="FIXED"]')"
+
+# Back to the old names, the way an old backup stores them.
+uci batch <<'EOF'
+set treadle.0123456789abcd10.type=urltest
+rename treadle.0123456789abcd10.group_mode=urltest_mode
+rename treadle.0123456789abcd10.group_pattern=urltest_regex
+set treadle.0123456789abcd11.type=urltest
+rename treadle.0123456789abcd11.group_mode=urltest_mode
+rename treadle.0123456789abcd11.group_members=urltest_outbounds
+rename treadle.0123456789abcd11.group_test_url=urltest_url
+rename treadle.0123456789abcd11.group_interval=urltest_interval
+rename treadle.0123456789abcd11.group_tolerance=urltest_tolerance
+rename treadle.0123456789abcd11.group_interrupt=urltest_interrupt_exist_connections
+commit treadle
+EOF
+"$MIGG"
+[ -z "$(uci show treadle | grep -E "\.(type='urltest'|urltest_)")" ] \
+	&& [ "$(uci -q get treadle.0123456789abcd11.group_members)" = "HK-05 SG-01" ] \
+	&& ok "migration renames the type and every urltest option" \
+	|| bad "after migration: $(uci show treadle | grep -E 'abcd1[01]')"
+build "groups migrated"
+cmp -s "$OUT/groups_new_names.json" "$OUT/groups_migrated.json" \
+	&& ok "migrated groups build a byte-identical config" \
+	|| bad "migrated config differs: $(diff "$OUT/groups_new_names.json" "$OUT/groups_migrated.json" | head -20)"
+uci show treadle > "$OUT/uci.before"
+"$MIGG"
+uci show treadle | cmp -s "$OUT/uci.before" - \
+	&& ok "a second migration run changes nothing" \
+	|| bad "second migration run changed the config"
+
+uci batch <<'EOF'
+delete treadle.0123456789abcd11
+set treadle.0123456789abcd20.outbound=HK-01
+commit treadle
+EOF
 
 # --- manual nodes ------------------------------------------------------------
 
 step "manual nodes"
 
-# One manual node per editor feature, gathered into a manual urltest group
+# One manual node per editor feature, gathered into a manual group
 # set as the final outbound so every one of them reaches the built config
 # and `sing-box check`.
 REALITY_PK=$(sing-box generate reality-keypair | sed -n 's/^PublicKey: //p')
@@ -689,18 +751,18 @@ set treadle.0123456789abcd68.server_port=443
 set treadle.0123456789abcd68.password=pw
 set treadle.0123456789abcd68.tls_ech=1
 set treadle.0123456789abcd6f=node
-set treadle.0123456789abcd6f.type=urltest
+set treadle.0123456789abcd6f.type=group
 set treadle.0123456789abcd6f.tag=MANUAL
-set treadle.0123456789abcd6f.urltest_mode=manual
-add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-REALITY
-add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-TROJAN
-add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-XHTTP
-add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-ANYTLS
-add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-HY2
-add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-WS
-add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-SS
-add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-ECH
-add_list treadle.0123456789abcd6f.urltest_outbounds=MANUAL-ECH-PEM
+set treadle.0123456789abcd6f.group_mode=manual
+add_list treadle.0123456789abcd6f.group_members=MANUAL-REALITY
+add_list treadle.0123456789abcd6f.group_members=MANUAL-TROJAN
+add_list treadle.0123456789abcd6f.group_members=MANUAL-XHTTP
+add_list treadle.0123456789abcd6f.group_members=MANUAL-ANYTLS
+add_list treadle.0123456789abcd6f.group_members=MANUAL-HY2
+add_list treadle.0123456789abcd6f.group_members=MANUAL-WS
+add_list treadle.0123456789abcd6f.group_members=MANUAL-SS
+add_list treadle.0123456789abcd6f.group_members=MANUAL-ECH
+add_list treadle.0123456789abcd6f.group_members=MANUAL-ECH-PEM
 set treadle.routing.final_outbound=MANUAL
 commit treadle
 EOF
@@ -712,7 +774,7 @@ uci set treadle.0123456789abcd68.tls_ech_config="$ECH_PEM"
 uci set treadle.0123456789abcd69=subscription
 uci set treadle.0123456789abcd69.name='ech fixture'
 uci set treadle.0123456789abcd69.url=https://example.com/sub
-uci add_list treadle.0123456789abcd6f.urltest_outbounds=SUB-ECH
+uci add_list treadle.0123456789abcd6f.group_members=SUB-ECH
 uci commit treadle
 printf '%s\n' '[{"type":"trojan","payload":"{\"type\":\"trojan\",\"tag\":\"SUB-ECH\",\"server\":\"example.com\",\"server_port\":443,\"password\":\"pw\",\"tls\":{\"enabled\":true,\"ech\":{\"enabled\":true}}}"}]' \
 	> /etc/treadle/nodes/0123456789abcd69.json
@@ -903,8 +965,8 @@ for f in uri.txt uri-rt.txt; do
 		rt_tags="$rt_tags $rt_tag"
 		lua "$OUT/rt.lua" uci "$OUT/rt$n.json" "0123456789abce$(printf %02x "$n")" >> "$OUT/rt.uci" 2>> "$OUT/rt.dropped"
 		# Both sides must reach the built config, so both join the manual group.
-		echo "add_list treadle.0123456789abcd6f.urltest_outbounds=$rt_tag" >> "$OUT/rt.uci"
-		echo "add_list treadle.0123456789abcd6f.urltest_outbounds=RT-$rt_tag" >> "$OUT/rt.uci"
+		echo "add_list treadle.0123456789abcd6f.group_members=$rt_tag" >> "$OUT/rt.uci"
+		echo "add_list treadle.0123456789abcd6f.group_members=RT-$rt_tag" >> "$OUT/rt.uci"
 	done < "$FIX/sub/$f"
 done
 # One node typed by hand: HTTP hosts as a comma-separated list, with stray spaces
@@ -918,7 +980,7 @@ set treadle.0123456789abce40.server_port=443
 set treadle.0123456789abce40.uuid=00000000-0000-0000-0000-000000000000
 set treadle.0123456789abce40.transport_type=http
 set treadle.0123456789abce40.transport_http_host='a.example.org, b.example.org ,,c.example.org'
-add_list treadle.0123456789abcd6f.urltest_outbounds=RT-HAND
+add_list treadle.0123456789abcd6f.group_members=RT-HAND
 EOF
 echo "commit treadle" >> "$OUT/rt.uci"
 uci batch < "$OUT/rt.uci"
@@ -941,12 +1003,12 @@ done < "$OUT/rt.result"
 
 # Leave the config as it was: drop the round-trip nodes, their group entries and the subscription.
 for t in $rt_tags; do
-	uci del_list "treadle.0123456789abcd6f.urltest_outbounds=$t"
-	uci del_list "treadle.0123456789abcd6f.urltest_outbounds=RT-$t"
+	uci del_list "treadle.0123456789abcd6f.group_members=$t"
+	uci del_list "treadle.0123456789abcd6f.group_members=RT-$t"
 done
 n=1
 while [ "$n" -le 20 ]; do uci -q delete "treadle.0123456789abce$(printf %02x "$n")"; n=$((n + 1)); done
-uci del_list "treadle.0123456789abcd6f.urltest_outbounds=RT-HAND"
+uci del_list "treadle.0123456789abcd6f.group_members=RT-HAND"
 uci delete treadle.0123456789abce40
 uci delete treadle.0123456789abcd06
 uci commit treadle
@@ -984,10 +1046,10 @@ set treadle.0123456789abcd50=subscription
 set treadle.0123456789abcd50.name=large fixture
 set treadle.0123456789abcd50.url=https://example.com/sub
 set treadle.0123456789abcd51=node
-set treadle.0123456789abcd51.type=urltest
+set treadle.0123456789abcd51.type=group
 set treadle.0123456789abcd51.tag=LARGE
-set treadle.0123456789abcd51.urltest_mode=regex
-set treadle.0123456789abcd51.urltest_regex=^LARGE-TEST-
+set treadle.0123456789abcd51.group_mode=regex
+set treadle.0123456789abcd51.group_pattern=^LARGE-TEST-
 set treadle.routing.final_outbound=LARGE
 commit treadle
 EOF
@@ -1547,9 +1609,9 @@ EOF
 	|| bad "after migration: mode '$(uci -q get treadle.global.mode)', basic '$(uci -q get treadle.basic)'"
 sec_by() { uci show treadle | sed -n "s/^treadle\.\([0-9a-f]*\)\.$1='$2'\$/\1/p"; }
 grp=$(sec_by tag Auto)
-[ -n "$grp" ] && [ "$(uci -q get "treadle.$grp.type")" = urltest ] \
-	&& [ "$(uci -q get "treadle.$grp.urltest_outbounds")" = "HK-05 SG-01" ] \
-	&& ok "several servers become an Auto urltest group, missing ones dropped" \
+[ -n "$grp" ] && [ "$(uci -q get "treadle.$grp.type")" = group ] \
+	&& [ "$(uci -q get "treadle.$grp.group_members")" = "HK-05 SG-01" ] \
+	&& ok "several servers become an Auto group, missing ones dropped" \
 	|| bad "Auto group '$grp': $(uci -q show "treadle.$grp")"
 r_cc=$(sec_by name 'Bypass CN'); r_pt=$(sec_by name 'Common ports')
 c_cc=$(sec_by rule "$r_cc"); c_pt=$(sec_by rule "$r_pt")

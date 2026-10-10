@@ -3,7 +3,7 @@
 
 // Nodes tab: subscriptions on top, manually-configured nodes below.
 // "Node" is the user-facing noun for what sing-box calls an outbound — it
-// covers both individual servers and urltest group outbounds. The UCI section
+// covers both individual servers and groups. The UCI section
 // names (`node`, `subscription`) and the RPC method names (list_outbounds)
 // use sing-box's vocabulary.
 // Both sections share one form.Map('treadle') so a single Save & Apply commits
@@ -228,7 +228,7 @@ return baseclass.extend({
 		// Create every subscription as a NAMED section whose name is a
 		// random 16-hex uid. That name is the stable id used by everything
 		// downstream — the on-disk file at /etc/treadle/nodes/<uid>.json, the
-		// `subscription` field on outbounds, and the `urltest_regex_sources`
+		// `subscription` field on outbounds, and the `group_sources`
 		// allowlist. Anonymous sections would pick up libuci's volatile
 		// cfgXXXX (regenerated from a package-wide counter on every parse,
 		// shifted by any structural change to /etc/config/treadle); the named
@@ -376,7 +376,7 @@ return baseclass.extend({
 		var s = m.section(form.GridSection, 'node', _('Manual nodes'),
 			_('Nodes you add by hand, from a share link or field by field.'));
 		s.filter = function(section_id) {
-			return uci.get('treadle', section_id, 'type') !== 'urltest';
+			return uci.get('treadle', section_id, 'type') !== 'group';
 		};
 		s.addremove = true;
 		s.sortable  = true;
@@ -853,11 +853,11 @@ return baseclass.extend({
 			return subs.groupKey(sub_id, subOrder);
 		}
 
-		// URLTest member candidates: manual nodes from the staged UCI view
+		// Group member candidates: manual nodes from the staged UCI view
 		// (a staged rename or fresh add must show its current tag here —
 		// list_outbounds only sees committed state; see routing.js
 		// addServers), subscription nodes from the RPC, plus any tag
-		// already stored on an existing urltest node, so a saved member
+		// already stored on an existing group, so a saved member
 		// whose node was removed still shows rather than being silently
 		// dropped. First-seen wins, manual first — matching build-config's
 		// dedupe policy.
@@ -877,7 +877,7 @@ return baseclass.extend({
 			}
 		});
 		uci.sections('treadle', 'node').forEach(function(n) {
-			var obs = n.urltest_outbounds;
+			var obs = n.group_members;
 			if (!Array.isArray(obs))
 				obs = obs ? String(obs).split(/[,\s]+/) : [];
 			obs.forEach(function(t) {
@@ -906,7 +906,7 @@ return baseclass.extend({
 		// A rename would therefore dangle every reference to the old tag,
 		// and build-config's validation pass would silently fall the
 		// affected rules back to direct. Propagate the rename instead:
-		// rewrite rule.outbound, routing.final_outbound and urltest member
+		// rewrite rule.outbound, routing.final_outbound and group member
 		// lists inside the same staged save, so
 		// Save & Apply commits the rename and the rewires atomically and
 		// Reset reverts both together. Skipped when the old tag is not
@@ -928,7 +928,7 @@ return baseclass.extend({
 	_renderGroups: function(m, memberList) {
 		var self = this;
 		var s = m.section(form.GridSection, 'node', _('Groups'),
-			_('Pick the fastest node among their members. Rules and the default node can point at a group.'));
+			_('A group uses one of its members at a time and moves to another when that one fails or a faster one is found. Rules and the default node can point at a group.'));
 		s.addremove = true;
 		s.sortable  = true;
 		s.anonymous = true;
@@ -937,7 +937,7 @@ return baseclass.extend({
 		// Groups and manual nodes are both `node` sections; each table shows
 		// its own kind.
 		s.filter = function(section_id) {
-			return uci.get('treadle', section_id, 'type') === 'urltest';
+			return uci.get('treadle', section_id, 'type') === 'group';
 		};
 		uid.installGridAdd(s);
 		// A section added from this table is a group: set its type before the
@@ -947,7 +947,7 @@ return baseclass.extend({
 		s.handleAdd = function(ev, name) {
 			var sid = name || uid.generate();
 			var r = add.call(this, ev, sid);
-			uci.set('treadle', sid, 'type', 'urltest');
+			uci.set('treadle', sid, 'type', 'group');
 			return r;
 		};
 		formpanel.deleteInModal(s);
@@ -959,15 +959,15 @@ return baseclass.extend({
 		oFrom.modalonly = false;
 		oFrom.cfgvalue = function(section_id) {
 			var get = function(k) { return uci.get('treadle', section_id, k); };
-			if ((get('urltest_mode') || 'manual') !== 'regex')
+			if ((get('group_mode') || 'manual') !== 'regex')
 				return _('Fixed list');
-			var srcs = get('urltest_regex_sources') || [];
+			var srcs = get('group_sources') || [];
 			if (!Array.isArray(srcs)) srcs = [ srcs ];
 			var names = srcs.map(function(u) {
 				return u === '_manual' ? _('manual nodes')
 					: (uci.get('treadle', u, 'name') || u);
 			});
-			return _('Pattern %s · %s').format(get('urltest_regex') || '—',
+			return _('Pattern %s · %s').format(get('group_pattern') || '—',
 				names.length ? names.join(', ') : _('all subscriptions'));
 		};
 
@@ -977,8 +977,8 @@ return baseclass.extend({
 			var live = self._liveGroup[uci.get('treadle', section_id, 'tag')];
 			if (live && Array.isArray(live.members))
 				return _('%d nodes').format(live.members.length);
-			var list = uci.get('treadle', section_id, 'urltest_outbounds');
-			if ((uci.get('treadle', section_id, 'urltest_mode') || 'manual') !== 'regex' && list)
+			var list = uci.get('treadle', section_id, 'group_members');
+			if ((uci.get('treadle', section_id, 'group_mode') || 'manual') !== 'regex' && list)
 				return _('%d nodes').format(Array.isArray(list) ? list.length : 1);
 			return '—';
 		};
@@ -997,15 +997,14 @@ return baseclass.extend({
 			]);
 		};
 
-		// ── URLTest group ───────────────────────────────────────────────
-		// Auto-rotation by latency. Members can be picked explicitly (manual
-		// mode) or matched against a tag pattern (regex mode).
-		o = s.option(form.ListValue, 'urltest_mode', _('Selection mode'));
-		o.value('manual', _('Manual (select nodes)'));
-		o.value('regex',  _('Regex (match by tag)'));
+		// Members are picked explicitly (manual mode) or matched against a
+		// tag pattern (regex mode).
+		o = s.option(form.ListValue, 'group_mode', _('Members from'));
+		o.value('manual', _('Fixed list (pick nodes)'));
+		o.value('regex',  _('Tag pattern (match by name)'));
 		o.modalonly = true;
 
-		o = s.option(form.MultiValue, 'urltest_outbounds', _('Members'));
+		o = s.option(form.MultiValue, 'group_members', _('Members'));
 		// 'select' renders a ui.Dropdown multi-select: checkboxes plus a
 		// built-in filter field inside the opened dropdown panel.
 		o.widget = 'select';
@@ -1017,9 +1016,9 @@ return baseclass.extend({
 			return form.MultiValue.prototype.transformChoices.apply(this) || {};
 		};
 		o.modalonly = true;
-		o.depends('urltest_mode', 'manual');
+		o.depends('group_mode', 'manual');
 
-		o = s.option(form.Value, 'urltest_regex', _('Tag pattern'),
+		o = s.option(form.Value, 'group_pattern', _('Tag pattern'),
 			_('POSIX extended regular expression (ERE) matched against each ' +
 			  'node tag. Use <code>|</code> for alternation, <code>[0-9]</code> ' +
 			  'for digits, <code>.</code> for any character, <code>^</code>/' +
@@ -1028,14 +1027,14 @@ return baseclass.extend({
 			  'write <code>[0-9]</code> / <code>[A-Za-z0-9_]</code> instead.'));
 		o.modalonly = true;
 		o.placeholder = _('e.g. ^HK-|^SG-');
-		o.depends('urltest_mode', 'regex');
+		o.depends('group_mode', 'regex');
 
 		// Restrict regex matching to nodes from selected sources. Empty =
 		// match across every source.
 		// Sentinel `_manual` covers UCI-defined manual nodes; remaining values
 		// are subscription uids (the subscription section's name). `_manual`
 		// is non-hex and cannot collide with a uid.
-		o = s.option(form.MultiValue, 'urltest_regex_sources', _('Sources'),
+		o = s.option(form.MultiValue, 'group_sources', _('Sources'),
 			_('Subscriptions whose nodes are evaluated against the pattern. ' +
 			  'Leave empty to match nodes from every source (current and future). ' +
 			  'Restrict to specific subscriptions if you want a new feed to require ' +
@@ -1051,13 +1050,13 @@ return baseclass.extend({
 		});
 		o.modalonly = true;
 		o.optional = true;
-		o.depends('urltest_mode', 'regex');
+		o.depends('group_mode', 'regex');
 
 		// Test URL: combobox (form.Value auto-promotes to ui.Combobox when
 		// .value() entries are present) — preset picks for the two most
 		// common /generate_204 endpoints, plus free-text entry for any
 		// custom URL the user prefers to type.
-		o = s.option(form.Value, 'urltest_url', _('Test URL'));
+		o = s.option(form.Value, 'group_test_url', _('Test URL'));
 		o.modalonly = true;
 		o.default = 'https://www.gstatic.com/generate_204';
 		// Required (default is set) — drops the "unspecified" empty entry
@@ -1068,16 +1067,16 @@ return baseclass.extend({
 		o.value('https://cp.cloudflare.com/generate_204',   'Cloudflare (HTTPS)');
 		o.value('http://cp.cloudflare.com/generate_204',    'Cloudflare (HTTP)');
 
-		o = s.option(form.Value, 'urltest_interval', _('Interval'));
+		o = s.option(form.Value, 'group_interval', _('Interval'));
 		o.modalonly = true;
 		o.placeholder = '3m';
 
-		o = s.option(form.Value, 'urltest_tolerance', _('Tolerance (ms)'));
+		o = s.option(form.Value, 'group_tolerance', _('Tolerance (ms)'));
 		o.modalonly = true;
 		o.datatype = 'uinteger';
 		o.placeholder = '50';
 
-		o = s.option(form.ListValue, 'urltest_member_order', _('Member order'),
+		o = s.option(form.ListValue, 'group_member_order', _('Member order'),
 			_('sing-box prefers the first members of a group whenever their latencies ' +
 			  'are within the tolerance, so in list order a group keeps using its first ' +
 			  'few nodes. Random spreads that across the group; latency puts the fastest ' +
@@ -1089,14 +1088,14 @@ return baseclass.extend({
 		o.value('latency', _('Latency, then random'));
 		o.default = 'list';
 
-		o = s.option(form.Value, 'urltest_max_members', _('Maximum members'),
+		o = s.option(form.Value, 'group_max_members', _('Maximum members'),
 			_('Keep only this many members, in the order above, preferring nodes on ' +
 			  'different servers. Each member costs one test per interval. Empty keeps all.'));
 		o.modalonly = true;
 		o.datatype = 'range(1,1000)';
 		o.placeholder = _('all');
 
-		o = s.option(form.Flag, 'urltest_interrupt_exist_connections',
+		o = s.option(form.Flag, 'group_interrupt',
 			_('Interrupt existing connections'),
 			_('Drop connections routed through this group when its active member ' +
 			  'changes, so apps reconnect through the new node. Useful for HTTP/web; ' +
@@ -1355,7 +1354,7 @@ return baseclass.extend({
 		var tags = [], seen = {};
 		uci.sections('treadle', 'node').forEach(function(n) {
 			var t = n.tag, ty = n.type;
-			if (t && ty !== 'urltest' && !seen[t]) {
+			if (t && ty !== 'group' && !seen[t]) {
 				seen[t] = true;
 				tags.push(t);
 			}
@@ -1529,7 +1528,7 @@ return baseclass.extend({
 			changed++;
 		}
 
-		// List-typed references (urltest members). UCI
+		// List-typed references (group members). UCI
 		// hands back an array for lists and a string for a single value;
 		// tags legitimately contain spaces, so only exact-element matches
 		// are rewritten — never substring or split-on-whitespace.
@@ -1547,8 +1546,8 @@ return baseclass.extend({
 			}
 		};
 		uci.sections('treadle', 'node').forEach(function(n) {
-			if (n.type === 'urltest')
-				renameInList(n['.name'], 'urltest_outbounds');
+			if (n.type === 'group')
+				renameInList(n['.name'], 'group_members');
 		});
 
 		if (changed > 0)

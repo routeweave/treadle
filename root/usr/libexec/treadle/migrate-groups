@@ -1,0 +1,70 @@
+#!/usr/bin/env lua
+-- SPDX-License-Identifier: GPL-3.0-only
+-- Copyright (C) 2026 RouteWeave
+--
+-- migrate-groups: one-time rename of group nodes from sing-box's vocabulary
+-- to Treadle's. A group was stored as `type 'urltest'` with `urltest_*`
+-- options; it is now `type 'group'` with `group_*` options, because what
+-- sing-box builds from it is a separate choice from what the group is.
+--
+-- Section names, tags and values are kept, so every reference to a group
+-- (rules, the default node, other groups' members) still resolves, and the
+-- generated sing-box config is unchanged.
+--
+-- A new name already present wins over the old one, and the old option is
+-- dropped either way, so a half-renamed section ends up in the new shape and
+-- a second run finds nothing to do.
+--
+-- Run by the package postinst and by the init script before a start whose
+-- config still carries the old names (an old backup restored, a hand edit).
+
+local uci = require("uci")
+
+local RENAMES = {
+	urltest_mode                        = "group_mode",
+	urltest_outbounds                   = "group_members",
+	urltest_regex                       = "group_pattern",
+	urltest_regex_sources               = "group_sources",
+	urltest_url                         = "group_test_url",
+	urltest_interval                    = "group_interval",
+	urltest_tolerance                   = "group_tolerance",
+	urltest_interrupt_exist_connections = "group_interrupt",
+	urltest_member_order                = "group_member_order",
+	urltest_max_members                 = "group_max_members"
+}
+
+local function log(level, msg)
+	os.execute("logger -p daemon." .. level .. " -t treadle '"
+		.. msg:gsub("'", "'\\''") .. "' 2>/dev/null")
+end
+
+local c = uci.cursor()
+local changed = 0
+
+-- Collected first, so no section is changed while foreach walks the list.
+local sections = {}
+c:foreach("treadle", "node", function(s) sections[#sections + 1] = s end)
+
+for _, s in ipairs(sections) do
+	local sid = s[".name"]
+	local touched = false
+	if s.type == "urltest" then
+		c:set("treadle", sid, "type", "group")
+		touched = true
+	end
+	for old, new in pairs(RENAMES) do
+		if s[old] ~= nil then
+			if s[new] == nil then c:set("treadle", sid, new, s[old]) end
+			c:delete("treadle", sid, old)
+			touched = true
+		end
+	end
+	if touched then changed = changed + 1 end
+end
+
+if changed > 0 then
+	c:commit("treadle")
+	log("notice", string.format(
+		"config: %d group(s) moved from the urltest option names to group_*", changed))
+end
+c:close()

@@ -183,7 +183,7 @@ treadle_declare_instance() {
 }
 
 # Second procd instance: the active-node watcher. Polls sing-box's loopback
-# clash API at /proxies every 10s and logs every urltest flip to
+# clash API at /proxies every 10s and logs every group flip to
 # syslog — the diagnostic trail a user needs to decide whether their
 # `tolerance` / `interval` are tuned too aggressively. Only declared when
 # the clash API itself is enabled (otherwise the daemon has nothing to talk
@@ -260,10 +260,10 @@ treadle_warm_rule_sets() {
 	return 0
 }
 
-# True when some urltest group orders its members from the snapshot,
+# True when some group orders its members from the snapshot,
 # i.e. when taking a new snapshot can change the config at all.
 treadle_order_rotates() {
-	uci -q show treadle | grep -qE "\.urltest_member_order='(shuffle|latency)'$"
+	uci -q show treadle | grep -qE "\.group_member_order='(shuffle|latency)'$"
 }
 
 # Take a new member-order snapshot; returns build-config's own status.
@@ -334,6 +334,10 @@ start_service() {
 	# backup restored after the package upgrade migrated the live one).
 	if uci -q get treadle.global.mode >/dev/null || uci -q get treadle.basic >/dev/null; then
 		/usr/libexec/treadle/migrate-basic
+	fi
+	# Groups once stored under the urltest option names; same reason.
+	if uci -q show treadle | grep -qE "\.(type='urltest'|urltest_[a-z_]+=)"; then
+		/usr/libexec/treadle/migrate-groups
 	fi
 
 	if [ "$(uci -q get treadle.inbounds.mode)" = "tproxy_mixed" ]; then
@@ -409,7 +413,7 @@ start_service() {
 	# sing-box that is currently running fine.
 	tmp_cfg="${config_path}.next"
 
-	# urltest member order comes from a snapshot that only changes
+	# Group member order comes from a snapshot that only changes
 	# when sing-box starts or restarts anyway, so the order rotates without
 	# ever causing a restart of its own. An initial start takes a new one
 	# before building; a restart takes one once the first build shows the
