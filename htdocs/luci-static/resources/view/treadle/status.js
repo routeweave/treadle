@@ -852,7 +852,7 @@ return baseclass.extend({
 				this._tabLink('routing', _('Routing')),
 				_(' tab — or right here on the runtime row, once nodes exist.')
 			]),
-			E('li', {}, [ _('Tick "Enable Treadle" above.') ])
+			E('li', {}, [ _('Turn Treadle on with the switch below.') ])
 		];
 		return E('div', { 'class': 'cbi-section' }, [
 			E('h4', { 'style': 'margin:0.4em 0 0.3em;' }, [ _('Get started') ]),

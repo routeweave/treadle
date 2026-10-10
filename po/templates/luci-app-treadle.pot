@@ -1904,7 +1904,7 @@ msgid " tab — or right here on the runtime row, once nodes exist."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/status.js:855
-msgid "Tick \"Enable Treadle\" above."
+msgid "Turn Treadle on with the switch below."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/status.js:858
