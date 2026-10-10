@@ -39,7 +39,7 @@ permissions:
 env:
   # Headless Chromium for tests/browser.mjs. Dependabot does not track it
   # (there is no package.json); bump it by hand.
-  PLAYWRIGHT_VERSION: 1.55.1
+  PLAYWRIGHT_VERSION: 1.64.0
   SHELLCHECK_VERSION: v0.11.0
   SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
   # Upstream sing-box release the smoke test also runs against, ahead of what
@@ -47,8 +47,8 @@ env:
   # checked before any router gets that version. Dependabot does not track
   # this: bump the version and the linux-amd64-musl tarball's SHA-256 (from
   # the release's asset digests) together.
-  SINGBOX_UPSTREAM_VERSION: 1.14.2
-  SINGBOX_UPSTREAM_SHA256: 8f6cb4bcf94d2b33c65d52e0d5b142db29a938336f1ff7267f397ac3758fc297
+  SINGBOX_UPSTREAM_VERSION: 1.14.3
+  SINGBOX_UPSTREAM_SHA256: 41fc81fd041134d4d7d850a928d7d2cde17a7d6563953f406b22d32a68bfab1f
 
 jobs:
   lint:

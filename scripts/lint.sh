@@ -17,7 +17,7 @@ set -u
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_DIR" || exit 1
 
-ESLINT_VERSION=10.11.0
+ESLINT_VERSION=10.12.0
 
 fail=0
 run() {
