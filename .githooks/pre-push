@@ -1,0 +1,36 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 RouteWeave
+#
+# Runs the privacy check (scripts/privacy-check.mjs) over everything a push
+# is about to publish: the lines it adds, its commit messages, and who made
+# the commits and in what timezone. A leak caught here never reaches GitHub;
+# CI checks pull requests again, but by then they are public.
+#
+# Enable once per clone:
+#
+#   git config core.hooksPath .githooks
+
+zero=0000000000000000000000000000000000000000
+command -v node >/dev/null 2>&1 || {
+	echo "pre-push: node is needed for the privacy check; push refused" >&2
+	exit 1
+}
+
+fail=0
+while read -r _ local_sha _ remote_sha; do
+	[ "$local_sha" = "$zero" ] && continue   # deleting a ref publishes nothing
+	if [ "$remote_sha" = "$zero" ]; then
+		# A new ref: what it adds on top of main.
+		base=$(git merge-base origin/main "$local_sha" 2>/dev/null) || base=
+		[ -n "$base" ] || base=$(git rev-list --max-parents=0 "$local_sha" | tail -n 1)
+	else
+		base=$remote_sha
+	fi
+	node scripts/privacy-check.mjs range "$base" "$local_sha" || fail=1
+done
+
+if [ "$fail" -ne 0 ]; then
+	echo "pre-push: push refused by the privacy check (git push --no-verify skips it; do so only knowingly)" >&2
+	exit 1
+fi

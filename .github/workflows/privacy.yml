@@ -1,0 +1,36 @@
+name: Privacy
+
+# The privacy check (scripts/privacy-check.mjs) over a pull request: the
+# lines its commits add, their messages, identities and timezone, and the
+# pull request's own title and body. The pre-push hook (.githooks/pre-push)
+# is what keeps a leak from being published; this is the backstop, and the
+# only check that sees the title and body, so it also runs when they are
+# edited.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  privacy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Check the commits and the pull request text
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          rc=0
+          node scripts/privacy-check.mjs range "$(git merge-base "$BASE" "$HEAD")" "$HEAD" || rc=1
+          printf '%s\n\n%s\n' "$TITLE" "$BODY" | node scripts/privacy-check.mjs text "pull request" || rc=1
+          exit "$rc"

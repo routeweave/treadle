@@ -49,12 +49,13 @@ root/usr/libexec/treadle/subparse.lua"
 
 # shellcheck disable=SC2086  # the lists above are newline-separated paths
 run "shellcheck (router, busybox)" shellcheck -s busybox -S warning $ROUTER_SH
-run "shellcheck (scripts)" shellcheck -S warning scripts/*.sh tests/*.sh
+run "shellcheck (scripts)" shellcheck -S warning scripts/*.sh tests/*.sh tests/image/*.sh .githooks/pre-push
 # shellcheck disable=SC2086
 run "luacheck (Lua 5.1)" luacheck -q $ROUTER_LUA
 run "node field parity (editor vs link import)" sh scripts/check-node-fields.sh
 run "views, ACL, handler and menu in step" node scripts/check-consistency.mjs
 run "translation template in step with the views" sh scripts/update-pot.sh --check
+run "nothing personal in the tree" node scripts/privacy-check.mjs tree
 
 # The decision log is not published, so nothing here may cite an entry of it
 # (CONTRIBUTING.md § Comments): "decision" plus a number, a bare four-digit

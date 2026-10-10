@@ -182,6 +182,7 @@ branch you have checked out.
 ## Repository layout
 
 ```
+.githooks/pre-push             # The privacy check, before anything is pushed
 .github/
 ├── actions/install-apk-tools/   # CI: build apk-tools 3.x
 ├── actions/install-usign/       # CI: build OpenWrt's usign
@@ -191,6 +192,7 @@ branch you have checked out.
     ├── ci.yml                   # Every PR and main push; publishes main's snapshot
     ├── release.yml              # Release on v* tag push
     ├── test-images.yml          # Builds the test images for GHCR
+    ├── privacy.yml              # The privacy check over every pull request
     └── pages.yml                # Publish the feed to GitHub Pages
 scripts/
 ├── package.sh                   # Standalone APK + IPK builder
@@ -198,6 +200,7 @@ scripts/
 ├── lint.sh                      # shellcheck + luacheck + eslint + the checks below
 ├── check-consistency.mjs        # Views, ACL, handler and menu agree
 ├── update-pot.sh                # Regenerates (or --check) the .pot
+├── privacy-check.mjs            # Nothing personal in a push, a PR or the tree
 ├── version-check.sh             # Version scheme asserted against apk's parser
 ├── feed.sh  feed-keygen.sh      # Signed apk + opkg feed assembly, key setup
 ├── pages-snapshot.sh            # Adds the rolling snapshot to the Pages site
@@ -349,6 +352,22 @@ misleads, so:
   RFC 5737 addresses (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`),
   the all-zero UUID, `<password>`. Never paste a real subscription, node,
   or router log or config.
+- Commits are made as `routeweave` and dated in UTC (`TZ=UTC0 git commit`).
+- `scripts/privacy-check.mjs` enforces the above: share links and
+  subscription URLs to real hosts, addresses outside the documentation
+  ranges and known defaults, non-zero UUIDs, quoted credentials, opaque
+  base64 (it decodes base64 text and judges what it says), real e-mail
+  addresses, and commits made as anyone else or in another timezone.
+  Enable it as a pre-push hook once per clone, so a leak is refused before
+  it is published:
+
+  ```sh
+  git config core.hooksPath .githooks
+  ```
+
+  CI runs it again over every pull request, title and body included, and
+  `lint.sh` over the whole tree. A line that has to carry a flagged value
+  for a reason that is not personal can say `privacy-check: allow`.
 
 ## Branch naming
 
