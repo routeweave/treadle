@@ -24,6 +24,14 @@ on:
         description: TREADLE_RELEASE for package.sh (a release's -r<N>)
         type: string
         default: ''
+      images:
+        description: JSON list of openwrt/rootfs images for the smoke job
+        type: string
+        default: '["openwrt/rootfs:x86_64-25.12.5", "openwrt/rootfs:x86_64-v24.10.8"]'
+      fresh:
+        description: Install from the feeds instead of using the test images
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -113,12 +121,14 @@ jobs:
     permissions:
       contents: read
       packages: read   # pull the test image
+    # The default list (25.12 for apk, 24.10 for opkg) is what the required
+    # checks are named after. weekly.yml adds OpenWrt's snapshot, whose
+    # breakage is an early warning rather than a failure.
+    continue-on-error: ${{ contains(matrix.image, 'SNAPSHOT') }}
     strategy:
       fail-fast: false
       matrix:
-        image:
-          - openwrt/rootfs:x86_64-25.12.5    # apk
-          - openwrt/rootfs:x86_64-v24.10.8   # opkg
+        image: ${{ fromJSON(inputs.images) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -135,10 +145,14 @@ jobs:
         env:
           BASE: ${{ matrix.image }}
           GH_TOKEN: ${{ github.token }}
+          FRESH: ${{ inputs.fresh }}
         run: |
           test_image="ghcr.io/${GITHUB_REPOSITORY_OWNER}/treadle-test:${BASE#openwrt/rootfs:}"
           echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin >/dev/null 2>&1 || true
-          if docker pull -q "$test_image" >/dev/null 2>&1; then
+          if [ "$FRESH" = true ]; then
+            echo "fresh run: using $BASE with a full install from the feeds"
+            echo "image=$BASE" >> "$GITHUB_OUTPUT"
+          elif docker pull -q "$test_image" >/dev/null 2>&1; then
             echo "image=$test_image" >> "$GITHUB_OUTPUT"
             echo "using $test_image"
           else
@@ -247,10 +261,14 @@ jobs:
         env:
           BASE: openwrt/rootfs:x86_64-25.12.5
           GH_TOKEN: ${{ github.token }}
+          FRESH: ${{ inputs.fresh }}
         run: |
           test_image="ghcr.io/${GITHUB_REPOSITORY_OWNER}/treadle-test:${BASE#openwrt/rootfs:}"
           echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin >/dev/null 2>&1 || true
-          if docker pull -q "$test_image" >/dev/null 2>&1; then
+          if [ "$FRESH" = true ]; then
+            echo "fresh run: using $BASE with a full install from the feeds"
+            echo "image=$BASE" >> "$GITHUB_OUTPUT"
+          elif docker pull -q "$test_image" >/dev/null 2>&1; then
             echo "image=$test_image" >> "$GITHUB_OUTPUT"
             echo "using $test_image"
           else

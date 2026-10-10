@@ -1,0 +1,68 @@
+name: Weekly
+
+# What a change on main does not show:
+#
+#   fresh — the whole test suite installing from the OpenWrt feeds, not from
+#           the test images, so dependency resolution and the mirrors are
+#           exercised against what the feeds carry today; plus OpenWrt's
+#           snapshot, allowed to fail, as early warning of the next release.
+#           A new point release or a feed sing-box bump that breaks Treadle
+#           shows up here first, not in an unrelated pull request.
+#   pins  — scripts/check-pins.mjs: the versions pinned by hand that
+#           Dependabot cannot see. One issue stays open, kept up to date,
+#           while any of them is behind, and is closed when none is.
+#
+# Mondays after test-images.yml (03:17 UTC) has rebuilt the images, or by
+# hand.
+
+on:
+  schedule:
+    - cron: '17 5 * * 1'   # Mondays, 05:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fresh:
+    uses: ./.github/workflows/test.yml
+    with:
+      fresh: true
+      images: '["openwrt/rootfs:x86_64-25.12.5", "openwrt/rootfs:x86_64-v24.10.8", "openwrt/rootfs:x86_64-SNAPSHOT"]'
+    permissions:
+      contents: read
+      packages: read
+
+  pins:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Compare the pinned versions with upstream
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="Pinned versions are behind"
+          issue=$(gh issue list --state open --search "in:title \"$title\"" \
+            --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -n 1)
+          rc=0
+          node scripts/check-pins.mjs --report "$RUNNER_TEMP/pins.md" || rc=$?
+          case "$rc" in
+            0)
+              [ -z "$issue" ] || gh issue close "$issue" --comment "Every pin is current now."
+              ;;
+            1)
+              if [ -n "$issue" ]; then
+                gh issue edit "$issue" --body-file "$RUNNER_TEMP/pins.md"
+              else
+                gh issue create --title "$title" --body-file "$RUNNER_TEMP/pins.md"
+              fi
+              ;;
+            *)
+              exit "$rc"
+              ;;
+          esac

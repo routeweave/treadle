@@ -162,6 +162,7 @@ packages as an artifact instead of publishing them.
 | **CI**      | Pull request, push to `main` | Runs Test. On a `main` push that passes, publishes the feed with that build as the snapshot. Runs on `main` queue rather than cancel each other. |
 | **Release** | Push of a `v*` tag           | Runs Test on the release version, then signs the `.apk` it tested with the feed key, creates an immutable GitHub release and republishes the feed. A failing check publishes nothing. Run by hand, it does everything but publish. |
 | **Test images** | Weekly, a `main` push that changes them, or by hand | Builds the test images (`tests/image/`): each tested OpenWrt release with Treadle's dependencies preinstalled, pushed to GHCR. Test runs on them and so downloads nothing from the OpenWrt mirrors; without an image it falls back to a full install. A pull request that changes them builds without pushing. |
+| **Weekly**  | Mondays, or by hand          | Runs Test fresh from the OpenWrt feeds instead of the test images, on 25.12, 24.10 and OpenWrt's snapshot (allowed to fail, as early warning). Checks the versions pinned by hand that Dependabot cannot see (`scripts/check-pins.mjs`) and keeps one issue open while any is behind. |
 | **Feed**    | Called by CI and Release, or by hand | Rebuilds the GitHub Pages site: the signed feed from every `v*` release, and the rolling snapshot. Run by hand with `dry_run`, it builds the site as an artifact without deploying. |
 
 Every action is pinned to a commit SHA, with the tag in a trailing comment;
@@ -193,6 +194,7 @@ branch you have checked out.
     ├── release.yml              # Release on v* tag push
     ├── test-images.yml          # Builds the test images for GHCR
     ├── privacy.yml              # The privacy check over every pull request
+    ├── weekly.yml               # Fresh-from-the-feeds run, snapshot, pinned versions
     └── pages.yml                # Publish the feed to GitHub Pages
 scripts/
 ├── package.sh                   # Standalone APK + IPK builder
@@ -201,6 +203,7 @@ scripts/
 ├── check-consistency.mjs        # Views, ACL, handler and menu agree
 ├── update-pot.sh                # Regenerates (or --check) the .pot
 ├── privacy-check.mjs            # Nothing personal in a push, a PR or the tree
+├── check-pins.mjs               # Pinned versions against upstream releases
 ├── version-check.sh             # Version scheme asserted against apk's parser
 ├── feed.sh  feed-keygen.sh      # Signed apk + opkg feed assembly, key setup
 ├── pages-snapshot.sh            # Adds the rolling snapshot to the Pages site
