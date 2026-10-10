@@ -1,4 +1,4 @@
-name: Test
+name: Test (shared)
 
 # The checks every change and every release goes through: static lint, a
 # package build with a syntax check of what actually ships, and end-to-end

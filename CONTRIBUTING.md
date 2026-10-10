@@ -158,7 +158,7 @@ packages as an artifact instead of publishing them.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| **Test**    | Called by CI and Release     | Lint, package build and staged-tree check, smoke, system and browser tests on OpenWrt 25.12 (apk) and 24.10 (opkg). |
+| **Test (shared)** | Called by CI, Release and Weekly; never runs on its own | Lint, package build and staged-tree check, smoke, system and browser tests on OpenWrt 25.12 (apk) and 24.10 (opkg). |
 | **CI**      | Pull request, push to `main` | Runs Test. On a `main` push that passes, publishes the feed with that build as the snapshot. Runs on `main` queue rather than cancel each other. |
 | **Release** | Push of a `v*` tag           | Runs Test on the release version, then signs the `.apk` it tested with the feed key, creates an immutable GitHub release and republishes the feed. A failing check publishes nothing. Run by hand, it does everything but publish. |
 | **Test images** | Weekly, a `main` push that changes them, or by hand | Builds the test images (`tests/image/`): each tested OpenWrt release with Treadle's dependencies preinstalled, pushed to GHCR. Test runs on them and so downloads nothing from the OpenWrt mirrors; without an image it falls back to a full install. A pull request that changes them builds without pushing. |
