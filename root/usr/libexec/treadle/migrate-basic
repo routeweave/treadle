@@ -113,7 +113,7 @@ elseif #members > 1 then
 	c:set("treadle", id, "order", tostring(nodes))
 	c:set("treadle", id, "group_mode", "manual")
 	c:set("treadle", id, "group_members", members)
-	c:set("treadle", id, "group_test_url", "https://www.gstatic.com/generate_204")
+	c:set("treadle", id, "group_test_url", lib.TEST_URL)
 	c:set("treadle", id, "group_tolerance", "50")
 	default = tag
 end

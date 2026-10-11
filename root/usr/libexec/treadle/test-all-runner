@@ -78,7 +78,7 @@ local REQ_TIMEOUT_S    = 12            -- uclient-fetch wall clock per probe
 -- outright — `if strings.HasPrefix(url, "http://") { url = "" }` in
 -- getProxyDelay — and falls back to its own built-in default, so an
 -- http:// value here is silently ignored on every supported version.
-local TEST_URL         = "https://www.gstatic.com/generate_204"
+local TEST_URL         = lib.TEST_URL
 
 local function shell_quote(s)
 	return "'" .. tostring(s):gsub("'", "'\\''") .. "'"

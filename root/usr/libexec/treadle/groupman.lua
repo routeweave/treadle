@@ -123,6 +123,18 @@ function M.record_speed(st, tag, alt, now, bps, alt_bps)
 	return false
 end
 
+-- Drop a member's latency results and level, as when its group starts testing
+-- a different page: results from two pages do not compare, and a mixed window
+-- reads as a sudden change (a "faster" member, a "worse" level). It has no
+-- result until it is tested again, so it cannot be picked meanwhile. Benches
+-- and real-traffic errors stay: they are about the node, not the page.
+function M.forget(st, tag)
+	local r = st.members[tag]
+	if not r then return end
+	r.ring, r.fails = {}, 0
+	r.ewma, r.last_ok, r.tested_at, r.level_score, r.level_at = nil, nil, nil, nil, nil
+end
+
 -- Connection errors attributed to a member, as epoch seconds. Old ones fall
 -- out of the window.
 function M.add_errors(st, tag, now, times)

@@ -223,5 +223,20 @@ do
 	check(gm.track_level(r, 3600 * 3 + 10) == false, "and is no longer flagged")
 end
 
+-- A new test page: the member's results and level go, its bench and errors
+-- stay, and it cannot be picked until it is tested again.
+do
+	local st = gm.new()
+	warm(st, 1000, { A = 200, B = 210 })
+	gm.track_level(st.members.A, 1000)
+	gm.add_errors(st, "A", 1000, { 999 })
+	st.members.A.bench_until = 1100
+	gm.forget(st, "A")
+	local r = st.members.A
+	check(#r.ring == 0 and r.level_score == nil and gm.score(r) == nil, "forget drops results and level")
+	check(r.bench_until == 1100 and #r.errors == 1, "and keeps the bench and errors")
+	check(gm.pick(st, { "A", "B" }, 1000, 50, 360, first, "B") == nil, "a forgotten member cannot be picked")
+end
+
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)

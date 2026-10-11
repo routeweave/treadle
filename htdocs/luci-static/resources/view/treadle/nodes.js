@@ -1061,17 +1061,23 @@ return baseclass.extend({
 		o.depends('group_mode', 'regex');
 
 		// Test URL: combobox (form.Value auto-promotes to ui.Combobox when
-		// .value() entries are present) — preset picks for the two most
-		// common /generate_204 endpoints, plus free-text entry for any
-		// custom URL the user prefers to type.
-		o = s.option(form.Value, 'group_test_url', _('Test URL'));
+		// .value() entries are present) — presets plus free-text entry. The
+		// default is the same page as treadlelib's TEST_URL: an ordinary
+		// page, which a provider cannot answer at its relay the way some
+		// answer the generate_204 check pages.
+		o = s.option(form.Value, 'group_test_url', _('Test URL'),
+			_('Requested through each member to test it. Some providers answer the ' +
+			  'Google and Cloudflare 204 check pages at their first relay, so a node ' +
+			  'whose exit is down still tests healthy; the default page is answered ' +
+			  'where the node really exits.'));
 		o.modalonly = true;
-		o.default = 'https://www.gstatic.com/generate_204';
+		o.default = 'https://www.cloudflare.com/cdn-cgi/trace';
 		// Required (default is set) — drops the "unspecified" empty entry
 		// that form.Value would otherwise insert in the Combobox dropdown.
 		o.rmempty = false;
-		o.value('https://www.gstatic.com/generate_204',     'Google (HTTPS)');
-		o.value('https://cp.cloudflare.com/generate_204',   'Cloudflare (HTTPS)');
+		o.value('https://www.cloudflare.com/cdn-cgi/trace', _('Cloudflare trace (HTTPS)'));
+		o.value('https://www.gstatic.com/generate_204',     _('Google 204 (HTTPS)'));
+		o.value('https://cp.cloudflare.com/generate_204',   _('Cloudflare 204 (HTTPS)'));
 		if (managed) {
 			// Treadle tests through sing-box's clash API, which ignores a
 			// plain http:// URL and tests its own https default instead.
@@ -1080,8 +1086,8 @@ return baseclass.extend({
 					? _('Treadle tests over HTTPS; use an https:// URL.') : true;
 			};
 		} else {
-			o.value('http://www.gstatic.com/generate_204',  'Google (HTTP)');
-			o.value('http://cp.cloudflare.com/generate_204', 'Cloudflare (HTTP)');
+			o.value('http://www.gstatic.com/generate_204',  _('Google 204 (HTTP)'));
+			o.value('http://cp.cloudflare.com/generate_204', _('Cloudflare 204 (HTTP)'));
 		}
 
 		o = s.option(form.Value, 'group_interval', managed ? _('Re-check every') : _('Interval'),

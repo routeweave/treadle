@@ -14,6 +14,16 @@ local M = {}
 -- whole config or silently shadow the builtin in UI dropdowns. Shared by
 -- luci.treadle (drops them at subscription-parse time) and build-config
 -- (drops them at emission time) so the two filters cannot drift.
+-- The page every latency test requests through a node (group probes, the
+-- single-node and connectivity probes, the test runner, new groups). Not a
+-- captive-portal check page: some providers answer those (Google's and
+-- Cloudflare's generate_204) at their first relay instead of carrying them to
+-- the node's exit, so a node with a dead exit still tests healthy and its
+-- latency is the relay's. This one is an ordinary Cloudflare page, answered
+-- near whatever exit the node really uses. It answers HEAD with 404, which
+-- sing-box's test accepts: any HTTP answer counts, only no answer fails.
+M.TEST_URL = "https://www.cloudflare.com/cdn-cgi/trace"
+
 -- The hidden selector a speed test of the node in use goes through, and the
 -- loopback port that reaches it (build-config, active-watch).
 M.SPEEDTEST_TAG  = "_speedtest"

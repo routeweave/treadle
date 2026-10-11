@@ -375,7 +375,7 @@ local PROBE_MAX        = 6
 local PROBE_TIMEOUT_MS = 3000
 local PROBE_FETCH_S    = 6
 -- TREADLE_PROBE_URL lets the smoke test point the probe at a local server.
-local PROBE_URL        = os.getenv("TREADLE_PROBE_URL") or "https://www.gstatic.com/generate_204"
+local PROBE_URL        = os.getenv("TREADLE_PROBE_URL") or lib.TEST_URL
 local CONN_FAIL_AFTER  = 3
 local probe_last       = 0
 local conn_streak      = 0
@@ -547,7 +547,7 @@ local DEFAULT_INTERVAL_S = 180  -- sing-box urltest's own default
 local MIN_INTERVAL_S     = 30
 local GROUP_STATE        = "/var/etc/treadle/.group-state.json"
 local CONN_ERRORS        = "/var/etc/treadle/.conn-errors.json"
-local GM_DEFAULT_URL     = "https://www.gstatic.com/generate_204"
+local GM_DEFAULT_URL     = lib.TEST_URL
 
 local gm            -- groupman, loaded on first use
 local gm_state      -- its per-member state
@@ -844,7 +844,19 @@ local function manage_groups(current, cfg)
 		local members = {}
 		for _, m in ipairs(g.members) do members[#members + 1] = m.tag end
 
-		if tag == due then
+		-- A new test URL: results from the old page do not compare with the
+		-- new one, so the members are measured afresh, starting now.
+		local fresh = false
+		if meta.url ~= url then
+			if meta.url then
+				for _, m in ipairs(members) do gm.forget(gm_state, m) end
+				fresh = true
+				logmsg("info", string.format(
+					"group '%s': test URL changed, measuring its members afresh", tag))
+			end
+			meta.url = url
+		end
+		if tag == due or fresh then
 			group_test(tag, members, url, now)
 			meta.last_test = now
 		end
