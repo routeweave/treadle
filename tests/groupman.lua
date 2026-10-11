@@ -77,6 +77,18 @@ do
 	check(d.to == nil, "one bucket faster does not move the group")
 end
 
+-- The gain rule: two buckets faster is not enough unless it is also at least
+-- MIN_GAIN faster.
+do
+	local st = gm.new()
+	warm(st, 1000, { A = 400, B = 300 })
+	local d = gm.decide(st, group("A", { last_switch = 0 }), 1000, first)
+	check(d.to == nil, "25% faster does not move the group")
+	warm(st, 1000, { C = 250 })   -- C and D had no results until now
+	d = gm.decide(st, group("A", { last_switch = 0 }), 1000, first)
+	check(d.to == "C", "37% faster does")
+end
+
 -- Failover: two probe failures in a row move the group at once, dwell or not,
 -- and bench the failed member.
 do
@@ -145,6 +157,36 @@ do
 	local st = gm.new()
 	warm(st, 1000, { B = 200 })
 	check(gm.pick(st, MEMBERS, 1000 + 361, 50, 360, first) == nil, "a result older than fresh_s is not eligible")
+end
+
+-- The score: a steady node beats a jittery one whose median is lower.
+do
+	local st = gm.new()
+	for _, d in ipairs({ 250, 255, 245, 250, 252 }) do gm.record(st, "A", 1000, d) end
+	for _, d in ipairs({ 130, 500, 130, 500, 130 }) do gm.record(st, "B", 1000, d) end
+	check(gm.score(st.members.A) < gm.score(st.members.B), "a steady 250 ms node scores better than one swinging 130-500 ms")
+	check(gm.pick(st, { "A", "B" }, 1000, 50, 360, first) == "A", "and is the one picked")
+end
+
+-- Failures count as the probe timeout: one in ten barely moves the score,
+-- two in ten dominate it.
+do
+	local st = gm.new()
+	local function d(lost) if lost then return nil end return 200 end
+	for i = 1, 10 do gm.record(st, "A", 1000, d(i == 9)) end
+	for i = 1, 10 do gm.record(st, "B", 1000, d(i == 3 or i == 7)) end
+	check(gm.score(st.members.A) == 200, "one failure in ten does not change the score")
+	check(gm.score(st.members.B) >= gm.FAIL_MS, "two failures in ten put the score at the timeout")
+end
+
+-- The original rule stays selectable for comparison.
+do
+	local st = gm.new()
+	for _, d in ipairs({ 130, 500, 130, 500, 130 }) do gm.record(st, "B", 1000, d) end
+	gm.SCORE = "ewma"
+	local e = gm.score(st.members.B)
+	gm.SCORE = "spread"
+	check(e == st.members.B.ewma, "SCORE = ewma scores by the running average")
 end
 
 print(string.format("\n%d passed, %d failed", pass, fail))

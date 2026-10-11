@@ -17,11 +17,12 @@
 --      connection errors sing-box logs), however fast its probes are.
 --   2. Failover. The member in use failed FAILS_TO_SWITCH probes in a row, or
 --      is benched: move to the best eligible member now.
---   3. Upgrade. Another member is faster by more than one tolerance-wide
---      bucket and the current one has been in use for DWELL_S.
--- "Best" is the lowest latency bucket among eligible members, with a random
--- pick inside it, so near-equal members share the load instead of the first
--- one in a list taking it all.
+--   3. Upgrade. Another member scores at least MIN_GAIN lower and more than
+--      one tolerance-wide bucket lower, and the current one has been in use
+--      for DWELL_S.
+-- "Best" is the lowest tolerance-wide bucket of score (see M.score) among
+-- eligible members, with a random pick inside it, so near-equal members share
+-- the load instead of the first one in a list taking it all.
 
 local M = {}
 
@@ -32,10 +33,23 @@ M.FAILS_TO_SWITCH = 2     -- probe failures in a row that move the group
 M.BENCH_BASE_S    = 120   -- first bench; doubles on each repeat
 M.BENCH_MAX_S     = 3600
 M.BENCH_RESET_S   = 1800  -- this long without a failure clears the bench level
-M.DWELL_S         = 600   -- minimum time on a member before a faster one replaces it
+-- An upgrade (no failure, just a faster member) needs both: DWELL_S on the
+-- current member, and a candidate scoring at least MIN_GAIN lower. Replays
+-- of recorded probes found the gain rule halves the switching at no cost in
+-- delivered latency or failures, and no minimum time from 3 to 30 min
+-- delivered measurably better or worse; the shortest leaves a slowed node
+-- soonest.
+M.DWELL_S         = 180
+M.MIN_GAIN        = 0.3
 M.ERR_WINDOW_S    = 300
 M.ERR_VOTE        = 20    -- connection errors in the window that vote a member out
 M.ALPHA           = 0.3   -- weight of a new latency in the running average
+M.FAIL_MS         = 3000  -- a failed probe counts as the probe timeout
+M.SPREAD_W        = 1     -- weight of the p90 - median spread in the score
+-- How members are compared: "spread" (median + spread of the last RING
+-- results, failures as FAIL_MS) or "ewma" (the running average). The second
+-- is the original rule, kept selectable so a replay can compare the two.
+M.SCORE           = "spread"
 
 function M.new()
 	return { members = {} }
@@ -54,7 +68,8 @@ end
 function M.record(st, tag, now, delay)
 	local r = M.member(st, tag)
 	local ok = (delay ~= nil and delay > 0)
-	r.ring[#r.ring + 1] = ok
+	-- The latency itself on success, false on failure.
+	r.ring[#r.ring + 1] = ok and delay or false
 	while #r.ring > M.RING do table.remove(r.ring, 1) end
 	r.tested_at = now
 	if ok then
@@ -123,8 +138,27 @@ function M.eligible(r, now, fresh_s)
 		and M.recent_errors(r, now) < M.ERR_VOTE
 end
 
+-- A member's score in ms, lower is better: the median of its last RING
+-- results plus SPREAD_W times their spread up to the 90th percentile, with a
+-- failure counted as FAIL_MS. A steady node beats one that is sometimes fast
+-- and often slow, and losses weigh in on the same scale. Entries stored as
+-- `true` (an older state file, no latency kept) are left out.
+function M.score(r)
+	if M.SCORE == "ewma" then return r.ewma end
+	local v = {}
+	for _, x in ipairs(r.ring) do
+		if x == false then v[#v + 1] = M.FAIL_MS
+		elseif type(x) == "number" then v[#v + 1] = x end
+	end
+	if #v == 0 then return nil end
+	table.sort(v)
+	local p50 = v[math.ceil(#v * 0.5)]
+	local p90 = v[math.ceil(#v * 0.9)]
+	return p50 + M.SPREAD_W * (p90 - p50)
+end
+
 local function bucket(r, tolerance)
-	return math.floor((r.ewma or 0) / tolerance)
+	return math.floor((M.score(r) or 0) / tolerance)
 end
 
 -- The best eligible member other than `except`: lowest bucket, random inside it.
@@ -186,11 +220,14 @@ function M.decide(st, g, now, rnd)
 		return { need_test = true, reason = g.now .. " " .. why }
 	end
 
-	if g.last_switch and now - g.last_switch >= M.DWELL_S and cur.ewma then
+	local cur_score = M.score(cur)
+	if g.last_switch and now - g.last_switch >= M.DWELL_S and cur_score then
 		local to, b = M.pick(st, g.members, now, tol, g.fresh_s, rnd, g.now)
-		if to and b < bucket(cur, tol) - 1 then
+		if to and b < bucket(cur, tol) - 1
+			and M.score(st.members[to]) <= (1 - M.MIN_GAIN) * cur_score
+		then
 			return { to = to, reason = string.format("%s is faster (%d ms against %d ms)",
-				to, math.floor(st.members[to].ewma), math.floor(cur.ewma)) }
+				to, math.floor(M.score(st.members[to])), math.floor(cur_score)) }
 		end
 	end
 	return {}
