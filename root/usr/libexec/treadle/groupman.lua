@@ -45,11 +45,6 @@ M.ERR_WINDOW_S    = 300
 M.ERR_VOTE        = 20    -- connection errors in the window that vote a member out
 M.ALPHA           = 0.3   -- weight of a new latency in the running average
 M.FAIL_MS         = 3000  -- a failed probe counts as the probe timeout
-M.SPREAD_W        = 1     -- weight of the p90 - median spread in the score
--- How members are compared: "spread" (median + spread of the last RING
--- results, failures as FAIL_MS) or "ewma" (the running average). The second
--- is the original rule, kept selectable so a replay can compare the two.
-M.SCORE           = "spread"
 
 function M.new()
 	return { members = {} }
@@ -139,12 +134,16 @@ function M.eligible(r, now, fresh_s)
 end
 
 -- A member's score in ms, lower is better: the median of its last RING
--- results plus SPREAD_W times their spread up to the 90th percentile, with a
--- failure counted as FAIL_MS. A steady node beats one that is sometimes fast
--- and often slow, and losses weigh in on the same scale. Entries stored as
--- `true` (an older state file, no latency kept) are left out.
+-- results, a failure counting as FAIL_MS, so losses weigh in on the same
+-- scale and half of them failing puts the score at the timeout. No spread
+-- term: on a router, every node of a provider showed the same occasional
+-- slow probe (about one in ten near 700 ms against a 110 ms median), and a
+-- high percentile over ten results flipped between the two, so identical
+-- nodes kept looking several times faster than each other. An erratic node
+-- is still caught by failed probes, the pass rate, benching and speed
+-- checks. Entries stored as `true` (an older state file, no latency kept)
+-- are left out.
 function M.score(r)
-	if M.SCORE == "ewma" then return r.ewma end
 	local v = {}
 	for _, x in ipairs(r.ring) do
 		if x == false then v[#v + 1] = M.FAIL_MS
@@ -152,9 +151,7 @@ function M.score(r)
 	end
 	if #v == 0 then return nil end
 	table.sort(v)
-	local p50 = v[math.ceil(#v * 0.5)]
-	local p90 = v[math.ceil(#v * 0.9)]
-	return p50 + M.SPREAD_W * (p90 - p50)
+	return v[math.ceil(#v * 0.5)]
 end
 
 local function bucket(r, tolerance)
