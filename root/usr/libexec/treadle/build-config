@@ -1291,9 +1291,36 @@ local function write_order_snapshot()
 	}))
 end
 
+-- global.group_manager: `treadle` has active-watch pick each group's node,
+-- anything else (the default, `singbox`) leaves it to sing-box's urltest.
+local function treadle_manages_groups(c)
+	return c:get("treadle", "global", "group_manager") == "treadle"
+end
+
+-- A group Treadle manages, as the sing-box selector it switches. Members are
+-- sorted by tag so the config does not change unless the membership does: a
+-- new order would only restart sing-box. sing-box keeps the selection in the
+-- cache file across restarts; `default` is used only when the cache has none
+-- (the first start), and is spread by a hash of the group tag so groups built
+-- from the same list do not all start on its first member. The test URL,
+-- interval and tolerance are Treadle's to apply, not sing-box's.
+local function as_selector(ob)
+	local members = {}
+	for k, t in ipairs(ob.outbounds) do members[k] = t end
+	table.sort(members)
+	return {
+		type      = "selector",
+		tag       = ob.tag,
+		outbounds = members,
+		default   = members[pm_hash(ob.tag) % #members + 1],
+		interrupt_exist_connections = ob.interrupt_exist_connections
+	}
+end
+
 local function build_outbounds(c)
 	-- ── Step 1: load every node, preserving order, deduping by tag ────────
 	local all_ordered, all_map = load_all_nodes(c)
+	local managed = treadle_manages_groups(c)
 
 	-- ── Step 2: collect outbound tags referenced by the active route config ──
 	-- The final outbound catches anything no rule matched; each enabled rule
@@ -1532,8 +1559,12 @@ local function build_outbounds(c)
 					end
 				end
 				-- Order and cap before referencing, so members the cap
-				-- leaves out never reach the running config.
-				kept = order_members(ob, kept, member_order, max_members)
+				-- leaves out never reach the running config. A group Treadle
+				-- manages keeps every member: list order does not decide
+				-- anything there, and testing is Treadle's to pace.
+				if not managed then
+					kept = order_members(ob, kept, member_order, max_members)
+				end
 				for _, member in ipairs(kept) do
 					if not referenced[member] then
 						referenced[member] = true
@@ -1572,6 +1603,7 @@ local function build_outbounds(c)
 				io.stderr:write("treadle build-config: urltest '" .. ob.tag ..
 					"' has no usable members; dropping the group\n")
 			else
+				if managed and ob.type == "urltest" then ob = as_selector(ob) end
 				place_node(ob, outbounds, endpoints, timeout)
 			end
 		end
@@ -2358,11 +2390,13 @@ local function build_config(c)
 	-- rule-sets from this cache instead of downloading, so after one
 	-- successful fetch it starts offline — no network needed at init, no
 	-- cold-boot FATAL. The background update loop refreshes them later.
-	-- Emitted only when there is a rule-set to cache. The fakeip and
-	-- DNS-result stores both default off, so the file is written only when
-	-- a rule-set actually changes (~daily) — negligible flash wear, unlike
-	-- the per-query churn those stores would add.
-	if route.rule_set then
+	-- Emitted when there is a rule-set to cache, or when Treadle manages the
+	-- groups: sing-box keeps each selector's choice there across a restart.
+	-- The fakeip and DNS-result stores both default off, so the file is
+	-- written only when a rule-set changes (~daily) or a group switches —
+	-- negligible flash wear, unlike the per-query churn those stores would
+	-- add.
+	if route.rule_set or treadle_manages_groups(c) then
 		os.execute("mkdir -p /etc/treadle 2>/dev/null")
 		experimental.cache_file = {
 			enabled = true,
@@ -2383,7 +2417,9 @@ local function build_config(c)
 	-- flag uclient-fetch has no spelling for). The API is opt-in via
 	-- `clash_api_enabled` — default off, nothing listens until the user
 	-- turns on live stats and latency testing under Settings → Nodes.
-	if c:get("treadle", "global", "clash_api_enabled") == "1" then
+	-- Managed groups are switched through the same API, so it is on whenever
+	-- Treadle manages them.
+	if c:get("treadle", "global", "clash_api_enabled") == "1" or treadle_manages_groups(c) then
 		experimental.clash_api = {
 			external_controller = "127.0.0.1:9090"
 		}

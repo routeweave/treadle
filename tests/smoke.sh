@@ -655,6 +655,56 @@ set treadle.0123456789abcd20.outbound=HK-01
 commit treadle
 EOF
 
+# --- group manager: build ----------------------------------------------------
+
+# With group_manager=treadle every group is a selector Treadle switches: all
+# members (no order or cap), sorted by tag so the config only changes with the
+# membership, a default spread by the group's tag, and the cache file and
+# clash API on even with no rule-set and the API flag off.
+step "group manager: build"
+if lua "$WORK/tests/groupman.lua" /usr/libexec/treadle/groupman.lua > "$OUT/groupman.log" 2>&1; then
+	ok "selection policy: $(tail -n1 "$OUT/groupman.log")"
+else
+	bad "selection policy cases failed"
+	grep -v '^ok' "$OUT/groupman.log" | sed 's/^/    /'
+fi
+uci set treadle.global.group_manager=treadle
+uci set treadle.0123456789abcd10.group_member_order=latency
+uci set treadle.0123456789abcd10.group_max_members=3
+uci commit treadle
+build "managed groups"
+MG="$OUT/managed_groups.json"
+mg_members=$(jsonfilter -i "$MG" -e '@.outbounds[@.tag="ALL"].outbounds[*]' | tr '\n' ' ')
+mg_sorted=$(jsonfilter -i "$MG" -e '@.outbounds[@.tag="ALL"].outbounds[*]' | LC_ALL=C sort | tr '\n' ' ')
+[ "$(jsonfilter -i "$MG" -e '@.outbounds[@.tag="ALL"].type')" = selector ] \
+	&& [ "$(echo "$mg_members" | wc -w)" -eq "$NODES" ] \
+	&& [ "$mg_members" = "$mg_sorted" ] \
+	&& ok "a managed group is a selector with every member, sorted (order and cap ignored)" \
+	|| bad "ALL: type $(jsonfilter -i "$MG" -e '@.outbounds[@.tag="ALL"].type'), members '$mg_members'"
+mg_default=$(jsonfilter -i "$MG" -e '@.outbounds[@.tag="ALL"].default')
+case " $mg_members " in *" $mg_default "*) ok "its default is one of its members" ;;
+	*) bad "default '$mg_default' is not a member" ;; esac
+[ -z "$(jsonfilter -i "$MG" -e '@.outbounds[@.tag="ALL"].url')" ] \
+	&& [ -z "$(jsonfilter -i "$MG" -e '@.outbounds[@.tag="ALL"].interval')" ] \
+	&& ok "no urltest options reach the selector" \
+	|| bad "selector carries urltest options"
+[ "$(jsonfilter -i "$MG" -e '@.experimental.clash_api.external_controller')" = "127.0.0.1:9090" ] \
+	&& [ "$(jsonfilter -i "$MG" -e '@.experimental.cache_file.enabled')" = true ] \
+	&& ok "the clash API and the cache file are on for managed groups" \
+	|| bad "experimental: $(jsonfilter -i "$MG" -e '@.experimental')"
+build "managed groups again"
+cmp -s "$MG" "$OUT/managed_groups_again.json" \
+	&& ok "a managed build is byte-identical on rebuild" \
+	|| bad "two managed builds differ"
+uci set treadle.global.group_manager=singbox
+uci delete treadle.0123456789abcd10.group_member_order
+uci delete treadle.0123456789abcd10.group_max_members
+uci commit treadle
+build "groups by sing-box"
+[ "$(jsonfilter -i "$OUT/groups_by_sing-box.json" -e '@.outbounds[@.tag="ALL"].type')" = urltest ] \
+	&& ok "group_manager=singbox builds a urltest again" \
+	|| bad "ALL is not a urltest with group_manager=singbox"
+
 # --- manual nodes ------------------------------------------------------------
 
 step "manual nodes"
@@ -1540,6 +1590,99 @@ if command -v curl >/dev/null 2>&1; then
 else
 	bad "curl is not available for the failover test"
 fi
+
+# --- group manager: failover -------------------------------------------------
+
+# A selector moves only when something switches it. With group_manager=treadle
+# active-watch tests the member in use every 20 s and repeats a failed test at
+# once, so killing that member's server moves the group within one probe
+# period; the move goes through PUT /proxies/<group>, and the cache file keeps
+# it across a sing-box restart. Same loopback SOCKS servers as above, on their
+# own ports; the probes reach the default https test URL through them.
+step "group manager: failover"
+TM="$OUT/tm"
+mkdir -p "$TM"
+for n in 1 2; do
+	cat > "$TM/s$n.json" <<EOF
+{ "log": { "level": "warn" },
+  "inbounds": [ { "type": "socks", "tag": "in", "listen": "127.0.0.1", "listen_port": 1812$n } ],
+  "outbounds": [ { "type": "direct", "tag": "direct" } ],
+  "route": { "final": "direct" } }
+EOF
+done
+cat > "$TM/t.json" <<EOF
+{ "log": { "level": "warn" },
+  "inbounds": [ { "type": "mixed", "tag": "in", "listen": "127.0.0.1", "listen_port": 18120 } ],
+  "outbounds": [
+    { "type": "socks", "tag": "m1", "server": "127.0.0.1", "server_port": 18121, "version": "5" },
+    { "type": "socks", "tag": "m2", "server": "127.0.0.1", "server_port": 18122, "version": "5" },
+    { "type": "selector", "tag": "g", "outbounds": [ "m1", "m2" ], "default": "m1" } ],
+  "route": { "final": "g" },
+  "experimental": {
+    "clash_api": { "external_controller": "127.0.0.1:9090" },
+    "cache_file": { "enabled": true, "path": "$TM/cache.db" } } }
+EOF
+tm_now() { uclient-fetch -qO- http://127.0.0.1:9090/proxies/g 2>/dev/null | sed -n 's/.*"now": *"\([^"]*\)".*/\1/p'; }
+tm_api() { i=0; while [ "$i" -lt 20 ] && [ -z "$(tm_now)" ]; do sleep 1; i=$((i + 1)); done; }
+sing-box run -c "$TM/s1.json" >"$TM/s1.log" 2>&1 &
+TM_S1=$!
+sing-box run -c "$TM/s2.json" >"$TM/s2.log" 2>&1 &
+TM_S2=$!
+sing-box run -c "$TM/t.json" >"$TM/t.log" 2>&1 &
+TM_T=$!
+TM_PIDS="$TM_S1 $TM_S2 $TM_T"
+tm_api
+uci set treadle.global.group_manager=treadle
+uci commit treadle
+GS=/var/etc/treadle/.group-state.json
+rm -f "$GS"
+lua /usr/libexec/treadle/active-watch >"$TM/aw.log" 2>&1 &
+TM_PIDS="$TM_PIDS $!"
+# The first tick tests the member in use and re-checks the whole group.
+i=0
+while [ "$i" -lt 40 ] && ! { [ -n "$(jsonfilter -i "$GS" -e '@.members.m1.last_ok' 2>/dev/null)" ] \
+	&& [ -n "$(jsonfilter -i "$GS" -e '@.members.m2.last_ok' 2>/dev/null)" ]; }; do
+	sleep 1; i=$((i + 1))
+done
+[ "$i" -lt 40 ] && ok "active-watch tests every member of a managed group" \
+	|| bad "group state after 40s: $(head -c 400 "$GS" 2>/dev/null) $(head -c 300 "$TM/aw.log")"
+[ "$(jsonfilter -i /var/etc/treadle/.active-nodes.json -e '@.groups.g.managed' 2>/dev/null)" = true ] \
+	&& ok "the snapshot marks the group as managed by Treadle" \
+	|| bad "snapshot: $(jsonfilter -i /var/etc/treadle/.active-nodes.json -e '@.groups.g' 2>&1 | head -c 300)"
+first=$(tm_now)
+case "$first" in
+	m1) victim=$TM_S1; other=m2 ;;
+	m2) victim=$TM_S2; other=m1 ;;
+	*)  victim=; other= ;;
+esac
+[ -n "$victim" ] && { kill "$victim" 2>/dev/null; wait "$victim" 2>/dev/null; }
+i=0
+while [ "$i" -lt 45 ] && ! { [ -n "$other" ] && [ "$(tm_now)" = "$other" ]; }; do
+	sleep 1; i=$((i + 1))
+done
+[ "$i" -lt 45 ] && ok "Treadle moved the group from $first to $other within ${i}s of its server dying" \
+	|| bad "group still on '$(tm_now)' 45s after $first died: $(head -c 400 "$GS" 2>/dev/null) $(tail -n 5 "$TM/aw.log")"
+# The state is saved at the end of the tick that switched, which on 24.10
+# (the nc path) is a second after sing-box already moved.
+i=0
+while [ "$i" -lt 10 ] && [ -z "$(jsonfilter -i "$GS" -e "@.members.$first.bench_until" 2>/dev/null)" ]; do
+	sleep 1; i=$((i + 1))
+done
+[ -n "$first" ] && [ "$i" -lt 10 ] \
+	&& ok "the failed member is benched" \
+	|| bad "no bench on '$first': $(head -c 400 "$GS" 2>/dev/null) $(tail -n 5 "$TM/aw.log")"
+kill "$TM_T" 2>/dev/null; wait "$TM_T" 2>/dev/null
+sing-box run -c "$TM/t.json" >>"$TM/t.log" 2>&1 &
+TM_T=$!
+TM_PIDS="$TM_PIDS $TM_T"
+tm_api
+[ -n "$other" ] && [ "$(tm_now)" = "$other" ] \
+	&& ok "the choice survives a sing-box restart (cache file)" \
+	|| bad "after restart the group is on '$(tm_now)', want $other"
+for p in $TM_PIDS; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done
+uci set treadle.global.group_manager=singbox
+uci commit treadle
+rm -f "$GS"
 
 # --- sing-box updates from SagerNet ------------------------------------------
 # The check reads a recorded releases/latest reply (no GitHub call, no rate

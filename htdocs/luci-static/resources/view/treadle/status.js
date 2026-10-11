@@ -617,7 +617,8 @@ return baseclass.extend({
 		var why = !this._lastEnabled ? _('Treadle is off.')
 			: !running ? _('sing-box is not running.')
 			: _('Waiting for the first update from sing-box…');
-		var sig = JSON.stringify([ live, why, rows, rates, this._open ]);
+		// The minute is in it so a bench countdown moves without other changes.
+		var sig = JSON.stringify([ live, why, rows, rates, this._open, Math.floor((Number(g.now) || 0) / 60) ]);
 		if (sig === this._sigs.inuse) return;
 		this._sigs.inuse = sig;
 
@@ -627,6 +628,10 @@ return baseclass.extend({
 		}
 		this._els.inuse.style.display = '';
 
+		// Bench ends and move times are on the router's clock; skew turns
+		// them into the browser's for relTime.
+		var gnow = Number(g.now) || Math.floor(Date.now() / 1000);
+		var skew = Math.floor(Date.now() / 1000) - gnow;
 		var trs = [];
 		rows.forEach(function(r) {
 			var x = r.group, open = !!(x && self._open[r.tag]);
@@ -672,18 +677,33 @@ return baseclass.extend({
 						// does not rely on its green alone.
 						E('div', { 'class': 'treadle-members' }, sortMembers(x.members, x.now).map(function(m) {
 							var inUse = (m.tag === x.now);
+							var title = inUse ? _('%s: in use').format(m.tag) : m.tag;
+							if (x.managed && m.tests > 0)
+								title += ' · ' + _('passed %d of its last %d tests').format(m.passed, m.tests);
+							if (x.managed && m.errors > 0)
+								title += ' · ' + _('%d connection errors in 5 min').format(m.errors);
+							var benched = x.managed && m.benched_until > gnow;
 							return E('span', {
 								'class': 'treadle-chip' + (inUse ? ' treadle-chip-on' : ''),
-								'title': inUse ? _('%s: in use').format(m.tag) : m.tag
+								'title': title
 							}, [
 								E('span', {}, [ m.tag ]),
-								self._latency(m.delay_ms, true)
+								benched ? E('span', { 'class': 'label warning', 'style': 'text-transform:none;' }, [
+									_('benched %d min').format(Math.ceil((m.benched_until - gnow) / 60))
+								]) : self._latency(m.delay_ms, true)
 							]);
 						})),
 						E('div', { 'class': 'treadle-muted', 'style': 'font-size:0.85em;' }, [
-							_('Uses the fastest member, and switches only when another is more than %s ms faster. Tested every %s.')
-								.format(x.tolerance || '50', x.interval || '3m')
-						])
+							x.managed
+								? _('Treadle picks the member: it tests the one in use every 20 s and every member every %s, moves within seconds when the one in use fails, and benches members whose traffic keeps failing.')
+									.format(x.interval || '3m')
+								: _('Uses the fastest member, and switches only when another is more than %s ms faster. Tested every %s.')
+									.format(x.tolerance || '50', x.interval || '3m')
+						]),
+						(x.managed && x.reason && x.switched_at)
+							? E('div', { 'class': 'treadle-muted', 'style': 'font-size:0.85em;' }, [
+								_('Last move %s: %s').format(badges.relTime(x.switched_at + skew), x.reason)
+							]) : ''
 					])
 				]));
 		});

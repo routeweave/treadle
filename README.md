@@ -12,7 +12,10 @@ page — no JSON to hand-edit.
   lists; hand-add nodes for VLESS, VMess, Trojan, Shadowsocks,
   Hysteria2, TUIC, AnyTLS, WireGuard, and SOCKS.
 - **Groups.** Pick a server yourself, or gather several into a group that
-  moves to another member when one fails; per-node latency testing is
+  moves to another member when one fails. Either sing-box's urltest picks
+  the member, or Treadle does: it tests the member in use every 20 s,
+  moves within seconds when it fails, benches nodes whose traffic keeps
+  failing, and spreads near-equal members. Per-node latency testing is
   built in.
 - **Routing rules with AND/OR conditions** — domain match, IP/CIDR,
   rule-set, protocol, port. Each rule has its own outbound.

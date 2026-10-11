@@ -361,6 +361,21 @@ return baseclass.extend({
 			  '127.0.0.1 only.'));
 		oClashApi.rmempty = false;
 
+		// Who picks each group's node. `treadle` builds groups as selectors
+		// that active-watch switches, and turns the clash API on whatever
+		// the flag above says (build-config, the init script and the Status
+		// RPCs all read both).
+		var oManager = sNodes.option(form.ListValue, 'group_manager',
+			_('Groups managed by'),
+			_('sing-box moves a group only after a test pass, and favours the ' +
+			  'first members of its list. Treadle tests the member in use every ' +
+			  '20 s, moves within seconds when it fails, benches members whose ' +
+			  'traffic keeps failing even when they test fast, and spreads ' +
+			  'near-equal members. Treadle turns on the clash API.'));
+		oManager.value('singbox', _('sing-box (urltest)'));
+		oManager.value('treadle', _('Treadle'));
+		oManager['default'] = 'singbox';
+
 		var oAutoTest = advance(sNodes.option(form.Value, 'auto_test_hours',
 			_('Auto-test interval (hours)'),
 			_('Test every node every N hours, after due subscription syncs. 0 turns it off.')));
