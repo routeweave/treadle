@@ -372,6 +372,13 @@ end
 -- Return all nodes merged into a single ordered list.
 -- Manual nodes (UCI type="node") come first, sorted by their order field.
 -- Subscription nodes (JSON files) follow, one file per subscription.
+-- The live clash API listener is on: the user enabled it, or Treadle manages
+-- the groups, which needs it (build-config emits it in both cases).
+local function clash_api_on(c)
+	return c:get("treadle", "global", "clash_api_enabled") == "1"
+		or c:get("treadle", "global", "group_manager") == "treadle"
+end
+
 -- Sets n.subscription = "" for manual nodes, uid for subscription nodes.
 local function list_all_nodes()
 	local all = {}
@@ -1277,12 +1284,11 @@ local methods = {
 	-- list — group counts are small (a handful).
 	--
 	-- Reports the same `error = "clash API disabled"` as get_clash_stats
-	-- when the feature flag is off, so the UI can render a consistent hint.
+	-- when the API is off, so the UI can render a consistent hint.
 	get_active_groups = {
 		call = function(_, cur)
 			local c = cur or uci_cursor()
-			local enabled = c:get("treadle", "global", "clash_api_enabled")
-			if enabled ~= "1" then
+			if not clash_api_on(c) then
 				if not cur then c:close() end
 				return { error = "clash API disabled", groups = {} }
 			end
@@ -1324,7 +1330,11 @@ local methods = {
 						delay_ms  = entry.delay_ms,
 						members   = (type(entry.members) == "table") and entry.members or {},
 						interval  = u.interval or "",
-						tolerance = u.tolerance or ""
+						tolerance = u.tolerance or "",
+						-- Set when Treadle picks the node: why it last moved, and when.
+						managed     = entry.managed and true or nil,
+						reason      = entry.reason,
+						switched_at = entry.switched_at
 					}
 				end
 			end
@@ -1371,9 +1381,9 @@ local methods = {
 	get_clash_stats = {
 		call = function(_, cur)
 			local c = cur or uci_cursor()
-			local enabled = c:get("treadle", "global", "clash_api_enabled")
+			local enabled = clash_api_on(c)
 			if not cur then c:close() end
-			if enabled ~= "1" then
+			if not enabled then
 				return { error = "clash API disabled" }
 			end
 			-- Tell active-watch someone is watching, so it fetches

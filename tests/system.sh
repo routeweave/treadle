@@ -192,6 +192,39 @@ wait_for 30 sh -c 'logread | grep -q "sing-box config changed, restarting sing-b
 	&& ok "applying a change reloads the service" || bad "no reload after applying a change"
 wait_for 30 running && ok "running after the reload" || bad "not running after the reload"
 
+# Treadle managing the groups runs active-watch and fail-watch with the clash
+# API flag off, and switching back removes them again.
+instance() {
+	[ "$(ubus call service list '{"name":"treadle"}' 2>/dev/null \
+		| jsonfilter -e "@.treadle.instances.$1.running" 2>/dev/null)" = true ]
+}
+watchers() { instance active_watch && instance fail_watch; }
+no_watchers() { ! instance active_watch && ! instance fail_watch; }
+rpc "$ROOT" uci set '{"config":"treadle","section":"global","values":{"group_manager":"treadle","clash_api_enabled":"0"}}' >/dev/null
+rpc "$ROOT" uci apply '{"rollback":false}' >/dev/null
+wait_for 30 watchers \
+	&& ok "group_manager=treadle runs active-watch and fail-watch" \
+	|| bad "watchers with group_manager=treadle: $(ubus call service list '{"name":"treadle"}' | jsonfilter -e '@.treadle.instances' | head -c 400)"
+running && ok "sing-box runs its managed config" || bad "sing-box not running with group_manager=treadle"
+# fail-watch counts sing-box's connection errors per outbound from the live
+# log: a selector-named line (1.14) and a member-named one (1.12/1.13), in the
+# same second, are both counted; `direct` is not. Lines in sing-box's format.
+sleep 2
+for l in "selector[sys-grp]: dial tcp: i/o timeout" "anytls[NODE-01]: connection refused" "direct[direct]: i/o timeout"; do
+	logger -t sing-box "ERROR[0001] [1 5.0s] connection: open connection to example.com:443 using outbound/$l"
+done
+CE=/var/etc/treadle/.conn-errors.json
+wait_for 10 sh -c "jsonfilter -i $CE -e '@.errors[\"NODE-01\"][0]' >/dev/null 2>&1"
+[ -n "$(jsonfilter -i "$CE" -e '@.errors["sys-grp"][0]' 2>/dev/null)" ] \
+	&& [ -n "$(jsonfilter -i "$CE" -e '@.errors["NODE-01"][0]' 2>/dev/null)" ] \
+	&& [ -z "$(jsonfilter -i "$CE" -e '@.errors.direct' 2>/dev/null)" ] \
+	&& ok "fail-watch counts connection errors per outbound from the log" \
+	|| bad "fail-watch: $(cat "$CE" 2>/dev/null)"
+rpc "$ROOT" uci set '{"config":"treadle","section":"global","values":{"group_manager":"singbox"}}' >/dev/null
+rpc "$ROOT" uci apply '{"rollback":false}' >/dev/null
+wait_for 30 no_watchers && ok "group_manager=singbox removes them again" \
+	|| bad "watchers left after group_manager=singbox"
+
 rpc "$ROOT" luci.treadle stop >/dev/null
 wait_for 15 stopped && ok "stop" || bad "sing-box still running after stop"
 [ -e /var/run/treadle.paused ] && ok "stop leaves the pause marker" || bad "no pause marker"

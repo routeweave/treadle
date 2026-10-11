@@ -955,6 +955,14 @@ return baseclass.extend({
 		var o = this._tagOption(s);
 		o.placeholder = _('e.g. Auto');
 
+		// Settings → Nodes decides who picks a group's node; some options
+		// below only mean something to one of the two.
+		var managed = (uci.get('treadle', 'global', 'group_manager') === 'treadle');
+		o = s.option(form.DummyValue, '_manager', _('Managed by'),
+			_('Set for every group under Settings → Nodes.'));
+		o.modalonly = true;
+		o.cfgvalue = function() { return managed ? _('Treadle') : _('sing-box (urltest)'); };
+
 		var oFrom = s.option(form.DummyValue, '_from', _('Members from'));
 		oFrom.modalonly = false;
 		oFrom.cfgvalue = function(section_id) {
@@ -1063,37 +1071,53 @@ return baseclass.extend({
 		// that form.Value would otherwise insert in the Combobox dropdown.
 		o.rmempty = false;
 		o.value('https://www.gstatic.com/generate_204',     'Google (HTTPS)');
-		o.value('http://www.gstatic.com/generate_204',      'Google (HTTP)');
 		o.value('https://cp.cloudflare.com/generate_204',   'Cloudflare (HTTPS)');
-		o.value('http://cp.cloudflare.com/generate_204',    'Cloudflare (HTTP)');
+		if (managed) {
+			// Treadle tests through sing-box's clash API, which ignores a
+			// plain http:// URL and tests its own https default instead.
+			o.validate = function(section_id, value) {
+				return /^http:\/\//i.test(value || '')
+					? _('Treadle tests over HTTPS; use an https:// URL.') : true;
+			};
+		} else {
+			o.value('http://www.gstatic.com/generate_204',  'Google (HTTP)');
+			o.value('http://cp.cloudflare.com/generate_204', 'Cloudflare (HTTP)');
+		}
 
-		o = s.option(form.Value, 'group_interval', _('Interval'));
+		o = s.option(form.Value, 'group_interval', managed ? _('Re-check every') : _('Interval'),
+			managed ? _('How often every member is tested. The member in use is tested every 20 s.') : null);
 		o.modalonly = true;
 		o.placeholder = '3m';
 
-		o = s.option(form.Value, 'group_tolerance', _('Tolerance (ms)'));
+		o = s.option(form.Value, 'group_tolerance', _('Tolerance (ms)'),
+			managed ? _('Members this close count as equally fast and share the load; the ' +
+			            'member in use is replaced only by one clearly faster.') : null);
 		o.modalonly = true;
 		o.datatype = 'uinteger';
 		o.placeholder = '50';
 
-		o = s.option(form.ListValue, 'group_member_order', _('Member order'),
-			_('sing-box prefers the first members of a group whenever their latencies ' +
-			  'are within the tolerance, so in list order a group keeps using its first ' +
-			  'few nodes. Random spreads that across the group; latency puts the fastest ' +
-			  'measured nodes first, in random order among near-equals. The order changes ' +
-			  'only when sing-box restarts for another reason, never on its own.'));
-		o.modalonly = true;
-		o.value('list',    _('List order'));
-		o.value('shuffle', _('Random'));
-		o.value('latency', _('Latency, then random'));
-		o.default = 'list';
+		// Order and cap work around sing-box's preference for the first
+		// members. Treadle does not have it, and keeps every member.
+		if (!managed) {
+			o = s.option(form.ListValue, 'group_member_order', _('Member order'),
+				_('sing-box prefers the first members of a group whenever their latencies ' +
+				  'are within the tolerance, so in list order a group keeps using its first ' +
+				  'few nodes. Random spreads that across the group; latency puts the fastest ' +
+				  'measured nodes first, in random order among near-equals. The order changes ' +
+				  'only when sing-box restarts for another reason, never on its own.'));
+			o.modalonly = true;
+			o.value('list',    _('List order'));
+			o.value('shuffle', _('Random'));
+			o.value('latency', _('Latency, then random'));
+			o.default = 'list';
 
-		o = s.option(form.Value, 'group_max_members', _('Maximum members'),
-			_('Keep only this many members, in the order above, preferring nodes on ' +
-			  'different servers. Each member costs one test per interval. Empty keeps all.'));
-		o.modalonly = true;
-		o.datatype = 'range(1,1000)';
-		o.placeholder = _('all');
+			o = s.option(form.Value, 'group_max_members', _('Maximum members'),
+				_('Keep only this many members, in the order above, preferring nodes on ' +
+				  'different servers. Each member costs one test per interval. Empty keeps all.'));
+			o.modalonly = true;
+			o.datatype = 'range(1,1000)';
+			o.placeholder = _('all');
+		}
 
 		o = s.option(form.Flag, 'group_interrupt',
 			_('Interrupt existing connections'),

@@ -22,6 +22,10 @@
 -- (the default node or a rule's node), which sing-box never tests itself,
 -- and runs the connectivity check: one test through the node the default
 -- resolves to. Both go into the same snapshot.
+--
+-- With global.group_manager = treadle the groups are sing-box selectors and
+-- this daemon picks their nodes (see manage_groups below and groupman.lua).
+-- It then runs whether or not clash_api_enabled is set.
 
 local jsonc = require "luci.jsonc"
 local lib   = dofile("/usr/libexec/treadle/treadlelib.lua")
@@ -138,18 +142,17 @@ local function singbox_pid()
 end
 
 -- Extract the relevant slice of the /proxies response: one entry per
--- urltest group, carrying the active member tag and (when available) its
--- most recent latency. Internal helper groups (tag starts with "_") are
--- filtered out here: the underscore-prefix check excludes them, and the
--- type filter below excludes any Selector. Treadle never emits one and
--- sanitisation drops those a subscription ships, so the filter is only a
--- backstop.
-local function group_state(parsed)
+-- group, carrying the active member tag and (when available) its most
+-- recent latency. Internal helper groups (tag starts with "_") are filtered
+-- out. Selectors count only when Treadle manages the groups, since that is
+-- the only time Treadle emits one; sanitisation drops those a subscription
+-- ships.
+local function group_state(parsed, managed)
 	local out = {}
 	if type(parsed.proxies) ~= "table" then return out end
 	for tag, p in pairs(parsed.proxies) do
 		if type(p) == "table"
-			and p.type == "URLTest"
+			and (p.type == "URLTest" or (managed and p.type == "Selector"))
 			and type(p.now) == "string" and p.now ~= ""
 			and tag:sub(1, 1) ~= "_"
 		then
@@ -182,8 +185,9 @@ local function group_state(parsed)
 			-- the selection: sing-box keeps sending new connections to it
 			-- until the next scheduled test pass (interval, 3 min by default)
 			-- re-selects. A member with no history is that state. A nested
-			-- group or unknown member is not judged.
-			if type(member) == "table" and member.type ~= "URLTest"
+			-- group or unknown member is not judged, and neither is a
+			-- selector: its members have no history until Treadle tests them.
+			if p.type == "URLTest" and type(member) == "table" and member.type ~= "URLTest"
 				and (type(member.history) ~= "table" or #member.history == 0)
 			then
 				entry.lost = true
@@ -395,12 +399,14 @@ local function in_use()
 	return ok and res or { final = "", rules = {} }
 end
 
--- Test one node; its latency in ms, or nil when it did not answer.
-local function test_node(tag)
+-- Test one node; its latency in ms, or nil when it did not answer. `url`
+-- defaults to PROBE_URL. The clash API ignores a plain http:// URL and tests
+-- against its own https default instead.
+local function test_node(tag, url)
 	-- Tag and URL are percent-encoded, so they cannot break out of the quotes.
 	local f = io.popen("uclient-fetch --timeout=" .. PROBE_FETCH_S
 		.. " -qO- 'http://" .. CLASH_HOST .. "/proxies/" .. lib.url_encode(tag)
-		.. "/delay?timeout=" .. PROBE_TIMEOUT_MS .. "&url=" .. lib.url_encode(PROBE_URL)
+		.. "/delay?timeout=" .. PROBE_TIMEOUT_MS .. "&url=" .. lib.url_encode(url or PROBE_URL)
 		.. "' 2>/dev/null")
 	if not f then return nil end
 	local body = f:read("*a") or ""
@@ -478,25 +484,302 @@ local function probe_pass(parsed, current)
 	}
 end
 
--- Lightweight UCI peek so the daemon notices a clash_api_enabled flip
--- between procd reconciliations. Without it the loop keeps polling 9090
--- after the user disables clash, eventually logging 'clash API
--- unreachable for N polls' for a feature they explicitly turned off.
--- Read via the libuci binding — fork-free, unlike `uci -q get` — with a
--- fresh cursor per tick so a committed flip is seen immediately.
-local function clash_enabled()
-	local ok, enabled = pcall(function()
+-- Lightweight UCI peek so the daemon notices a clash_api_enabled or
+-- group_manager flip between procd reconciliations. Without it the loop
+-- keeps polling 9090 after the user disables clash, eventually logging
+-- 'clash API unreachable for N polls' for a feature they explicitly turned
+-- off. Read via the libuci binding — fork-free, unlike `uci -q get` — with a
+-- fresh cursor per tick so a committed flip is seen immediately. When
+-- Treadle manages the groups, each group's test URL, re-check interval and
+-- tolerance come along, keyed by tag.
+local function settings()
+	local ok, res = pcall(function()
 		local c = require("uci").cursor()
-		local v = c:get("treadle", "global", "clash_api_enabled")
+		local r = {
+			clash   = c:get("treadle", "global", "clash_api_enabled") == "1",
+			managed = c:get("treadle", "global", "group_manager") == "treadle",
+			groups  = {}
+		}
+		if r.managed then
+			c:foreach("treadle", "node", function(s)
+				if s.type == "group" and s.tag and s.tag ~= "" then
+					r.groups[s.tag] = {
+						url       = s.group_test_url,
+						interval  = s.group_interval,
+						tolerance = tonumber(s.group_tolerance)
+					}
+				end
+			end)
+		end
 		c:close()
-		return v == "1"
+		return r
 	end)
-	if not ok then return true end  -- can't tell → keep polling
-	return enabled
+	if not ok then return { clash = true, managed = false, groups = {} } end  -- can't tell → keep polling
+	return res
+end
+
+-- ── Groups Treadle manages ─────────────────────────────────────────────
+-- Each tick, for every selector group: re-check all its members once per
+-- group interval (one GET /group/<tag>/delay, sing-box tests them 10 at a
+-- time), probe the member in use every ACTIVE_PROBE_S or as soon as its
+-- traffic starts failing (fail-watch's error file), and ask groupman.lua
+-- whether to move. A failed probe of the member in use is repeated at once,
+-- so two failures in a row switch the group within seconds. A move is
+-- applied with PUT /proxies/<group>; sing-box stores it in the cache file.
+local ACTIVE_PROBE_S     = 20
+local GROUP_RETEST_S     = 60   -- at most this often when nothing is known to work
+local MAX_PROBES         = 8    -- single-node probes per tick, across groups
+local DEFAULT_INTERVAL_S = 180  -- sing-box urltest's own default
+local MIN_INTERVAL_S     = 30
+local GROUP_STATE        = "/var/etc/treadle/.group-state.json"
+local CONN_ERRORS        = "/var/etc/treadle/.conn-errors.json"
+local GM_DEFAULT_URL     = "https://www.gstatic.com/generate_204"
+
+local gm            -- groupman, loaded on first use
+local gm_state      -- its per-member state
+local gm_groups     -- tag -> { last_switch, last_test, reason, switched_at, stuck }
+local err_seen = {} -- outbound tag -> { t = newest error second taken, n = how many at it }
+math.randomseed(os.time())
+local function rnd(n) return math.random(n) end
+
+-- "3m", "90s", "1h30m" → seconds. sing-box durations, as the editor stores them.
+local function duration_s(v)
+	if type(v) ~= "string" or v == "" then return nil end
+	local total, matched = 0, false
+	for num, unit in v:gmatch("(%d+)(%a+)") do
+		local k = ({ h = 3600, m = 60, s = 1, ms = 0.001 })[unit]
+		if not k then return nil end
+		total, matched = total + tonumber(num) * k, true
+	end
+	return matched and total or nil
+end
+
+local function gm_load()
+	gm = dofile("/usr/libexec/treadle/groupman.lua")
+	local saved = lib.read_json(jsonc, GROUP_STATE) or {}
+	gm_state = (type(saved.members) == "table") and { members = saved.members } or gm.new()
+	gm_groups = (type(saved.groups) == "table") and saved.groups or {}
+end
+
+-- One pass over every member of a group. Absent from the reply means the
+-- member failed. The whole pass shares the request's timeout, so it allows
+-- one probe timeout per batch of 10.
+local function group_test(tag, members, url, now)
+	local budget = PROBE_TIMEOUT_MS * math.ceil(#members / 10) + 2000
+	local f = io.popen("uclient-fetch --timeout=" .. math.ceil(budget / 1000 + 5)
+		.. " -qO- 'http://" .. CLASH_HOST .. "/group/" .. lib.url_encode(tag)
+		.. "/delay?timeout=" .. budget .. "&url=" .. lib.url_encode(url)
+		.. "' 2>/dev/null")
+	if not f then return end
+	local body = f:read("*a") or ""
+	f:close()
+	local ok, res = pcall(jsonc.parse, body)
+	if not ok or type(res) ~= "table" then return end
+	for _, m in ipairs(members) do
+		local d = tonumber(res[m])
+		gm.record(gm_state, m, now, (d and d > 0) and d or nil)
+	end
+end
+
+-- Switch a selector with PUT /proxies/<group>. uclient-fetch sends it where
+-- it has --method (25.12); 24.10's has no PUT and its busybox nc takes no
+-- options, so there the raw request goes through nc, killed after
+-- PUT_WAIT_S if the API never closes the connection.
+local PUT_WAIT_S = 5
+local put_via_uclient
+local function select_member(group, member)
+	local body = jsonc.stringify({ name = member })
+	local path = "/var/etc/treadle/.select.req"
+	if put_via_uclient == nil then
+		local h = io.popen("uclient-fetch --help 2>&1")
+		put_via_uclient = (h and h:read("*a") or ""):find("--method", 1, true) ~= nil
+		if h then h:close() end
+	end
+	local w = io.open(path, "w")
+	if not w then return false end
+	local cmd
+	if put_via_uclient then
+		w:write(body)
+		-- Exit 0 on the 204, non-zero on an error status; the group is
+		-- percent-encoded, so it cannot break out of the quotes.
+		cmd = "uclient-fetch -q -O /dev/null --timeout=" .. PUT_WAIT_S
+			.. " --method=PUT --header='Content-Type: application/json'"
+			.. " --body-file=" .. path .. " 'http://" .. CLASH_HOST .. "/proxies/"
+			.. lib.url_encode(group) .. "' >/dev/null 2>&1 && echo 'HTTP/1.1 204'"
+	else
+		w:write("PUT /proxies/" .. lib.url_encode(group) .. " HTTP/1.1\r\n"
+			.. "Host: " .. CLASH_HOST .. "\r\n"
+			.. "Content-Type: application/json\r\n"
+			.. "Content-Length: " .. #body .. "\r\n"
+			.. "Connection: close\r\n\r\n" .. body)
+		cmd = "nc " .. CLASH_HOST:gsub(":", " ") .. " < " .. path .. " > " .. path .. ".out 2>/dev/null & p=$!; "
+			.. "n=0; while kill -0 $p 2>/dev/null && [ $n -lt " .. PUT_WAIT_S .. " ]; do sleep 1; n=$((n + 1)); done; "
+			.. "kill $p 2>/dev/null; head -n 1 " .. path .. ".out"
+	end
+	w:close()
+	local h = io.popen(cmd)
+	local out = h and h:read("*a") or ""
+	if h then h:close() end
+	os.remove(path)
+	os.remove(path .. ".out")
+	return out:find("HTTP/1%.%d 204") ~= nil
+end
+
+-- Charge fail-watch's new connection errors to members. An error naming a
+-- managed group (sing-box 1.14) goes to the member that group is using; one
+-- naming a member (1.12, 1.13) goes to that member. Returns the set of
+-- groups whose member in use has new errors, to probe it this tick.
+local function take_errors(current, now)
+	local hit = {}
+	local parsed = lib.read_json(jsonc, CONN_ERRORS)
+	if not parsed or type(parsed.errors) ~= "table" then return hit end
+	local using = {}
+	for tag, g in pairs(current) do
+		if g.managed then using[g.now] = tag end
+	end
+	for tag, times in pairs(parsed.errors) do
+		if type(times) == "table" then
+			-- Times are in arrival order and whole seconds, so several can
+			-- share the newest second: count how many of those were taken.
+			local seen = err_seen[tag] or { t = 0, n = 0 }
+			local fresh, same = {}, 0
+			for _, t in ipairs(times) do
+				t = tonumber(t)
+				if t and t == seen.t then
+					same = same + 1
+					if same > seen.n then fresh[#fresh + 1] = t end
+				elseif t and t > seen.t then
+					fresh[#fresh + 1] = t
+				end
+			end
+			local last = tonumber(times[#times])
+			if last and last >= seen.t then
+				local n = 0
+				for _, t in ipairs(times) do if tonumber(t) == last then n = n + 1 end end
+				err_seen[tag] = { t = last, n = n }
+			end
+			if #fresh > 0 then
+				local member = tag
+				if current[tag] and current[tag].managed then member = current[tag].now end
+				gm.add_errors(gm_state, member, now, fresh)
+				if using[member] then hit[using[member]] = true end
+			end
+		end
+	end
+	return hit
+end
+
+local function manage_groups(current, cfg)
+	if not gm then gm_load() end
+	local now = os.time()
+	local tags, wanted = {}, {}
+	for tag, g in pairs(current) do
+		if g.type == "Selector" then
+			g.managed = true
+			tags[#tags + 1] = tag
+			for _, m in ipairs(g.members) do wanted[m.tag] = true end
+		end
+	end
+	table.sort(tags)
+	-- Forget members no group has any more, and groups that are gone.
+	for tag in pairs(gm_state.members) do
+		if not wanted[tag] then gm_state.members[tag] = nil end
+	end
+	for tag in pairs(gm_groups) do
+		if not current[tag] then gm_groups[tag] = nil end
+	end
+
+	local hit = take_errors(current, now)
+	local probes = MAX_PROBES
+	-- Re-check the group whose last pass is oldest, one per tick.
+	local due, due_age
+	for _, tag in ipairs(tags) do
+		local meta = gm_groups[tag]
+		if not meta then
+			-- First sight (daemon start or a new group): the member in use was
+			-- chosen before, by Treadle or the config's default; keep it for a
+			-- dwell unless it fails.
+			meta = { last_switch = now, last_test = 0 }
+			gm_groups[tag] = meta
+		end
+		local gc = cfg.groups[tag] or {}
+		local interval = duration_s(gc.interval) or DEFAULT_INTERVAL_S
+		if interval < MIN_INTERVAL_S then interval = MIN_INTERVAL_S end
+		local age = now - (meta.last_test or 0)
+		if age >= interval and (not due or age > due_age) then due, due_age = tag, age end
+	end
+
+	for _, tag in ipairs(tags) do
+		local g, meta = current[tag], gm_groups[tag]
+		local gc = cfg.groups[tag] or {}
+		local url = (gc.url and gc.url ~= "") and gc.url or GM_DEFAULT_URL
+		local interval = math.max(duration_s(gc.interval) or DEFAULT_INTERVAL_S, MIN_INTERVAL_S)
+		local members = {}
+		for _, m in ipairs(g.members) do members[#members + 1] = m.tag end
+
+		if tag == due then
+			group_test(tag, members, url, now)
+			meta.last_test = now
+		end
+		local r = gm.member(gm_state, g.now)
+		if probes > 0 and (hit[tag] or now - (r.tested_at or 0) >= ACTIVE_PROBE_S) then
+			local d = test_node(g.now, url)
+			gm.record(gm_state, g.now, now, d)
+			probes = probes - 1
+			if not d and probes > 0 then
+				d = test_node(g.now, url)
+				gm.record(gm_state, g.now, os.time(), d)
+				probes = probes - 1
+			end
+		end
+
+		local view = { now = g.now, members = members, tolerance = gc.tolerance,
+			fresh_s = 2 * interval, last_switch = meta.last_switch }
+		local dec = gm.decide(gm_state, view, os.time(), rnd)
+		if dec.need_test and os.time() - (meta.last_test or 0) >= GROUP_RETEST_S then
+			group_test(tag, members, url, os.time())
+			meta.last_test = os.time()
+			dec = gm.decide(gm_state, view, os.time(), rnd)
+		end
+		if dec.to then
+			if select_member(tag, dec.to) then
+				logmsg("info", string.format("group '%s': active node %s -> %s (%s)",
+					tag, g.now, dec.to, dec.reason))
+				meta.last_switch, meta.switched_at, meta.reason = os.time(), os.time(), dec.reason
+				meta.stuck = nil
+				g.now = dec.to
+				local nr = gm_state.members[dec.to]
+				g.delay_ms = nr and nr.ewma and math.floor(nr.ewma) or nil
+			else
+				logmsg("warning", string.format("group '%s': could not switch to %s", tag, dec.to))
+			end
+		elseif dec.need_test and not meta.stuck then
+			meta.stuck = true
+			logmsg("warning", string.format(
+				"group '%s': %s, and no other member is known to work", tag, dec.reason))
+		elseif not dec.need_test then
+			meta.stuck = nil
+		end
+
+		-- What the Status page shows about the choice.
+		g.reason, g.switched_at = meta.reason, meta.switched_at
+		for _, m in ipairs(g.members) do
+			local mr = gm_state.members[m.tag]
+			if mr then
+				local ok, n = gm.rate(mr)
+				m.passed, m.tests = ok, n
+				if gm.benched(mr, now) then m.benched_until = mr.bench_until end
+				local errs = gm.recent_errors(mr, now)
+				if errs > 0 then m.errors = errs end
+			end
+		end
+	end
+	save_json(GROUP_STATE, { members = gm_state.members, groups = gm_groups })
 end
 
 while true do
-	if not clash_enabled() then
+	local cfg = settings()
+	if not (cfg.clash or cfg.managed) then
 		-- Reset transient state so a re-enable doesn't surface a stale
 		-- 'reachable again' on the first successful fetch.
 		fail_streak = 0
@@ -524,7 +807,7 @@ while true do
 		local pid_changed = (last_pid and pid and pid ~= last_pid)
 		if pid then last_pid = pid end
 
-		local current = group_state(parsed)
+		local current = group_state(parsed, cfg.managed)
 
 		local event_tick = (not primed) or had_outage or pid_changed
 		if event_tick then
@@ -617,6 +900,10 @@ while true do
 			probe_last = os.time()
 			probe_pass(parsed, current)
 		end
+
+		-- Before the snapshot, so a switch made here is what it records and
+		-- the next tick's diff does not log it a second time.
+		if cfg.managed then manage_groups(current, cfg) end
 
 		save_snapshot(current)
 		previous = current
@@ -731,5 +1018,5 @@ while true do
 	-- groups stays well inside the POLL_S budget.
 	flush_log()
 	os.execute("sleep " .. tostring(POLL_S))
-	end  -- else (clash_enabled)
+	end  -- else (clash API in use)
 end

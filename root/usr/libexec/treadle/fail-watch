@@ -1,0 +1,75 @@
+#!/usr/bin/env lua
+-- SPDX-License-Identifier: GPL-3.0-only
+-- Copyright (C) 2026 RouteWeave
+--
+-- Connection-error follower for groups Treadle manages. Follows the system
+-- log and counts sing-box's "open connection to … using outbound/<type>[<tag>]"
+-- errors per outbound tag, so active-watch can tell a node whose probes pass
+-- but whose real traffic fails, and probe the node in use as soon as its
+-- traffic starts failing instead of at its next scheduled probe.
+--
+-- sing-box 1.12 and 1.13 name the member that failed; 1.14 names the group
+-- (the selector) instead. A selector has one member in use at a time, and
+-- active-watch is what set it, so active-watch charges a group's errors to
+-- that member. This script only records which tag the line named.
+--
+-- The follow is a blocking read, which is why it is its own procd instance
+-- rather than part of active-watch's polling loop. It rewrites a small tmpfs
+-- file on every error it counts: the loop only wakes when a line arrives, so a
+-- rate limit would hold the tail of a burst until the next error. The file
+-- stays small however fast errors come, since each tag keeps at most KEEP
+-- times from the last WINDOW_S. When logread ends (logd restarted), the script
+-- exits and procd starts it again.
+
+local jsonc = require "luci.jsonc"
+
+local OUT      = "/var/etc/treadle/.conn-errors.json"
+local WINDOW_S = 300
+-- Well above the 20 errors that vote a node out (groupman.lua).
+local KEEP     = 64
+-- Errors on these never reflect on a node.
+local SKIP     = { direct = true, block = true, dns = true }
+
+local errors = {}
+
+local function write()
+	local now = os.time()
+	local out = {}
+	for tag, times in pairs(errors) do
+		local keep = {}
+		for i = math.max(1, #times - KEEP + 1), #times do
+			if times[i] > now - WINDOW_S then keep[#keep + 1] = times[i] end
+		end
+		if #keep > 0 then out[tag] = keep end
+	end
+	errors = out
+	local tmp = OUT .. ".tmp"
+	local f = io.open(tmp, "w")
+	if f then
+		f:write(jsonc.stringify({ errors = out, updated_at = now }))
+		f:close()
+		os.rename(tmp, OUT)
+	end
+end
+
+-- `-l 1` keeps logread from replaying the whole buffer, but the line it does
+-- replay (the newest match, if any) is old. `-t` puts each line's epoch in its
+-- first [...], so anything logged before this start is dropped. `-e` matches
+-- the message, not the tag, so the filter is on the text sing-box writes.
+local started = os.time()
+local f = io.popen("logread -f -t -l 1 -e 'open connection to' 2>/dev/null", "r")
+if not f then os.exit(1) end
+for line in f:lines() do
+	local at = tonumber(line:match("^[^%[]*%[(%d+)"))
+	if at and at >= started and line:find("sing-box", 1, true) then
+		local plain = line:gsub("\27%[[%d;]*m", "")
+		local kind, tag = plain:match("using outbound/([%w_%-]+)%[(.-)%]: ")
+		if kind and tag and not SKIP[kind] then
+			local list = errors[tag]
+			if not list then list = {}; errors[tag] = list end
+			list[#list + 1] = at
+			write()
+		end
+	end
+end
+f:close()
