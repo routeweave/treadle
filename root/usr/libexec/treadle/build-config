@@ -1364,8 +1364,8 @@ local function build_outbounds(c)
 		local set = {}
 		if pattern == "" or #tags == 0 then return set end
 		local function fail(why)
-			io.stderr:write("treadle build-config: urltest '" .. group
-				.. "': regex could not be evaluated (" .. why .. "); it gets no members\n")
+			io.stderr:write("treadle build-config: group '" .. group
+				.. "': tag pattern could not be evaluated (" .. why .. "); it gets no members\n")
 			return set
 		end
 		local path = os.tmpname()
@@ -1458,7 +1458,7 @@ local function build_outbounds(c)
 			for _, t in ipairs(out) do
 				if keep[t] then capped[#capped + 1] = t end
 			end
-			io.stderr:write("treadle build-config: info: urltest '" .. group.tag
+			io.stderr:write("treadle build-config: info: group '" .. group.tag
 				.. "' keeps " .. #capped .. " of " .. #out .. " member(s)"
 				.. (mode and (", ordered by " .. mode) or "") .. "\n")
 			out = capped
@@ -1537,8 +1537,8 @@ local function build_outbounds(c)
 				-- line per contributing source per regex group, every apply.
 				for src, count in pairs(by_source) do
 					if src ~= "_manual" then
-						io.stderr:write("treadle build-config: info: urltest '" .. ob.tag
-							.. "' regex admitted " .. count
+						io.stderr:write("treadle build-config: info: group '" .. ob.tag
+							.. "' tag pattern admitted " .. count
 							.. " node(s) from subscription '"
 							.. (sub_names[src] or src) .. "'\n")
 					end
@@ -1553,8 +1553,7 @@ local function build_outbounds(c)
 					if all_map[member] or member == "direct" then
 						kept[#kept + 1] = member
 					else
-						io.stderr:write("treadle build-config: " .. ob.type ..
-							" '" .. ob.tag ..
+						io.stderr:write("treadle build-config: group '" .. ob.tag ..
 							"' drops missing member '" .. tostring(member) .. "'\n")
 					end
 				end
@@ -1600,8 +1599,8 @@ local function build_outbounds(c)
 				-- dns detour, parent group member) gets pruned by
 				-- the validation pass / member-prune downstream and
 				-- falls back to direct, which is a sane no-op.
-				io.stderr:write("treadle build-config: urltest '" .. ob.tag ..
-					"' has no usable members; dropping the group\n")
+				io.stderr:write("treadle build-config: group '" .. ob.tag ..
+					"' has no usable members; dropping it\n")
 			else
 				if managed and ob.type == "urltest" then ob = as_selector(ob) end
 				place_node(ob, outbounds, endpoints, timeout)
