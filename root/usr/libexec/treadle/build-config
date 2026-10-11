@@ -2333,6 +2333,36 @@ local function validate_tag(label, tag, tagset, originset)
 	return "direct"
 end
 
+-- Speed tests of a group's node in use (global.speed_test, only when Treadle
+-- manages the groups): a hidden selector holding every group member, reached
+-- only from a loopback port. active-watch points the selector at the node to
+-- test and downloads through the port, so the test never touches a user
+-- group's selection and needs no config change per test. The rule sits right
+-- after sniff, ahead of every rule that could claim the destination.
+local function add_speed_test(c, config)
+	if not treadle_manages_groups(c) or c:get("treadle", "global", "speed_test") ~= "1" then
+		return
+	end
+	local members, seen = {}, {}
+	for _, ob in ipairs(config.outbounds) do
+		if ob.type == "selector" then
+			for _, m in ipairs(ob.outbounds) do
+				if not seen[m] then seen[m] = true; members[#members + 1] = m end
+			end
+		end
+	end
+	if #members == 0 then return end
+	table.sort(members)
+	local inbound = lib.SPEEDTEST_TAG .. "-in"
+	config.outbounds[#config.outbounds + 1] = {
+		type = "selector", tag = lib.SPEEDTEST_TAG, outbounds = members
+	}
+	config.inbounds[#config.inbounds + 1] = {
+		type = "mixed", tag = inbound, listen = "127.0.0.1", listen_port = lib.SPEEDTEST_PORT
+	}
+	table.insert(config.route.rules, 2, { inbound = { inbound }, outbound = lib.SPEEDTEST_TAG })
+end
+
 local function build_config(c)
 	local prepared = prepare_rules(c)
 	local dns   = build_dns(c, prepared)
@@ -2378,6 +2408,7 @@ local function build_config(c)
 		outbounds = outbounds,
 		route     = route
 	}
+	add_speed_test(c, config)
 	-- endpoints (WireGuard) is emitted only when non-empty, so a config with
 	-- no WireGuard nodes carries no empty array.
 	if #endpoints > 0 then

@@ -492,13 +492,18 @@ end
 -- fresh cursor per tick so a committed flip is seen immediately. When
 -- Treadle manages the groups, each group's test URL, re-check interval and
 -- tolerance come along, keyed by tag.
+local settings_failed = false
 local function settings()
 	local ok, res = pcall(function()
 		local c = require("uci").cursor()
 		local r = {
-			clash   = c:get("treadle", "global", "clash_api_enabled") == "1",
-			managed = c:get("treadle", "global", "group_manager") == "treadle",
-			groups  = {}
+			clash    = c:get("treadle", "global", "clash_api_enabled") == "1",
+			managed  = c:get("treadle", "global", "group_manager") == "treadle",
+			speed    = c:get("treadle", "global", "speed_test") == "1",
+			-- `or ""`: for a missing option c:get returns nil and an error
+			-- string, which tonumber would take as its base and raise on.
+			speed_mb = tonumber(c:get("treadle", "global", "speed_test_mb") or ""),
+			groups   = {}
 		}
 		if r.managed then
 			c:foreach("treadle", "node", function(s)
@@ -514,7 +519,16 @@ local function settings()
 		c:close()
 		return r
 	end)
-	if not ok then return { clash = true, managed = false, groups = {} } end  -- can't tell → keep polling
+	if not ok then
+		-- Can't tell → keep polling, and say why once: a silent fallback here
+		-- once hid that Treadle-managed groups were not being managed.
+		if not settings_failed then
+			settings_failed = true
+			logmsg("warning", "could not read the settings: " .. tostring(res))
+		end
+		return { clash = true, managed = false, groups = {} }
+	end
+	settings_failed = false
 	return res
 end
 
@@ -538,6 +552,7 @@ local GM_DEFAULT_URL     = "https://www.gstatic.com/generate_204"
 local gm            -- groupman, loaded on first use
 local gm_state      -- its per-member state
 local gm_groups     -- tag -> { last_switch, last_test, reason, switched_at, stuck }
+local gm_speed      -- speed-test data used today: { day, bytes, capped }
 local err_seen = {} -- outbound tag -> { t = newest error second taken, n = how many at it }
 math.randomseed(os.time())
 local function rnd(n) return math.random(n) end
@@ -559,6 +574,7 @@ local function gm_load()
 	local saved = lib.read_json(jsonc, GROUP_STATE) or {}
 	gm_state = (type(saved.members) == "table") and { members = saved.members } or gm.new()
 	gm_groups = (type(saved.groups) == "table") and saved.groups or {}
+	gm_speed = (type(saved.speed) == "table") and saved.speed or {}
 end
 
 -- One pass over every member of a group. Absent from the reply means the
@@ -669,6 +685,116 @@ local function take_errors(current, now)
 	return hit
 end
 
+-- ── Speed tests of the node in use (global.speed_test) ─────────────────
+-- Optional, because every test downloads SPEED_BYTES through a node and that
+-- counts against a subscription's data allowance. build-config gives
+-- sing-box a hidden selector holding every group member, reachable only from
+-- a loopback port; a test points it at a node and downloads through the
+-- port, so no user group's selection changes.
+--
+-- Nothing is tested on a schedule: peak-hour congestion comes and goes
+-- within a couple of hours, which a periodic test mostly misses. A test is
+-- due when the node in use's latency score climbs to 1.5 times its level
+-- (groupman.track_level), at most every SPEED_RECHECK_S per node, or
+-- SPEED_CONFIRM_S after a low result. It measures the node in use and the
+-- best other member of its group back to back, and groupman judges the first
+-- against the second. Skipped while real traffic through either exceeds
+-- SPEED_BUSY_BPS (the test would compete and misread), and once today's data
+-- reaches the limit.
+local SPEED_BYTES      = 2000000
+-- TREADLE_SPEED_URL lets the smoke test use a local file.
+local SPEED_URL        = os.getenv("TREADLE_SPEED_URL")
+	or ("https://speed.cloudflare.com/__down?bytes=" .. SPEED_BYTES)
+local SPEED_MAX_S      = 20
+local SPEED_RECHECK_S  = 600
+local SPEED_CONFIRM_S  = 120
+local SPEED_BUSY_BPS   = 256 * 1024
+local SPEED_DEFAULT_MB = 100
+
+-- Download through the hidden selector pointed at `node`. Returns bytes/s
+-- (nil when too little came through to judge) and the bytes it used. The
+-- download records its own end time, so the whole-second sleep that bounds
+-- it does not blur the measurement.
+local function speed_test(node)
+	if not select_member(lib.SPEEDTEST_TAG, node) then return nil, 0 end
+	local d = "/var/etc/treadle/.speed"
+	local proxy = "http://127.0.0.1:" .. lib.SPEEDTEST_PORT
+	local f = io.popen("rm -f " .. d .. ".*; t0=$(cut -d' ' -f1 /proc/uptime); "
+		.. "( http_proxy=" .. proxy .. " https_proxy=" .. proxy
+		.. " uclient-fetch -q --timeout=10 -O " .. d .. ".dl '" .. SPEED_URL .. "' >/dev/null 2>&1 & "
+		.. "echo $! > " .. d .. ".pid; wait $!; cut -d' ' -f1 /proc/uptime > " .. d .. ".end ) & "
+		.. "n=0; while [ ! -f " .. d .. ".end ] && [ $n -lt " .. SPEED_MAX_S .. " ]; do sleep 1; n=$((n + 1)); done; "
+		.. "[ -f " .. d .. ".end ] || { kill $(cat " .. d .. ".pid) 2>/dev/null; sleep 1; }; "
+		.. "echo \"$t0 $(cat " .. d .. ".end 2>/dev/null || cut -d' ' -f1 /proc/uptime) "
+		.. "$(wc -c < " .. d .. ".dl 2>/dev/null || echo 0)\"; rm -f " .. d .. ".*")
+	local out = f and f:read("*a") or ""
+	if f then f:close() end
+	local t0, t1, bytes = out:match("([%d.]+) ([%d.]+) (%d+)")
+	t0, t1, bytes = tonumber(t0), tonumber(t1), tonumber(bytes) or 0
+	if not (t0 and t1) or t1 <= t0 or bytes < 100000 then return nil, bytes end
+	return bytes / (t1 - t0), bytes
+end
+
+-- Real traffic through `node` right now, from the latest traffic snapshot
+-- (speed tests are left out of it).
+local function node_busy(node)
+	local st = lib.read_json(jsonc, STATS_SNAP)
+	if not st or os.time() - (tonumber(st.updated_at) or 0) > 70 then return false end
+	local t = type(st.by_tag) == "table" and st.by_tag[node]
+	return t ~= nil and (tonumber(t.down) or 0) > SPEED_BUSY_BPS
+end
+
+-- `cands`: one entry per managed group, { node, members, tol, fresh_s,
+-- worse }, built by manage_groups. At most one pair test per tick.
+local function speed_round(cfg, cands)
+	local now = os.time()
+	local day = os.date("%Y-%m-%d")
+	if gm_speed.day ~= day then gm_speed.day, gm_speed.bytes, gm_speed.capped = day, 0, nil end
+	local cap = (cfg.speed_mb and cfg.speed_mb > 0 and cfg.speed_mb or SPEED_DEFAULT_MB) * 1e6
+	if (gm_speed.bytes or 0) + 2 * SPEED_BYTES > cap then
+		if not gm_speed.capped then
+			gm_speed.capped = true
+			logmsg("info", string.format(
+				"speed tests: today's limit of %d MB is used up; none until tomorrow", cap / 1e6))
+		end
+		return
+	end
+	for _, c in ipairs(cands) do
+		local r = gm.member(gm_state, c.node)
+		local why
+		if r.speed_confirm_at and now >= r.speed_confirm_at then
+			why = "confirming a slow result"
+		elseif c.worse and (not r.speed_at or now - r.speed_at >= SPEED_RECHECK_S) then
+			why = "latency got worse"
+		end
+		local alt
+		if why then
+			local pa = r.speed_confirm_at and r.speed_alt and gm_state.members[r.speed_alt]
+			alt = (pa and gm.eligible(pa, now, c.fresh_s)) and r.speed_alt
+				or gm.pick(gm_state, c.members, now, c.tol or 50, c.fresh_s, rnd, c.node)
+		end
+		if why and alt and not node_busy(c.node) and not node_busy(alt) then
+			r.speed_confirm_at = nil
+			local bps, used = speed_test(c.node)
+			local alt_bps, alt_used = speed_test(alt)
+			gm_speed.bytes = (gm_speed.bytes or 0) + used + alt_used
+			if not (bps and alt_bps) then
+				r.speed_at = now   -- not again before SPEED_RECHECK_S
+				logmsg("info", string.format("speed test of %s against %s (%s): too little came through to measure",
+					c.node, alt, why))
+				return
+			end
+			local low = gm.record_speed(gm_state, c.node, alt, now, bps, alt_bps)
+			logmsg("info", string.format("speed test of %s (%s): %.1f Mbit/s, %s %.1f Mbit/s%s",
+				c.node, why, bps * 8 / 1e6, alt, alt_bps * 8 / 1e6, low and ", under half" or ""))
+			if low and (r.speed_low or 0) < gm.SPEED_LOW_RUN then
+				r.speed_confirm_at = now + SPEED_CONFIRM_S
+			end
+			return
+		end
+	end
+end
+
 local function manage_groups(current, cfg)
 	if not gm then gm_load() end
 	local now = os.time()
@@ -691,6 +817,7 @@ local function manage_groups(current, cfg)
 
 	local hit = take_errors(current, now)
 	local probes = MAX_PROBES
+	local speed_cands = {}
 	-- Re-check the group whose last pass is oldest, one per tick.
 	local due, due_age
 	for _, tag in ipairs(tags) do
@@ -735,6 +862,11 @@ local function manage_groups(current, cfg)
 
 		local view = { now = g.now, members = members, tolerance = gc.tolerance,
 			fresh_s = 2 * interval, last_switch = meta.last_switch }
+		if cfg.speed then
+			speed_cands[#speed_cands + 1] = { node = g.now, members = members,
+				tol = gc.tolerance, fresh_s = 2 * interval,
+				worse = gm.track_level(gm.member(gm_state, g.now), now) }
+		end
 		local dec = gm.decide(gm_state, view, os.time(), rnd)
 		if dec.need_test and os.time() - (meta.last_test or 0) >= GROUP_RETEST_S then
 			group_test(tag, members, url, os.time())
@@ -771,10 +903,14 @@ local function manage_groups(current, cfg)
 				if gm.benched(mr, now) then m.benched_until = mr.bench_until end
 				local errs = gm.recent_errors(mr, now)
 				if errs > 0 then m.errors = errs end
+				if mr.speed_last then
+					m.speed_bps, m.speed_at = math.floor(mr.speed_last), mr.speed_at
+				end
 			end
 		end
 	end
-	save_json(GROUP_STATE, { members = gm_state.members, groups = gm_groups })
+	if cfg.speed then speed_round(cfg, speed_cands) end
+	save_json(GROUP_STATE, { members = gm_state.members, groups = gm_groups, speed = gm_speed })
 end
 
 while true do
@@ -955,7 +1091,13 @@ while true do
 				local cu = tonumber(cn.upload)   or 0
 				local cd = tonumber(cn.download) or 0
 				if cn.id then cur_conn[cn.id] = { cu, cd } end
-				if dt > 0 and type(cn.chains) == "table" then
+				local is_test = false
+				if type(cn.chains) == "table" then
+					for _, tag in ipairs(cn.chains) do
+						if tag == lib.SPEEDTEST_TAG then is_test = true end
+					end
+				end
+				if dt > 0 and type(cn.chains) == "table" and not is_test then
 					local p = prev_conn[cn.id]
 					local du = cu - (p and p[1] or 0)
 					local dd = cd - (p and p[2] or 0)

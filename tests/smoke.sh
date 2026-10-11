@@ -696,6 +696,27 @@ build "managed groups again"
 cmp -s "$MG" "$OUT/managed_groups_again.json" \
 	&& ok "a managed build is byte-identical on rebuild" \
 	|| bad "two managed builds differ"
+# Speed tests add a hidden selector over every group member, reachable only
+# from a loopback port, routed right after sniff; never without managed groups.
+uci set treadle.global.speed_test=1
+uci commit treadle
+build "managed groups with speed tests"
+MS="$OUT/managed_groups_with_speed_tests.json"
+[ "$(jsonfilter -i "$MS" -e '@.outbounds[@.tag="_speedtest"].type')" = selector ] \
+	&& [ "$(jsonfilter -i "$MS" -e '@.outbounds[@.tag="_speedtest"].outbounds[*]' | wc -l)" -eq "$NODES" ] \
+	&& [ "$(jsonfilter -i "$MS" -e '@.inbounds[@.tag="_speedtest-in"].listen')" = 127.0.0.1 ] \
+	&& [ "$(jsonfilter -i "$MS" -e '@.route.rules[1].outbound')" = _speedtest ] \
+	&& ok "speed tests get a hidden selector over every member, on a loopback port" \
+	|| bad "speed-test plumbing: $(jsonfilter -i "$MS" -e '@.outbounds[@.tag="_speedtest"]' | head -c 200) rule $(jsonfilter -i "$MS" -e '@.route.rules[1]')"
+uci set treadle.global.group_manager=singbox
+uci commit treadle
+build "speed tests without managed groups"
+[ -z "$(jsonfilter -i "$OUT/speed_tests_without_managed_groups.json" -e '@.outbounds[@.tag="_speedtest"].type')" ] \
+	&& ok "no speed-test plumbing when sing-box manages the groups" \
+	|| bad "speed-test selector built with group_manager=singbox"
+uci set treadle.global.group_manager=treadle
+uci delete treadle.global.speed_test
+uci commit treadle
 uci set treadle.global.group_manager=singbox
 uci delete treadle.0123456789abcd10.group_member_order
 uci delete treadle.0123456789abcd10.group_max_members
@@ -1612,16 +1633,22 @@ EOF
 done
 cat > "$TM/t.json" <<EOF
 { "log": { "level": "warn" },
-  "inbounds": [ { "type": "mixed", "tag": "in", "listen": "127.0.0.1", "listen_port": 18120 } ],
+  "inbounds": [ { "type": "mixed", "tag": "in", "listen": "127.0.0.1", "listen_port": 18120 },
+    { "type": "mixed", "tag": "_speedtest-in", "listen": "127.0.0.1", "listen_port": 9093 } ],
   "outbounds": [
     { "type": "socks", "tag": "m1", "server": "127.0.0.1", "server_port": 18121, "version": "5" },
     { "type": "socks", "tag": "m2", "server": "127.0.0.1", "server_port": 18122, "version": "5" },
-    { "type": "selector", "tag": "g", "outbounds": [ "m1", "m2" ], "default": "m1" } ],
-  "route": { "final": "g" },
+    { "type": "selector", "tag": "g", "outbounds": [ "m1", "m2" ], "default": "m1" },
+    { "type": "selector", "tag": "_speedtest", "outbounds": [ "m1", "m2" ] } ],
+  "route": { "rules": [ { "inbound": [ "_speedtest-in" ], "outbound": "_speedtest" } ], "final": "g" },
   "experimental": {
     "clash_api": { "external_controller": "127.0.0.1:9090" },
     "cache_file": { "enabled": true, "path": "$TM/cache.db" } } }
 EOF
+mkdir -p "$TM/www"
+dd if=/dev/zero of="$TM/www/big" bs=1000 count=2000 2>/dev/null
+uhttpd -f -p 127.0.0.1:18129 -h "$TM/www" >/dev/null 2>&1 &
+TM_UH=$!
 tm_now() { uclient-fetch -qO- http://127.0.0.1:9090/proxies/g 2>/dev/null | sed -n 's/.*"now": *"\([^"]*\)".*/\1/p'; }
 tm_api() { i=0; while [ "$i" -lt 20 ] && [ -z "$(tm_now)" ]; do sleep 1; i=$((i + 1)); done; }
 sing-box run -c "$TM/s1.json" >"$TM/s1.log" 2>&1 &
@@ -1630,13 +1657,22 @@ sing-box run -c "$TM/s2.json" >"$TM/s2.log" 2>&1 &
 TM_S2=$!
 sing-box run -c "$TM/t.json" >"$TM/t.log" 2>&1 &
 TM_T=$!
-TM_PIDS="$TM_S1 $TM_S2 $TM_T"
+TM_PIDS="$TM_S1 $TM_S2 $TM_T $TM_UH"
 tm_api
 uci set treadle.global.group_manager=treadle
+uci set treadle.global.speed_test=1
 uci commit treadle
 GS=/var/etc/treadle/.group-state.json
-rm -f "$GS"
-lua /usr/libexec/treadle/active-watch >"$TM/aw.log" 2>&1 &
+# A latency level of 1 ms for both nodes, so the first tick finds the node in
+# use "clearly worse" and runs a speed check; a real one waits for congestion.
+now_s=$(date +%s)
+cat > "$GS" <<EOF
+{ "members": {
+  "m1": { "ring": [], "fails": 0, "level": 0, "errors": [], "level_score": 1, "level_at": $now_s },
+  "m2": { "ring": [], "fails": 0, "level": 0, "errors": [], "level_score": 1, "level_at": $now_s } },
+  "groups": {}, "speed": {} }
+EOF
+TREADLE_SPEED_URL=http://127.0.0.1:18129/big lua /usr/libexec/treadle/active-watch >"$TM/aw.log" 2>&1 &
 TM_PIDS="$TM_PIDS $!"
 # The first tick tests the member in use and re-checks the whole group.
 i=0
@@ -1645,11 +1681,31 @@ while [ "$i" -lt 40 ] && ! { [ -n "$(jsonfilter -i "$GS" -e '@.members.m1.last_o
 	sleep 1; i=$((i + 1))
 done
 [ "$i" -lt 40 ] && ok "active-watch tests every member of a managed group" \
-	|| bad "group state after 40s: $(head -c 400 "$GS" 2>/dev/null) $(head -c 300 "$TM/aw.log")"
+	|| bad "group state after 40s: $(head -c 400 "$GS" 2>/dev/null) aw: $(head -c 300 "$TM/aw.log") sing-box: $(head -c 300 "$TM/t.log")"
 [ "$(jsonfilter -i /var/etc/treadle/.active-nodes.json -e '@.groups.g.managed' 2>/dev/null)" = true ] \
 	&& ok "the snapshot marks the group as managed by Treadle" \
 	|| bad "snapshot: $(jsonfilter -i /var/etc/treadle/.active-nodes.json -e '@.groups.g' 2>&1 | head -c 300)"
 first=$(tm_now)
+# The node in use is "worse" than its level, so it is speed-checked against
+# the other member, 2 MB each through the hidden selector, counted against
+# the day's data. Its verdict is not checked: on loopback 2 MB takes tens of
+# milliseconds, near /proc/uptime's resolution, so two equal nodes can read
+# twice apart (groupman's cases cover the verdict). Checks are then turned
+# off, so a confirming one cannot move the group during the failover below.
+i=0
+while [ "$i" -lt 30 ] && [ -z "$(jsonfilter -i "$GS" -e "@.members.$first.speed_alt" 2>/dev/null)" ]; do
+	sleep 1; i=$((i + 1))
+done
+[ "$i" -lt 30 ] && [ "$(jsonfilter -i "$GS" -e '@.speed.bytes' 2>/dev/null)" -ge 4000000 ] \
+	&& [ -n "$(jsonfilter -i "$GS" -e "@.members.$first.speed_last" 2>/dev/null)" ] \
+	&& [ -n "$(jsonfilter -i "$GS" -e "@.members.$first.speed_alt_bps" 2>/dev/null)" ] \
+	&& ok "worse latency triggers a speed check against the other member, its data counted" \
+	|| bad "speed check: $(head -c 500 "$GS" 2>/dev/null) $(tail -n 5 "$TM/aw.log")"
+uci delete treadle.global.speed_test
+uci commit treadle
+[ "$(uclient-fetch -qO- http://127.0.0.1:9090/proxies/g | jsonfilter -e '@.now')" = "$first" ] \
+	&& ok "a speed test leaves the user's group where it was" \
+	|| bad "the speed test moved group g"
 case "$first" in
 	m1) victim=$TM_S1; other=m2 ;;
 	m2) victim=$TM_S2; other=m1 ;;
@@ -1681,6 +1737,7 @@ tm_api
 	|| bad "after restart the group is on '$(tm_now)', want $other"
 for p in $TM_PIDS; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done
 uci set treadle.global.group_manager=singbox
+uci -q delete treadle.global.speed_test
 uci commit treadle
 rm -f "$GS"
 

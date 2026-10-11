@@ -14,9 +14,15 @@ local M = {}
 -- whole config or silently shadow the builtin in UI dropdowns. Shared by
 -- luci.treadle (drops them at subscription-parse time) and build-config
 -- (drops them at emission time) so the two filters cannot drift.
+-- The hidden selector a speed test of the node in use goes through, and the
+-- loopback port that reaches it (build-config, active-watch).
+M.SPEEDTEST_TAG  = "_speedtest"
+M.SPEEDTEST_PORT = 9093
+
 M.RESERVED_TAGS = {
 	direct = true,
 	block  = true,
+	[M.SPEEDTEST_TAG] = true,
 }
 
 -- Outbound protocols Treadle accepts from subscription payloads. Anything

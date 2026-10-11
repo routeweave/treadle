@@ -15,8 +15,9 @@
 --   1. Vote-out. The member in use is benched when too few of its recent
 --      probes passed, or when real traffic through it keeps failing (the
 --      connection errors sing-box logs), however fast its probes are.
---   2. Failover. The member in use failed FAILS_TO_SWITCH probes in a row, or
---      is benched: move to the best eligible member now.
+--   2. Failover. The member in use failed FAILS_TO_SWITCH probes in a row,
+--      came out under half the speed of the best other member SPEED_LOW_RUN
+--      times in a row, or is benched: move to the best eligible member now.
 --   3. Upgrade. Another member scores at least MIN_GAIN lower and more than
 --      one tolerance-wide bucket lower, and the current one has been in use
 --      for DWELL_S.
@@ -45,6 +46,19 @@ M.ERR_WINDOW_S    = 300
 M.ERR_VOTE        = 20    -- connection errors in the window that vote a member out
 M.ALPHA           = 0.3   -- weight of a new latency in the running average
 M.FAIL_MS         = 3000  -- a failed probe counts as the probe timeout
+-- Speed tests (optional, see active-watch) compare the member in use with
+-- the best other member of its group, measured back to back: under
+-- SPEED_DROP of that member's speed is low, and SPEED_LOW_RUN low results in
+-- a row bench it like a failure. Peak-hour congestion comes and goes within
+-- hours, so a node is judged against an alternative measured at the same
+-- moment, never against its own history.
+M.SPEED_DROP      = 0.5
+M.SPEED_LOW_RUN   = 2
+-- A speed test is due when the member's score climbs to WORSE times its
+-- level: a slow average of its own score (time constant LEVEL_S), so the
+-- level follows lasting change and a sudden climb stands out.
+M.WORSE           = 1.5
+M.LEVEL_S         = 1800
 
 function M.new()
 	return { members = {} }
@@ -75,6 +89,38 @@ function M.record(st, tag, now, delay)
 		r.fails = r.fails + 1
 		r.last_fail = now
 	end
+end
+
+-- Follow the member's score level; call once per tick while it is in use.
+-- Returns true when the score has climbed to WORSE times the level.
+function M.track_level(r, now)
+	local score = M.score(r)
+	if not score then return false end
+	if not r.level_score then
+		r.level_score, r.level_at = score, now
+		return false
+	end
+	local dt = now - (r.level_at or now)
+	r.level_at = now
+	local worse = score >= M.WORSE * r.level_score
+	local a = math.min(1, dt / M.LEVEL_S)
+	r.level_score = r.level_score + a * (score - r.level_score)
+	return worse
+end
+
+-- A speed test pair: the member in use `tag` against the alternative `alt`,
+-- in bytes/s. Returns true when the member in use is low.
+function M.record_speed(st, tag, alt, now, bps, alt_bps)
+	local r = M.member(st, tag)
+	r.speed_at, r.speed_last, r.speed_alt, r.speed_alt_bps = now, bps, alt, alt_bps
+	local a = M.member(st, alt)
+	a.speed_at, a.speed_last = now, alt_bps
+	if bps < M.SPEED_DROP * alt_bps then
+		r.speed_low = (r.speed_low or 0) + 1
+		return true
+	end
+	r.speed_low = 0
+	return false
 end
 
 -- Connection errors attributed to a member, as epoch seconds. Old ones fall
@@ -192,7 +238,7 @@ function M.decide(st, g, now, rnd)
 		end
 	end
 
-	local why
+	local why, prefer
 	if not M.benched(cur, now) then
 		local errs = M.recent_errors(cur, now)
 		if errs >= M.ERR_VOTE then
@@ -206,13 +252,24 @@ function M.decide(st, g, now, rnd)
 		elseif cur.fails >= M.FAILS_TO_SWITCH then
 			why = string.format("failed %d probes in a row", cur.fails)
 			M.bench(cur, now)
+		elseif (cur.speed_low or 0) >= M.SPEED_LOW_RUN then
+			why = string.format("speed %.1f Mbit/s, under half of %s's %.1f",
+				(cur.speed_last or 0) * 8 / 1e6, tostring(cur.speed_alt),
+				(cur.speed_alt_bps or 0) * 8 / 1e6)
+			prefer = cur.speed_alt
+			cur.speed_low, cur.last_fail = 0, now
+			M.bench(cur, now)
 		end
 	else
 		why = "benched"
 	end
 
 	if why then
-		local to = M.pick(st, g.members, now, tol, g.fresh_s, rnd, g.now)
+		-- After a speed verdict, the member it was measured against, if it
+		-- can be chosen: it is the one known to be faster right now.
+		local pr = prefer and st.members[prefer]
+		local to = (pr and M.eligible(pr, now, g.fresh_s)) and prefer
+			or M.pick(st, g.members, now, tol, g.fresh_s, rnd, g.now)
 		if to then return { to = to, reason = g.now .. " " .. why } end
 		return { need_test = true, reason = g.now .. " " .. why }
 	end

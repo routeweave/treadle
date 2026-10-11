@@ -186,5 +186,42 @@ do
 	check(gm.score(st.members.B) == gm.FAIL_MS, "six in ten put it at the timeout")
 end
 
+-- Speed: the member in use against the best other member, measured back to
+-- back. One result under half does not move the group; two in a row bench
+-- the member and move to the faster one; a normal result clears the run;
+-- congestion that slows both moves nothing.
+do
+	local st = gm.new()
+	local MB = 1e6 / 8   -- 1 Mbit/s in bytes/s
+	warm(st, 4000, { A = 200, B = 210, C = 220, D = 900 })
+	check(gm.record_speed(st, "A", "B", 4000, 15 * MB, 40 * MB) == true, "under half the alternative's speed is low")
+	local d = gm.decide(st, group("A", { last_switch = 3990 }), 4000, first)
+	check(d.to == nil, "one low result does not move the group")
+	gm.record_speed(st, "A", "C", 4120, 12 * MB, 35 * MB)
+	warm(st, 4110, { A = 200, B = 210, C = 220 })
+	d = gm.decide(st, group("A", { last_switch = 3990 }), 4120, first)
+	check(d.to == "C" and d.reason:find("under half"), "two in a row move the group to the faster member")
+	check(gm.benched(st.members.A, 4120), "and bench the slow one")
+	local st2 = gm.new()
+	gm.record_speed(st2, "A", "B", 0, 15 * MB, 40 * MB)
+	gm.record_speed(st2, "A", "B", 1, 30 * MB, 40 * MB)
+	check(st2.members.A.speed_low == 0, "a normal result in between clears the run")
+	check(gm.record_speed(st2, "A", "B", 2, 6 * MB, 9 * MB) == false, "both slow (shared congestion) is not low")
+end
+
+-- The level behind "latency got worse": it starts at the first score, a
+-- sudden climb to 1.5x is flagged, and a lasting change becomes the level.
+do
+	local st = gm.new()
+	warm(st, 0, { A = 200 })
+	local r = st.members.A
+	check(gm.track_level(r, 0) == false and r.level_score == 200, "the level starts at the first score")
+	for _ = 1, 10 do gm.record(st, "A", 10, 400) end
+	check(gm.track_level(r, 10) == true, "a score twice the level is flagged")
+	for t = 20, 3600 * 3, 10 do gm.track_level(r, t) end
+	check(math.abs(r.level_score - 400) < 5, "after hours at the new score it is the level")
+	check(gm.track_level(r, 3600 * 3 + 10) == false, "and is no longer flagged")
+end
+
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)

@@ -682,6 +682,8 @@ return baseclass.extend({
 								title += ' · ' + _('passed %d of its last %d tests').format(m.passed, m.tests);
 							if (x.managed && m.errors > 0)
 								title += ' · ' + _('%d connection errors in 5 min').format(m.errors);
+							if (x.managed && m.speed_bps > 0)
+								title += ' · ' + _('speed %.1f Mbit/s, %s').format(m.speed_bps * 8 / 1e6, badges.relTime(m.speed_at + skew));
 							var benched = x.managed && m.benched_until > gnow;
 							return E('span', {
 								'class': 'treadle-chip' + (inUse ? ' treadle-chip-on' : ''),

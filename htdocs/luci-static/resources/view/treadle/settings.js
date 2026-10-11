@@ -376,6 +376,26 @@ return baseclass.extend({
 		oManager.value('treadle', _('Treadle'));
 		oManager['default'] = 'singbox';
 
+		// Off by default: every test downloads through a paid node. The
+		// description says so first, before what the test does.
+		var oSpeed = sNodes.option(form.Flag, 'speed_test',
+			_('Speed-test the node in use'),
+			_('Uses data: each check downloads 2 MB through the node in use and ' +
+			  '2 MB through the best other node in its group, counted against your ' +
+			  'subscription\'s data allowance, up to the daily limit below. A check ' +
+			  'runs only when the node\'s latency gets clearly worse, and once more ' +
+			  '2 minutes later to confirm a slow result; nothing is tested while ' +
+			  'latency is normal. A node under half the other\'s speed twice in a ' +
+			  'row is benched and the group moves.'));
+		oSpeed.depends('group_manager', 'treadle');
+
+		var oSpeedMb = sNodes.option(form.Value, 'speed_test_mb',
+			_('Speed-test data limit (MB per day)'),
+			_('Tests stop for the day once they have used this much.'));
+		oSpeedMb.datatype = 'range(2,10000)';
+		oSpeedMb.placeholder = '100';
+		oSpeedMb.depends('speed_test', '1');
+
 		var oAutoTest = advance(sNodes.option(form.Value, 'auto_test_hours',
 			_('Auto-test interval (hours)'),
 			_('Test every node every N hours, after due subscription syncs. 0 turns it off.')));
