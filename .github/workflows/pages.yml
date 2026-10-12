@@ -14,6 +14,12 @@ name: Feed
 # site as an artifact instead of deploying, which is how to test this
 # workflow on a branch.
 #
+# Main's CI and a release deploy the same commit seconds apart on every
+# release. So a deploy is skipped when a release appeared after its build
+# collected the feed (that release's deploy has it), and is checked against
+# the live site afterwards (deploy-id.txt, written by the build), since
+# GitHub's "success" does not say which deploy the site serves.
+#
 # The snapshot lives here rather than on a GitHub release because releases
 # are immutable in this repository: a published release's files can never be
 # replaced, and a rolling snapshot is by definition a file that changes.
@@ -53,6 +59,9 @@ jobs:
     # No environment here: github-pages only admits main and v* tags, and a
     # dry run from a branch must get as far as building the site. Only deploy
     # binds it.
+    outputs:
+      deploy_id: ${{ steps.stamp.outputs.deploy_id }}
+      releases: ${{ steps.stamp.outputs.releases }}
     permissions:
       contents: read
       actions: read   # download this run's packages
@@ -109,6 +118,19 @@ jobs:
           SNAPSHOT_COMMIT: ${{ github.sha }}
         run: scripts/pages-snapshot.sh
 
+      # Lets deploy check that the live site is this run's build, and not
+      # only that GitHub accepted it (scripts/pages-verify.sh), and that no
+      # release appeared after this build collected the feed.
+      - name: Stamp the site with this run
+        id: stamp
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          id="$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT"
+          printf '%s\n' "$id" > public/deploy-id.txt
+          echo "deploy_id=$id" >> "$GITHUB_OUTPUT"
+          echo "releases=$(gh release list --limit 1000 --json tagName -q '.[].tagName' | sort | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+
       - name: Upload Pages artifact
         if: ${{ !inputs.dry_run }}
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
@@ -131,12 +153,64 @@ jobs:
       group: pages-deploy
       cancel-in-progress: false
     permissions:
+      contents: read   # the verify script and the release list
       pages: write
       id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts/pages-verify.sh
+          sparse-checkout-cone-mode: false
+
+      # On a release, main's CI builds the site from the same commit at the
+      # same time. If the release was created after that build collected the
+      # feed, deploying it would replace the release's feed with one that
+      # lacks the release; that release's own deploy publishes the feed.
+      - name: Check no release appeared since the build
+        id: fresh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILT_WITH: ${{ needs.build.outputs.releases }}
+        run: |
+          now=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 --json tagName -q '.[].tagName' | sort | tr '\n' ' ')
+          if [ "$now" != "$BUILT_WITH" ]; then
+            echo "::notice::a release appeared after this site was built; its own deploy publishes the feed, so this one is skipped"
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Deploy to GitHub Pages
         id: deploy
+        if: ${{ steps.fresh.outputs.stale != 'true' }}
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+
+      # deploy-pages reports success once GitHub accepts the deployment; the
+      # site can still serve another deploy of the same commit that landed
+      # seconds before. Check the site itself, deploy once more if it is not
+      # this run's, and fail if it still is not.
+      - name: Check the site serves this deploy
+        id: check
+        if: ${{ steps.fresh.outputs.stale != 'true' }}
+        continue-on-error: true
+        env:
+          SITE: ${{ steps.deploy.outputs.page_url }}
+          DEPLOY_ID: ${{ needs.build.outputs.deploy_id }}
+        run: scripts/pages-verify.sh "$SITE" "$DEPLOY_ID"
+
+      - name: Deploy again
+        id: redeploy
+        if: ${{ steps.check.outcome == 'failure' }}
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+
+      - name: Check again
+        if: ${{ steps.check.outcome == 'failure' }}
+        env:
+          SITE: ${{ steps.redeploy.outputs.page_url }}
+          DEPLOY_ID: ${{ needs.build.outputs.deploy_id }}
+        run: |
+          scripts/pages-verify.sh "$SITE" "$DEPLOY_ID" || {
+            echo "::error::the site does not serve this deploy after a second attempt; run pages.yml by hand"
+            exit 1
+          }
