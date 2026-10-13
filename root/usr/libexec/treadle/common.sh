@@ -33,9 +33,8 @@ treadle_build_checked() {
 		# DNS) stay visible.
 		#
 		# Severity is per-invocation (warn after a successful run, err after
-		# a failed one), which on its own would put routine audit output (the
-		# regex-group admit counts, one line per contributing source per
-		# group, on every apply) at the same level as "dropping its nodes".
+		# a failed one), which on its own would put routine notes (a capped
+		# group's kept-member count) at the same level as "dropping its nodes".
 		# Lines build-config tags `info:` are split off and logged at
 		# daemon.info so what is left at warn/err is only what actually went
 		# wrong. Two grep/logger pipelines rather than a read loop: the cost stays

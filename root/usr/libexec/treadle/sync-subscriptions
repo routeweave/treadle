@@ -19,7 +19,7 @@
 . /lib/functions.sh
 
 _sync_one() {
-	local sid auto_update last_sync name label
+	local sid auto_update last_sync
 	sid="$1"
 
 	config_get      auto_update "$sid" auto_update 0
@@ -37,10 +37,6 @@ _sync_one() {
 		[ $((now - last_epoch)) -ge "$interval_secs" ] || return
 	fi
 
-	config_get name "$sid" name ""
-	[ -n "$name" ] && label="$name" || label="$sid"
-
-	logger -p daemon.info -t treadle "sync: auto-update, syncing subscription '$label'"
 	ubus call luci.treadle sync_subscription "{\"id\":\"$sid\"}" >/dev/null 2>&1
 }
 

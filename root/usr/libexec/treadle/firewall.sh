@@ -274,8 +274,7 @@ start() {
 	case "$mode" in
 		tproxy) ;;
 		*)
-			stop
-			treadle_log info "firewall: $mode mode, no TPROXY ruleset needed"
+			stop && treadle_log info "firewall: TPROXY ruleset removed ($mode mode)"
 			return 0
 			;;
 	esac
@@ -311,16 +310,19 @@ start() {
 	treadle_log info "firewall: TPROXY ruleset applied ($mode, port $port)"
 }
 
+# Returns 0 only when there was a table to delete.
 stop() {
+	local deleted=1
 	# shellcheck disable=SC2086  # "inet treadle" must split into family and name
-	nft delete table $NFT_TABLE 2>/dev/null
+	nft delete table $NFT_TABLE 2>/dev/null && deleted=0
 	remove_iprules
+	return "$deleted"
 }
 
 # Only start/stop are used (by /etc/init.d/treadle); start is idempotent
 # (see start), so a separate restart adds nothing.
 case "$1" in
 	start)   start ;;
-	stop)    stop; treadle_log info "firewall: TPROXY ruleset removed" ;;
+	stop)    if stop; then treadle_log info "firewall: TPROXY ruleset removed"; fi ;;
 	*) echo "usage: $0 start|stop" >&2; exit 1 ;;
 esac

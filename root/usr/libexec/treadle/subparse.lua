@@ -1132,7 +1132,7 @@ local function parse_subscription(body)
 	-- Base64-encoded URI list: content is entirely base64 alphabet
 	-- characters. A plain URI list can never pass this check (every URI
 	-- contains ':'), so a match IS base64 — return even with 0 nodes so a
-	-- failed parse is logged as format=base64 rather than unknown.
+	-- failed parse is logged as base64 rather than unknown.
 	local stripped = trimmed:gsub("%s", "")
 	if #stripped >= 16 and stripped:match("^[A-Za-z0-9+/%-_=]+$") then
 		return "base64", extract_uris(base64_decode(stripped))

@@ -299,7 +299,11 @@ local prev_conn       = {}
 -- next fetch does not diff against the old process's counters.
 local stats_stale     = false
 
--- Emit one "active node is X" line per group. Used in two situations
+-- A message longer than about 1000 bytes is split across two syslog lines
+-- by logger, so log_initial starts a new line before reaching this.
+local LOG_LINE_MAX = 900
+
+-- Log every group's active node on one line. Used in two situations
 -- that both mean "the user just lost track of the live selection":
 --   - prime: daemon's first successful poll — they need to know what
 --     state we're attaching to, not just future flips.
@@ -314,16 +318,21 @@ local function log_initial(current, context)
 	local tags = {}
 	for tag in pairs(current) do tags[#tags + 1] = tag end
 	table.sort(tags)
+	local prefix = context .. " with active nodes: "
+	local line = ""
 	for _, tag in ipairs(tags) do
 		local entry = current[tag]
-		local msg = string.format(
-			"group '%s': %s with active node %s",
-			tag, context, entry.now)
+		local item = string.format("'%s' on %s", tag, entry.now)
 		if entry.delay_ms then
-			msg = msg .. string.format(" (%dms)", entry.delay_ms)
+			item = item .. string.format(" (%dms)", entry.delay_ms)
 		end
-		logmsg("info", msg)
+		if line ~= "" and #prefix + #line + #item + 2 > LOG_LINE_MAX then
+			logmsg("info", prefix .. line)
+			line = ""
+		end
+		line = (line == "") and item or (line .. "; " .. item)
 	end
+	if line ~= "" then logmsg("info", prefix .. line) end
 end
 
 -- Failover nudge. When a group's active member has lost its test result
@@ -1102,6 +1111,7 @@ while true do
 			-- Member changed within a still-existing group: the central
 			-- diagnostic — this is the "is my urltest flipping too
 			-- often" signal the user is hunting.
+			local late = {}
 			for tag, entry in pairs(current) do
 				local old = previous[tag]
 				if old and old.now and old.now ~= entry.now then
@@ -1120,16 +1130,9 @@ while true do
 						-- event but its probe is only now reporting a
 						-- `now`. Relabel with the same context the
 						-- event was logged under so the syslog reads
-						-- consistently — the user sees one event line
-						-- per group regardless of whether sing-box's
-						-- internal probe order put it on tick N or N+1.
-						local msg = string.format(
-							"group '%s': %s with active node %s",
-							tag, event_context, entry.now)
-						if entry.delay_ms then
-							msg = msg .. string.format(" (%dms)", entry.delay_ms)
-						end
-						logmsg("info", msg)
+						-- consistently, whether sing-box's internal
+						-- probe order put it on tick N or N+1.
+						late[tag] = entry
 					else
 						-- (2) Genuinely new group: appeared in /proxies
 						-- since the last event (user added it, or a
@@ -1140,6 +1143,7 @@ while true do
 					end
 				end
 			end
+			log_initial(late, event_context)
 			-- Group disappeared between ticks. Suppress the line during
 			-- the post-event window for tags that were in the pre-event
 			-- set — they're more likely still mid-probe than truly gone,

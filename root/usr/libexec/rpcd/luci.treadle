@@ -90,7 +90,7 @@ local function subparse()
 	return _subparse
 end
 
--- Collect up to this many node names for logging.
+-- Name at most this many skipped nodes in the log line.
 local MAX_NAMES = 20
 
 local function uci_cursor()
@@ -634,16 +634,6 @@ local function sync_one(id)
 		return { status = "error", node_count = 0 }
 	end
 
-	-- No URL in the log line. A subscription URL is a bearer credential:
-	-- anyone holding it gets the user's paid service and their whole node
-	-- list. get_logs feeds syslog straight into the Status page log box, so a
-	-- logged URL is one support screenshot away from being handed out, and
-	-- syslog is forwarded off-box wherever log_proto/log_ip are set. Cut down
-	-- to the scheme it reads as a broken URL rather than a deliberate
-	-- omission; nothing diagnostic is lost by dropping it, since the line
-	-- already names the subscription.
-	log_treadle("info", "sync '" .. sub_name .. "': fetching")
-
 	-- uclient-fetch is always present on OpenWrt (part of uclient).
 	-- Write to a temp file so we can cap size and check the exit code cleanly.
 	local safe_url = url:gsub("'", "'\\''")
@@ -693,7 +683,6 @@ local function sync_one(id)
 		local count = #nodes
 		status = "ok"
 		node_count = count
-		log_treadle("info", string.format("sync '%s': format=%s, %d node(s)", sub_name, fmt, count))
 		-- Nodes the provider ships that this sing-box cannot dial at all
 		-- (Xray-only transports, chiefly `xhttp`). They are dropped rather
 		-- than imported half-built, so say so — otherwise a subscription
@@ -714,26 +703,13 @@ local function sync_one(id)
 		end
 		if count == 0 then
 			sync_error = "no recognisable nodes in the reply"
-			log_treadle("warn", "sync '" .. sub_name .. "': URL returned no recognisable proxy nodes")
+			log_treadle("warn", string.format(
+				"sync '%s': URL returned no recognisable proxy nodes (%s)", sub_name, fmt))
 		else
-			-- Node names for the log line, capped at MAX_NAMES.
-			local names = {}
-			for _, n in ipairs(nodes) do
-				if #names >= MAX_NAMES then break end
-				if type(n.tag) == "string" and n.tag ~= "" then
-					names[#names + 1] = n.tag
-				end
-			end
-			local listed = table.concat(names, ", ")
-			if count > #names then
-				listed = listed .. string.format(" (+%d more)", count - #names)
-			end
-			log_treadle("info", "sync '" .. sub_name .. "' nodes: " .. listed)
-
 			local had_file = lib.file_exists(nodes_file(uid))
 			if write_nodes_file(uid, nodes) then
-				log_treadle("info", string.format("sync '%s': %d nodes saved to %s",
-					sub_name, count, nodes_file(uid)))
+				log_treadle("info", string.format("sync '%s': %d node(s) (%s)",
+					sub_name, count, fmt))
 				if not had_file then
 					first_import_tags = {}
 					for _, n in ipairs(nodes) do

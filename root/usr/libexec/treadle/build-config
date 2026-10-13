@@ -1468,8 +1468,6 @@ local function build_outbounds(c)
 		return out
 	end
 
-	local sub_names = sub_display_names(c)
-
 	local worklist = {}
 	for tag in pairs(referenced) do worklist[#worklist + 1] = tag end
 	local i = 1
@@ -1497,14 +1495,6 @@ local function build_outbounds(c)
 					src_set = {}
 					for _, sid in ipairs(src_list) do src_set[sid] = true end
 				end
-				-- Per-source admit counts for the audit log. A regex group
-				-- that auto-admits subscription nodes is an attack surface
-				-- (a hostile sub ships nodes matching the user's pattern
-				-- and slots itself into the auto-pool).
-				-- Logging each source's contribution lets the user notice
-				-- a new sub joining; gating is left to the optional
-				-- group_sources whitelist.
-				local by_source = {}
 				if type(ob.outbounds) ~= "table" or #ob.outbounds == 0 then
 					ob.outbounds = {}
 					-- Collect candidate tags (apply src_set restriction
@@ -1526,23 +1516,7 @@ local function build_outbounds(c)
 					for _, other in ipairs(all_ordered) do
 						if other.type ~= "urltest" and matched[other.tag] then
 							ob.outbounds[#ob.outbounds + 1] = other.tag
-							local src = other._source or "_manual"
-							by_source[src] = (by_source[src] or 0) + 1
 						end
-					end
-				end
-				-- Audit line per source that contributed. Skips "_manual" —
-				-- manual nodes by definition came from the user's own UCI.
-				-- Tagged `info:` so /etc/init.d/treadle logs it at daemon.info:
-				-- it is routine audit output, and at the warn level the rest
-				-- of this stream uses it would bury a real warning under one
-				-- line per contributing source per regex group, every apply.
-				for src, count in pairs(by_source) do
-					if src ~= "_manual" then
-						io.stderr:write("treadle build-config: info: group '" .. ob.tag
-							.. "' tag pattern admitted " .. count
-							.. " node(s) from subscription '"
-							.. (sub_names[src] or src) .. "'\n")
 					end
 				end
 			end
