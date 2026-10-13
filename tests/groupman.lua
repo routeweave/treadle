@@ -67,6 +67,7 @@ do
 	check(d.to == nil, "no upgrade inside the dwell")
 	d = gm.decide(st, group("A", { last_switch = 1000 - gm.DWELL_S }), 1000, first)
 	check(d.to == "B" and d.reason:find("faster"), "a member two buckets faster takes over after the dwell")
+	check(d.kind == "upgrade", "and the switch is an upgrade")
 end
 
 -- One bucket faster is not enough to move.
@@ -100,6 +101,7 @@ do
 	gm.record(st, "A", 1011, nil)
 	d = gm.decide(st, group("A", { last_switch = 1005 }), 1011, first)
 	check(d.to == "B" and d.reason:find("failed 2 probes"), "two failures in a row fail over")
+	check(d.kind == "failover", "and the switch is a failover")
 	check(gm.benched(st.members.A, 1011), "the failed member is benched")
 end
 
@@ -110,6 +112,7 @@ do
 	for i = 1, 10 do gm.record(st, "A", 1000 + i, (i % 2 == 0) and 90 or nil) end
 	local d = gm.decide(st, group("A", { last_switch = 0 }), 1011, first)
 	check(d.to == "B" and d.reason:find("voted out"), "a fast but flaky member is voted out")
+	check(d.kind == "failover", "a vote-out by probes is a failover")
 	check(gm.pick(st, MEMBERS, 1012, 50, 360, first) ~= "A", "a voted-out member is not picked")
 end
 
@@ -122,6 +125,7 @@ do
 	gm.add_errors(st, "A", 1000, t)
 	local d = gm.decide(st, group("A", { last_switch = 0 }), 1000, first)
 	check(d.to == "B" and d.reason:find("connection errors"), "real-traffic errors vote out a member whose probes pass")
+	check(d.kind == "failover", "a vote-out by connection errors is a failover")
 	local st2 = gm.new()
 	warm(st2, 1000, { A = 100, B = 300, C = 310, D = 320 })
 	gm.add_errors(st2, "A", 1000 + gm.ERR_WINDOW_S + 10, t)
@@ -201,12 +205,37 @@ do
 	warm(st, 4110, { A = 200, B = 210, C = 220 })
 	d = gm.decide(st, group("A", { last_switch = 3990 }), 4120, first)
 	check(d.to == "C" and d.reason:find("under half"), "two in a row move the group to the faster member")
+	check(d.kind == "speed", "and the switch is a speed verdict")
 	check(gm.benched(st.members.A, 4120), "and bench the slow one")
 	local st2 = gm.new()
 	gm.record_speed(st2, "A", "B", 0, 15 * MB, 40 * MB)
 	gm.record_speed(st2, "A", "B", 1, 30 * MB, 40 * MB)
 	check(st2.members.A.speed_low == 0, "a normal result in between clears the run")
 	check(gm.record_speed(st2, "A", "B", 2, 6 * MB, 9 * MB) == false, "both slow (shared congestion) is not low")
+end
+
+-- A member benched as slow but still in use (nothing else was eligible) keeps
+-- its speed verdict when the group later moves off it, unless its probes have
+-- failed since, which makes the move a failover.
+do
+	local MB = 1e6 / 8
+	local function slow_and_stuck()
+		local st = gm.new()
+		warm(st, 4000, { A = 200 })
+		gm.record_speed(st, "A", "B", 4000, 15 * MB, 40 * MB)
+		gm.record_speed(st, "A", "B", 4120, 12 * MB, 35 * MB)
+		local d = gm.decide(st, group("A", { last_switch = 0 }), 4120, first)
+		check(d.need_test and gm.benched(st.members.A, 4120), "a slow member with no alternative is benched in place")
+		warm(st, 4130, { B = 210 })
+		return st
+	end
+	local st = slow_and_stuck()
+	local d = gm.decide(st, group("A", { last_switch = 0 }), 4130, first)
+	check(d.to == "B" and d.kind == "speed", "moving off it later is still a speed verdict")
+	st = slow_and_stuck()
+	gm.record(st, "A", 4125, nil); gm.record(st, "A", 4126, nil)
+	d = gm.decide(st, group("A", { last_switch = 0 }), 4130, first)
+	check(d.to == "B" and d.kind == "failover", "unless its probes failed meanwhile")
 end
 
 -- The level behind "latency got worse": it starts at the first score, a

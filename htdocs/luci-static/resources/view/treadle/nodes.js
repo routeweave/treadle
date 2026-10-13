@@ -1127,9 +1127,14 @@ return baseclass.extend({
 
 		o = s.option(form.Flag, 'group_interrupt',
 			_('Interrupt existing connections'),
-			_('Drop connections routed through this group when its active member ' +
-			  'changes, so apps reconnect through the new node. Useful for HTTP/web; ' +
-			  'noisy for SSH and other long-lived sessions.'));
+			managed
+				? _('Also drop the group\'s connections when it moves to a faster member, ' +
+				    'so apps reconnect through the new node. Useful for HTTP/web; noisy ' +
+				    'for SSH and other long-lived sessions. When the member in use fails, ' +
+				    'its connections are always dropped; when it is only slow, never.')
+				: _('Drop connections routed through this group when its active member ' +
+				    'changes, so apps reconnect through the new node. Useful for HTTP/web; ' +
+				    'noisy for SSH and other long-lived sessions.'));
 		o.modalonly = true;
 		o.rmempty = true;
 	},

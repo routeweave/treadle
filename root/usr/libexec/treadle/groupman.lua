@@ -24,6 +24,12 @@
 -- "Best" is the lowest tolerance-wide bucket of score (see M.score) among
 -- eligible members, with a random pick inside it, so near-equal members share
 -- the load instead of the first one in a list taking it all.
+--
+-- A switch says which rule made it (`kind`), because the caller treats the
+-- connections still open through the old member differently: a failover
+-- ("failover") closes them, a faster member ("upgrade") closes them only when
+-- the group asks to, and a speed verdict ("speed") never does, since the old
+-- member still carries traffic.
 
 local M = {}
 
@@ -235,8 +241,8 @@ function M.pick(st, members, now, tolerance, fresh_s, rnd, except)
 end
 
 -- What a group should do now. `g` = { now, members, tolerance, fresh_s,
--- last_switch }. Returns { to, reason } to switch, { need_test = true } when
--- the group must move but nothing is known to work, or {} to stay.
+-- last_switch }. Returns { to, reason, kind } to switch, { need_test = true }
+-- when the group must move but nothing is known to work, or {} to stay.
 function M.decide(st, g, now, rnd)
 	local tol = (g.tolerance and g.tolerance >= 1) and g.tolerance or 50
 	local cur = M.member(st, g.now)
@@ -251,6 +257,7 @@ function M.decide(st, g, now, rnd)
 	end
 
 	local why, prefer
+	local kind = "failover"
 	if not M.benched(cur, now) then
 		local errs = M.recent_errors(cur, now)
 		if errs >= M.ERR_VOTE then
@@ -268,12 +275,19 @@ function M.decide(st, g, now, rnd)
 			why = string.format("speed %.1f Mbit/s, under half of %s's %.1f",
 				(cur.speed_last or 0) * 8 / 1e6, tostring(cur.speed_alt),
 				(cur.speed_alt_bps or 0) * 8 / 1e6)
-			prefer = cur.speed_alt
+			prefer, kind = cur.speed_alt, "speed"
 			cur.speed_low, cur.last_fail = 0, now
 			M.bench(cur, now)
 		end
+		-- Kept for a move off it while it is still in use and benched (no
+		-- other member was eligible when it was benched).
+		if why then cur.bench_kind = kind end
 	else
 		why = "benched"
+		-- Benched as slow, it is a failover once its probes fail as well.
+		if cur.bench_kind == "speed" and cur.fails < M.FAILS_TO_SWITCH then
+			kind = "speed"
+		end
 	end
 
 	if why then
@@ -282,7 +296,7 @@ function M.decide(st, g, now, rnd)
 		local pr = prefer and st.members[prefer]
 		local to = (pr and M.eligible(pr, now, g.fresh_s)) and prefer
 			or M.pick(st, g.members, now, tol, g.fresh_s, rnd, g.now)
-		if to then return { to = to, reason = g.now .. " " .. why } end
+		if to then return { to = to, reason = g.now .. " " .. why, kind = kind } end
 		return { need_test = true, reason = g.now .. " " .. why }
 	end
 
@@ -292,8 +306,9 @@ function M.decide(st, g, now, rnd)
 		if to and b < bucket(cur, tol) - 1
 			and M.score(st.members[to]) <= (1 - M.MIN_GAIN) * cur_score
 		then
-			return { to = to, reason = string.format("%s is faster (%d ms against %d ms)",
-				to, math.floor(M.score(st.members[to])), math.floor(cur_score)) }
+			return { to = to, kind = "upgrade",
+				reason = string.format("%s is faster (%d ms against %d ms)",
+					to, math.floor(M.score(st.members[to])), math.floor(cur_score)) }
 		end
 	end
 	return {}

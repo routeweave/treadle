@@ -534,7 +534,8 @@ local function settings()
 					r.groups[s.tag] = {
 						url       = s.group_test_url,
 						interval  = s.group_interval,
-						tolerance = tonumber(s.group_tolerance)
+						tolerance = tonumber(s.group_tolerance),
+						interrupt = s.group_interrupt == "1"
 					}
 				end
 			end)
@@ -563,6 +564,9 @@ end
 -- whether to move. A failed probe of the member in use is repeated at once,
 -- so two failures in a row switch the group within seconds. A move is
 -- applied with PUT /proxies/<group>; sing-box stores it in the cache file.
+-- The connections still open through the old member are then closed after a
+-- failover, after an upgrade only when the group's Interrupt flag is set, and
+-- never after a speed verdict (see close_connections).
 local ACTIVE_PROBE_S     = 20
 local GROUP_RETEST_S     = 60   -- at most this often when nothing is known to work
 local MAX_PROBES         = 8    -- single-node probes per tick, across groups
@@ -620,48 +624,94 @@ local function group_test(tag, members, url, now)
 	end
 end
 
+-- Send raw HTTP/1.1 requests to the clash API through nc, killed after
+-- API_WAIT_S if the API never closes the connection; the last request must
+-- carry `Connection: close`. Several requests can go in one call, pipelined.
+-- Returns everything the API sent back.
+local API_WAIT_S = 5
+local function nc_request(text)
+	local path = "/var/etc/treadle/.api.req"
+	local w = io.open(path, "w")
+	if not w then return "" end
+	w:write(text)
+	w:close()
+	local h = io.popen("nc " .. CLASH_HOST:gsub(":", " ") .. " < " .. path .. " > " .. path .. ".out 2>/dev/null & p=$!; "
+		.. "n=0; while kill -0 $p 2>/dev/null && [ $n -lt " .. API_WAIT_S .. " ]; do sleep 1; n=$((n + 1)); done; "
+		.. "kill $p 2>/dev/null; cat " .. path .. ".out")
+	local out = h and h:read("*a") or ""
+	if h then h:close() end
+	os.remove(path)
+	os.remove(path .. ".out")
+	return out
+end
+
 -- Switch a selector with PUT /proxies/<group>. uclient-fetch sends it where
 -- it has --method (25.12); 24.10's has no PUT and its busybox nc takes no
--- options, so there the raw request goes through nc, killed after
--- PUT_WAIT_S if the API never closes the connection.
-local PUT_WAIT_S = 5
+-- options, so there the raw request goes through nc_request.
 local put_via_uclient
 local function select_member(group, member)
 	local body = jsonc.stringify({ name = member })
-	local path = "/var/etc/treadle/.select.req"
 	if put_via_uclient == nil then
 		local h = io.popen("uclient-fetch --help 2>&1")
 		put_via_uclient = (h and h:read("*a") or ""):find("--method", 1, true) ~= nil
 		if h then h:close() end
 	end
-	local w = io.open(path, "w")
-	if not w then return false end
-	local cmd
-	if put_via_uclient then
-		w:write(body)
-		-- Exit 0 on the 204, non-zero on an error status; the group is
-		-- percent-encoded, so it cannot break out of the quotes.
-		cmd = "uclient-fetch -q -O /dev/null --timeout=" .. PUT_WAIT_S
-			.. " --method=PUT --header='Content-Type: application/json'"
-			.. " --body-file=" .. path .. " 'http://" .. CLASH_HOST .. "/proxies/"
-			.. lib.url_encode(group) .. "' >/dev/null 2>&1 && echo 'HTTP/1.1 204'"
-	else
-		w:write("PUT /proxies/" .. lib.url_encode(group) .. " HTTP/1.1\r\n"
+	if not put_via_uclient then
+		return nc_request("PUT /proxies/" .. lib.url_encode(group) .. " HTTP/1.1\r\n"
 			.. "Host: " .. CLASH_HOST .. "\r\n"
 			.. "Content-Type: application/json\r\n"
 			.. "Content-Length: " .. #body .. "\r\n"
-			.. "Connection: close\r\n\r\n" .. body)
-		cmd = "nc " .. CLASH_HOST:gsub(":", " ") .. " < " .. path .. " > " .. path .. ".out 2>/dev/null & p=$!; "
-			.. "n=0; while kill -0 $p 2>/dev/null && [ $n -lt " .. PUT_WAIT_S .. " ]; do sleep 1; n=$((n + 1)); done; "
-			.. "kill $p 2>/dev/null; head -n 1 " .. path .. ".out"
+			.. "Connection: close\r\n\r\n" .. body):find("HTTP/1%.%d 204") ~= nil
 	end
+	local path = "/var/etc/treadle/.select.req"
+	local w = io.open(path, "w")
+	if not w then return false end
+	w:write(body)
 	w:close()
-	local h = io.popen(cmd)
+	-- Exit 0 on the 204, non-zero on an error status; the group is
+	-- percent-encoded, so it cannot break out of the quotes.
+	local h = io.popen("uclient-fetch -q -O /dev/null --timeout=" .. API_WAIT_S
+		.. " --method=PUT --header='Content-Type: application/json'"
+		.. " --body-file=" .. path .. " 'http://" .. CLASH_HOST .. "/proxies/"
+		.. lib.url_encode(group) .. "' >/dev/null 2>&1 && echo 'HTTP/1.1 204'")
 	local out = h and h:read("*a") or ""
 	if h then h:close() end
 	os.remove(path)
-	os.remove(path .. ".out")
 	return out:find("HTTP/1%.%d 204") ~= nil
+end
+
+-- Close the connections that went through `old` as a group's member, once
+-- the group has moved off it. A connection's `chains` is fixed when it
+-- opens: the node first, then each group it went through, so the member a
+-- group was using sits right before the group. Connections that use `old`
+-- without this group (a rule pinned to it) are left alone. Every close goes
+-- in one pipelined nc request, so even a busy group costs one fork. Returns
+-- how many the API confirmed.
+local function close_connections(group, old)
+	local parsed = fetch_json("/connections")
+	if not parsed or type(parsed.connections) ~= "table" then return 0 end
+	local reqs = {}
+	for _, c in ipairs(parsed.connections) do
+		local chain = c.chains
+		-- The id goes into the request line, so it must be a plain UUID.
+		if type(chain) == "table" and type(c.id) == "string" and c.id:match("^[%x%-]+$") then
+			for i = 2, #chain do
+				if chain[i] == group then
+					if chain[i - 1] == old then
+						reqs[#reqs + 1] = "DELETE /connections/" .. c.id .. " HTTP/1.1\r\n"
+							.. "Host: " .. CLASH_HOST .. "\r\n"
+					end
+					break
+				end
+			end
+		end
+	end
+	if #reqs == 0 then return 0 end
+	reqs[#reqs] = reqs[#reqs] .. "Connection: close\r\n"
+	local out = nc_request(table.concat(reqs, "\r\n") .. "\r\n")
+	local closed = 0
+	for _ in out:gmatch("HTTP/1%.%d 204") do closed = closed + 1 end
+	return closed
 end
 
 -- Charge fail-watch's new connection errors to members. An error naming a
@@ -936,9 +986,19 @@ local function manage_groups(current, cfg, publish)
 					tag, g.now, dec.to, dec.reason))
 				meta.last_switch, meta.switched_at, meta.reason = os.time(), os.time(), dec.reason
 				meta.stuck = nil
+				local old = g.now
 				g.now = dec.to
 				local nr = gm_state.members[dec.to]
 				g.delay_ms = nr and nr.ewma and math.floor(nr.ewma) or nil
+				-- A failed member's connections are stalled, so apps are
+				-- made to reconnect; a slow one's still carry traffic.
+				if dec.kind == "failover" or (dec.kind == "upgrade" and gc.interrupt) then
+					local n = close_connections(tag, old)
+					if n > 0 then
+						logmsg("info", string.format(
+							"group '%s': closed %d connections through %s", tag, n, old))
+					end
+				end
 			else
 				logmsg("warning", string.format("group '%s': could not switch to %s", tag, dec.to))
 			end

@@ -671,6 +671,7 @@ fi
 uci set treadle.global.group_manager=treadle
 uci set treadle.0123456789abcd10.group_member_order=latency
 uci set treadle.0123456789abcd10.group_max_members=3
+uci set treadle.0123456789abcd10.group_interrupt=1
 uci commit treadle
 build "managed groups"
 MG="$OUT/managed_groups.json"
@@ -686,7 +687,8 @@ case " $mg_members " in *" $mg_default "*) ok "its default is one of its members
 	*) bad "default '$mg_default' is not a member" ;; esac
 [ -z "$(jsonfilter -i "$MG" -e '@.outbounds[@.tag="ALL"].url')" ] \
 	&& [ -z "$(jsonfilter -i "$MG" -e '@.outbounds[@.tag="ALL"].interval')" ] \
-	&& ok "no urltest options reach the selector" \
+	&& [ -z "$(jsonfilter -i "$MG" -e '@.outbounds[@.tag="ALL"].interrupt_exist_connections')" ] \
+	&& ok "no urltest options reach the selector, nor the interrupt flag (active-watch applies it)" \
 	|| bad "selector carries urltest options"
 [ "$(jsonfilter -i "$MG" -e '@.experimental.clash_api.external_controller')" = "127.0.0.1:9090" ] \
 	&& [ "$(jsonfilter -i "$MG" -e '@.experimental.cache_file.enabled')" = true ] \
@@ -720,6 +722,7 @@ uci commit treadle
 uci set treadle.global.group_manager=singbox
 uci delete treadle.0123456789abcd10.group_member_order
 uci delete treadle.0123456789abcd10.group_max_members
+uci delete treadle.0123456789abcd10.group_interrupt
 uci commit treadle
 build "groups by sing-box"
 [ "$(jsonfilter -i "$OUT/groups_by_sing-box.json" -e '@.outbounds[@.tag="ALL"].type')" = urltest ] \

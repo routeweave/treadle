@@ -115,7 +115,7 @@ msgid "Reset"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/main.js:227
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1142
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1147
 #: htdocs/luci-static/resources/view/treadle/status.js:1202
 #: htdocs/luci-static/resources/view/treadle/status.js:1237
 msgid "Loading…"
@@ -172,7 +172,7 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:239
 #: htdocs/luci-static/resources/view/treadle/nodes.js:900
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1163
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1168
 #: htdocs/luci-static/resources/view/treadle/routing.js:722
 #: htdocs/luci-static/resources/view/treadle/routing.js:810
 msgid "Name"
@@ -296,7 +296,7 @@ msgid "TLS"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:409
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1164
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1169
 msgid "Type"
 msgstr ""
 
@@ -307,19 +307,19 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:431
 #: htdocs/luci-static/resources/view/treadle/nodes.js:476
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1165
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1170
 msgid "Server"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:449
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1168
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1173
 #: htdocs/luci-static/resources/view/treadle/status.js:736
 msgid "Latency"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:464
 #: htdocs/luci-static/resources/view/treadle/nodes.js:467
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1196
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1201
 msgid "Test"
 msgstr ""
 
@@ -830,19 +830,23 @@ msgstr ""
 msgid "Interrupt existing connections"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1130
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1131
+msgid "Also drop the group's connections when it moves to a faster member, so apps reconnect through the new node. Useful for HTTP/web; noisy for SSH and other long-lived sessions. When the member in use fails, its connections are always dropped; when it is only slow, never."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1135
 msgid "Drop connections routed through this group when its active member changes, so apps reconnect through the new node. Useful for HTTP/web; noisy for SSH and other long-lived sessions."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1141
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1278
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1146
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1283
 #, javascript-format
 msgid "Nodes — %s"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1147
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1244
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1284
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1152
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1249
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1289
 #: htdocs/luci-static/resources/view/treadle/status.js:1204
 #: htdocs/luci-static/resources/view/treadle/status.js:1219
 #: htdocs/luci-static/resources/view/treadle/status.js:1229
@@ -852,69 +856,69 @@ msgstr ""
 msgid "Close"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1159
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1164
 msgid "No nodes. Sync this subscription to populate the list."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1221
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1226
 msgid "Type to filter by name, type or server…"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1262
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1267
 msgid "Test all in this subscription"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1264
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1269
 #, javascript-format
 msgid "Nodes — %s (%d)"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1279
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1284
 msgid "Failed to load nodes."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1352
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1427
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1357
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1432
 msgid "A latency test run is already in progress."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1369
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1443
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1374
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1448
 msgid "unknown error"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1370
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1375
 msgid "Test failed: "
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1409
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1414
 msgid "No nodes to test."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1444
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1449
 msgid "Test all failed: "
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1490
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1495
 msgid "runner timed out (status file never cleared)"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1517
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1522
 #, javascript-format
 msgid "Test all failed: %s"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1523
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1528
 #, javascript-format
 msgid "Tested %d nodes — %d timed out."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1524
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1529
 #, javascript-format
 msgid "Tested %d nodes."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1584
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1589
 #, javascript-format
 msgid "Renamed \"%s\" to \"%s\" — %d routing reference(s) updated to follow."
 msgstr ""

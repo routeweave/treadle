@@ -1303,7 +1303,10 @@ end
 -- cache file across restarts; `default` is used only when the cache has none
 -- (the first start), and is spread by a hash of the group tag so groups built
 -- from the same list do not all start on its first member. The test URL,
--- interval and tolerance are Treadle's to apply, not sing-box's.
+-- interval and tolerance are Treadle's to apply, not sing-box's, and so is
+-- interrupting connections: sing-box would interrupt on every switch, while
+-- active-watch closes them only on a failover, or on an upgrade when the
+-- group asks to.
 local function as_selector(ob)
 	local members = {}
 	for k, t in ipairs(ob.outbounds) do members[k] = t end
@@ -1312,8 +1315,7 @@ local function as_selector(ob)
 		type      = "selector",
 		tag       = ob.tag,
 		outbounds = members,
-		default   = members[pm_hash(ob.tag) % #members + 1],
-		interrupt_exist_connections = ob.interrupt_exist_connections
+		default   = members[pm_hash(ob.tag) % #members + 1]
 	}
 end
 
