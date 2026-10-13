@@ -240,12 +240,16 @@ end
 -- boot (snapshot empty) we still take a poll and stash it, but we don't
 -- emit "changed" / "added" lines for groups going from nothing to their
 -- first reading — that isn't a flip, it's the initial inventory.
--- fail_streak: count of consecutive fetch failures, so we can surface a
--- single warning after a meaningful run of failures (sing-box restart,
--- crash, clash port wedged) instead of silently going stale. Resets on
--- the next success, logging a recovery line so the gap is bracketed in
--- the syslog timeline.
-local FAIL_WARN_AFTER = 6  -- ~one minute of failures at 10s ticks
+-- fail_streak: count of consecutive fetch failures, and fail_since when
+-- the run began, so we can surface a single warning after a meaningful run
+-- of failures (sing-box restart, crash, clash port wedged) instead of
+-- silently going stale. Resets on the next success, logging a recovery line
+-- so the gap is bracketed in the syslog timeline.
+local FAIL_WARN_S = 60
+-- A failed fetch is retried after RETRY_S, RETRY_TRIES times, before the
+-- usual POLL_S: a starting sing-box opens its API a few seconds in, and the
+-- Status page waits for the first poll that reaches it.
+local RETRY_S, RETRY_TRIES = 2, 15
 local POST_EVENT_WINDOW_S = 60  -- relabel-late-arrivals horizon, see below
 
 -- Create the snapshot directory once, 0700 (it cannot vanish on tmpfs
@@ -256,6 +260,7 @@ lib.secure_mkdir("/var/etc/treadle")
 local previous = load_snapshot()
 local primed   = next(previous) ~= nil
 local fail_streak = 0
+local fail_since, fail_warned
 -- Captured at daemon start so the first iteration doesn't mis-detect a
 -- restart against nil. If procd is briefly unreachable, last_pid stays
 -- at its last known value through the gap — we only treat a true
@@ -971,7 +976,7 @@ while true do
 	if not (cfg.clash or cfg.managed) then
 		-- Reset transient state so a re-enable doesn't surface a stale
 		-- 'reachable again' on the first successful fetch.
-		fail_streak = 0
+		fail_streak, fail_since, fail_warned = 0, nil, nil
 		primed      = false
 		last_pid    = nil
 		flush_log()
@@ -979,13 +984,13 @@ while true do
 	else
 	local parsed = fetch_json("/proxies")
 	if parsed then
-		if fail_streak >= FAIL_WARN_AFTER then
+		if fail_warned then
 			logmsg("info", string.format(
 				"clash API reachable again after %d failed polls",
 				fail_streak))
 		end
 		local had_outage = (fail_streak > 0)
-		fail_streak = 0
+		fail_streak, fail_since, fail_warned = 0, nil, nil
 
 		-- pid check after a successful fetch so we don't burn an ubus
 		-- call when we already know things are degraded. A pid change
@@ -1199,20 +1204,22 @@ while true do
 		if not event_tick then nudge_groups(current) end
 	else
 		fail_streak = fail_streak + 1
+		fail_since = fail_since or os.time()
 		-- One warning at the threshold, not one per failed tick — the
 		-- syslog tail on the Status page is finite and the user needs
 		-- one clear signal, not a flood. Subsequent failures stay
 		-- silent until the streak breaks (which logs the recovery).
-		if fail_streak == FAIL_WARN_AFTER then
+		if not fail_warned and os.time() - fail_since >= FAIL_WARN_S then
+			fail_warned = true
 			logmsg("warning", string.format(
 				"clash API unreachable for %d consecutive polls (~%ds) — sing-box may be down or the clash listener not bound",
-				fail_streak, fail_streak * POLL_S))
+				fail_streak, os.time() - fail_since))
 		end
 	end
 	-- Drain queued log lines before sleeping. One logger fork per
 	-- severity level instead of one per line — a flip burst over many
 	-- groups stays well inside the POLL_S budget.
 	flush_log()
-	os.execute("sleep " .. tostring(POLL_S))
+	os.execute("sleep " .. tostring((not parsed and fail_streak <= RETRY_TRIES) and RETRY_S or POLL_S))
 	end  -- else (clash API in use)
 end
