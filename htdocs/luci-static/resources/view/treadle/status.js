@@ -535,6 +535,12 @@ return baseclass.extend({
 		var groupOf = {}, nodeOf = {}, users = {}, order = [];
 		groups.forEach(function(x) { groupOf[x.tag] = x; });
 		nodes.forEach(function(x) { nodeOf[x.tag] = x; });
+		// Groups are config sections (a subscription brings single nodes only),
+		// so they are known before the first report, nested ones included.
+		var cfgGroup = {};
+		uci.sections('treadle', 'node').forEach(function(s) {
+			if (s.type === 'group' && s.tag) cfgGroup[s.tag] = s;
+		});
 		var add = function(tag, user) {
 			if (!tag || tag === 'block') return;
 			if (!users[tag]) { users[tag] = { isDefault: false, rules: [] }; order.push(tag); }
@@ -549,7 +555,18 @@ return baseclass.extend({
 		}).forEach(function(r) {
 			add(r.outbound, r.name || _('unnamed rule'));
 		});
-		groups.forEach(function(x) { if (!users[x.tag]) { users[x.tag] = { isDefault: false, rules: [] }; order.push(x.tag); } });
+		var nested = {};
+		groups.forEach(function(x) { nested[x.tag] = true; });
+		for (var i = 0, walk = order.concat(Object.keys(nested)); i < walk.length; i++) {
+			var s = cfgGroup[walk[i]];
+			if (s && s.group_mode !== 'regex')
+				L.toArray(s.group_members).forEach(function(m) {
+					if (cfgGroup[m] && !nested[m]) { nested[m] = true; walk.push(m); }
+				});
+		}
+		Object.keys(nested).sort().forEach(function(tag) {
+			if (!users[tag]) { users[tag] = { isDefault: false, rules: [] }; order.push(tag); }
+		});
 		if (!users.direct) {
 			users.direct = { isDefault: false, rules: [] };
 			order.push('direct');
@@ -561,7 +578,7 @@ return baseclass.extend({
 			if (u.rules.length === 1) parts.push(_('Rule: %s').format(u.rules[0]));
 			else if (u.rules.length > 1) parts.push(_('Rules: %s').format(u.rules.join(', ')));
 			return { tag: tag, usedBy: parts.join(' · '), group: groupOf[tag], node: nodeOf[tag],
-				direct: tag === 'direct' };
+				isGroup: !!(groupOf[tag] || cfgGroup[tag]), direct: tag === 'direct' };
 		});
 	},
 
@@ -606,17 +623,15 @@ return baseclass.extend({
 		]);
 	},
 
-	// Until sing-box is running and active-watch has reported on it, the
-	// table stays with its headings and one placeholder row saying why:
-	// without the report, groups cannot be told from single nodes.
+	// While sing-box runs, the rows come from the config, their values empty
+	// until active-watch's first report. Stopped or off, the table keeps its
+	// headings and one placeholder row saying why.
 	_renderInUse: function(g, stats, running) {
 		var self = this;
 		var live = running && Number(g.updated_at) > 0;
-		var rows = live ? this._inUseRows(g) : [];
+		var rows = running ? this._inUseRows(live ? g : {}) : [];
 		var rates = (stats && stats.by_tag) || {};
-		var why = !this._lastEnabled ? _('Treadle is off.')
-			: !running ? _('sing-box is not running.')
-			: _('Waiting for the first update from sing-box…');
+		var why = !this._lastEnabled ? _('Treadle is off.') : _('sing-box is not running.');
 		// The minute is in it so a bench countdown moves without other changes.
 		var sig = JSON.stringify([ live, why, rows, rates, this._open, Math.floor((Number(g.now) || 0) / 60) ]);
 		if (sig === this._sigs.inuse) return;
@@ -643,6 +658,7 @@ return baseclass.extend({
 			}, [ open ? '▾' : '▸' ]) : '';
 			var kind = r.direct ? _('No proxy')
 				: x ? _('Group · %d nodes').format(arr(x.members).length)
+				: r.isGroup ? _('Group')
 				: self._nodeKind(r.tag);
 			// On a phone the Used by and Kind columns are hidden and the same
 			// text moves under the node name.
@@ -722,7 +738,7 @@ return baseclass.extend({
 					E('th', { 'class': 'th treadle-hide-narrow' }, [ _('Used by') ]),
 					E('th', { 'class': 'th treadle-hide-narrow' }, [ _('Kind') ])
 				]) ]),
-				E('tbody', {}, live ? trs : [
+				E('tbody', {}, running ? trs : [
 					E('tr', { 'class': 'tr placeholder' }, [
 						E('td', { 'class': 'td', 'colspan': '6' }, [ E('em', {}, [ why ]) ])
 					])
