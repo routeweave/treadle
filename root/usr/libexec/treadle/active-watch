@@ -813,7 +813,9 @@ local function speed_round(cfg, cands)
 	end
 end
 
-local function manage_groups(current, cfg)
+-- `publish`: write the snapshot before this tick's tests too, so a fresh
+-- start shows each group's node without waiting for them.
+local function manage_groups(current, cfg, publish)
 	if not gm then gm_load() end
 	local now = os.time()
 	local tags, wanted = {}, {}
@@ -841,14 +843,20 @@ local function manage_groups(current, cfg)
 		local g = current[tag]
 		for _, m in ipairs(g.members) do
 			local r = gm_state.members[m.tag]
-			if m.delay_ms or (r and (r.tested_at or 0) >= since) then m.tested = true end
+			if m.delay_ms or (r and (r.tested_at or 0) >= since) then
+				m.tested = true
+				if m.tag == g.now then g.tested = true end
+			end
 		end
 	end
+	if publish then save_snapshot(current) end
 
 	local hit = take_errors(current, now)
 	local probes = MAX_PROBES
 	local speed_cands = {}
-	-- Re-check the group whose last pass is oldest, one per tick.
+	-- Re-check the group whose last pass is oldest, one per tick. A pass from
+	-- before sing-box last started is due at once: sing-box has no results
+	-- from it to show, though Treadle's record of them survives.
 	local due, due_age
 	for _, tag in ipairs(tags) do
 		local meta = gm_groups[tag]
@@ -863,7 +871,9 @@ local function manage_groups(current, cfg)
 		local interval = duration_s(gc.interval) or DEFAULT_INTERVAL_S
 		if interval < MIN_INTERVAL_S then interval = MIN_INTERVAL_S end
 		local age = now - (meta.last_test or 0)
-		if age >= interval and (not due or age > due_age) then due, due_age = tag, age end
+		if (age >= interval or (meta.last_test or 0) < since) and (not due or age > due_age) then
+			due, due_age = tag, age
+		end
 	end
 
 	for _, tag in ipairs(tags) do
@@ -1083,7 +1093,7 @@ while true do
 
 		-- Before the snapshot, so a switch made here is what it records and
 		-- the next tick's diff does not log it a second time.
-		if cfg.managed then manage_groups(current, cfg) end
+		if cfg.managed then manage_groups(current, cfg, event_tick) end
 
 		save_snapshot(current)
 		previous = current

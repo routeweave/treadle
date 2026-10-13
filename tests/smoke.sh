@@ -1669,13 +1669,17 @@ uci commit treadle
 GS=/var/etc/treadle/.group-state.json
 # A latency level of 1 ms for both nodes, so the first tick finds the node in
 # use "clearly worse" and runs a speed check; a real one waits for congestion.
+# The group was last re-checked a minute ago, before sing-box last started, so
+# it is due at once although its interval (3 min) has not passed.
 now_s=$(date +%s)
 cat > "$GS" <<EOF
 { "members": {
   "m1": { "ring": [], "fails": 0, "level": 0, "errors": [], "level_score": 1, "level_at": $now_s },
   "m2": { "ring": [], "fails": 0, "level": 0, "errors": [], "level_score": 1, "level_at": $now_s } },
-  "groups": {}, "speed": {} }
+  "groups": { "g": { "last_switch": $now_s, "last_test": $((now_s - 60)) } }, "speed": {} }
 EOF
+TM_STARTED=$(cat /var/run/treadle.started 2>/dev/null)
+echo "$now_s" > /var/run/treadle.started
 TREADLE_SPEED_URL=http://127.0.0.1:18129/big lua /usr/libexec/treadle/active-watch >"$TM/aw.log" 2>&1 &
 TM_PIDS="$TM_PIDS $!"
 # The first tick tests the member in use and re-checks the whole group.
@@ -1684,7 +1688,7 @@ while [ "$i" -lt 40 ] && ! { [ -n "$(jsonfilter -i "$GS" -e '@.members.m1.last_o
 	&& [ -n "$(jsonfilter -i "$GS" -e '@.members.m2.last_ok' 2>/dev/null)" ]; }; do
 	sleep 1; i=$((i + 1))
 done
-[ "$i" -lt 40 ] && ok "active-watch tests every member of a managed group" \
+[ "$i" -lt 40 ] && ok "active-watch tests every member of a managed group, at once after sing-box starts" \
 	|| bad "group state after 40s: $(head -c 400 "$GS" 2>/dev/null) aw: $(head -c 300 "$TM/aw.log") sing-box: $(head -c 300 "$TM/t.log")"
 [ "$(jsonfilter -i /var/etc/treadle/.active-nodes.json -e '@.groups.g.managed' 2>/dev/null)" = true ] \
 	&& ok "the snapshot marks the group as managed by Treadle" \
@@ -1751,6 +1755,7 @@ uci set treadle.global.group_manager=singbox
 uci -q delete treadle.global.speed_test
 uci commit treadle
 rm -f "$GS"
+if [ -n "$TM_STARTED" ]; then echo "$TM_STARTED" > /var/run/treadle.started; else rm -f /var/run/treadle.started; fi
 
 # --- sing-box updates from SagerNet ------------------------------------------
 # The check reads a recorded releases/latest reply (no GitHub call, no rate
