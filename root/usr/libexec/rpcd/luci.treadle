@@ -1328,6 +1328,9 @@ local methods = {
 						            or string.lower(tostring(entry.type or "")),
 						now       = entry.now or "",
 						delay_ms  = entry.delay_ms,
+						-- Its node in use has been tested by this sing-box, so
+						-- no latency reads as a failure, not as no test yet.
+						tested    = entry.tested and true or nil,
 						members   = (type(entry.members) == "table") and entry.members or {},
 						interval  = u.interval or "",
 						tolerance = u.tolerance or "",

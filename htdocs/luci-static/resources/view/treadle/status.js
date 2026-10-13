@@ -653,7 +653,7 @@ return baseclass.extend({
 				E('span', { 'class': 'treadle-muted treadle-show-narrow' }, [ kind ])
 			];
 			var latency = r.direct ? E('span', { 'class': 'treadle-muted' }, [ '—' ])
-				: x ? self._latency(x.delay_ms, !!x.now)
+				: x ? self._latency(x.delay_ms, !!x.tested)
 				: self._latency(r.node && r.node.delay_ms, !!(r.node && r.node.tested_at));
 			// Node and latency side by side: "is the node I go through
 			// healthy?" is the question this table answers first.
@@ -692,7 +692,7 @@ return baseclass.extend({
 								E('span', {}, [ m.tag ]),
 								benched ? E('span', { 'class': 'label warning', 'style': 'text-transform:none;' }, [
 									_('benched %d min').format(Math.ceil((m.benched_until - gnow) / 60))
-								]) : self._latency(m.delay_ms, true)
+								]) : self._latency(m.delay_ms, !!m.tested)
 							]);
 						})),
 						E('div', { 'class': 'treadle-muted', 'style': 'font-size:0.85em;' }, [

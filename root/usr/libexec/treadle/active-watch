@@ -141,6 +141,19 @@ local function singbox_pid()
 	return inst and tonumber(inst.pid) or nil
 end
 
+-- When the start wrapper last started sing-box (epoch seconds), 0 if unknown.
+local function singbox_started()
+	return tonumber((read_file("/var/run/treadle.started") or ""):match("%d+")) or 0
+end
+
+-- urltest groups this sing-box has tested, for the Status page: a member
+-- with no latency shows "timeout" once tested and "—" before. sing-box drops
+-- a member's result when its test fails, so the reply alone cannot tell the
+-- two apart; a urltest tests every member in one pass, so once any member
+-- has had a result, every member has been tested. Emptied when sing-box
+-- restarts. Groups Treadle manages are marked in manage_groups instead.
+local tested_groups = {}
+
 -- Extract the relevant slice of the /proxies response: one entry per
 -- group, carrying the active member tag and (when available) its most
 -- recent latency. Internal helper groups (tag starts with "_") are filtered
@@ -179,7 +192,12 @@ local function group_state(parsed, managed)
 						end
 					end
 					entry.members[#entry.members + 1] = { tag = tag_m, delay_ms = d }
+					if d and p.type == "URLTest" then tested_groups[tag] = true end
 				end
+			end
+			if p.type == "URLTest" and tested_groups[tag] then
+				entry.tested = true
+				for _, m in ipairs(entry.members) do m.tested = true end
 			end
 			-- A failed dial deletes the active member's test result but not
 			-- the selection: sing-box keeps sending new connections to it
@@ -815,6 +833,18 @@ local function manage_groups(current, cfg)
 		if not current[tag] then gm_groups[tag] = nil end
 	end
 
+	-- Which members this sing-box has tested (see tested_groups): those
+	-- Treadle tested since it started. Marked before this tick's tests, whose
+	-- results the reply in hand does not show yet.
+	local since = singbox_started()
+	for _, tag in ipairs(tags) do
+		local g = current[tag]
+		for _, m in ipairs(g.members) do
+			local r = gm_state.members[m.tag]
+			if m.delay_ms or (r and (r.tested_at or 0) >= since) then m.tested = true end
+		end
+	end
+
 	local hit = take_errors(current, now)
 	local probes = MAX_PROBES
 	local speed_cands = {}
@@ -908,6 +938,7 @@ local function manage_groups(current, cfg)
 		-- What the Status page shows about the choice.
 		g.reason, g.switched_at = meta.reason, meta.switched_at
 		for _, m in ipairs(g.members) do
+			if m.tag == g.now then g.tested = m.tested end
 			local mr = gm_state.members[m.tag]
 			if mr then
 				local ok, n = gm.rate(mr)
@@ -954,6 +985,7 @@ while true do
 		local pid = singbox_pid()
 		local pid_changed = (last_pid and pid and pid ~= last_pid)
 		if pid then last_pid = pid end
+		if pid_changed then tested_groups = {} end
 
 		local current = group_state(parsed, cfg.managed)
 

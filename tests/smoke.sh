@@ -1553,6 +1553,10 @@ if command -v curl >/dev/null 2>&1; then
 	[ "$(jsonfilter -i "$ACT" -e '@.groups.g.members[*].tag' 2>/dev/null | tr '\n' ' ')" = "m1 m2 " ] \
 		&& ok "active-watch records every member of a group" \
 		|| bad "group members: $(jsonfilter -i "$ACT" -e '@.groups.g' 2>&1 | head -c 300)"
+	[ "$(jsonfilter -i "$ACT" -e '@.groups.g.members[*].tested' 2>/dev/null | tr '\n' ' ')" = "true true " ] \
+		&& [ "$(jsonfilter -i "$ACT" -e '@.groups.g.tested' 2>/dev/null)" = true ] \
+		&& ok "a urltest group's members are marked tested once it has a result" \
+		|| bad "urltest tested: $(jsonfilter -i "$ACT" -e '@.groups.g' 2>&1 | head -c 300)"
 	[ -n "$(jsonfilter -i "$ACT" -e '@.nodes.solo.delay_ms' 2>/dev/null)" ] \
 		&& ok "a node a rule uses on its own gets a latency from the probe pass" \
 		|| bad "single node: $(jsonfilter -i "$ACT" -e '@.nodes' 2>&1 | head -c 300)"
@@ -1685,6 +1689,13 @@ done
 [ "$(jsonfilter -i /var/etc/treadle/.active-nodes.json -e '@.groups.g.managed' 2>/dev/null)" = true ] \
 	&& ok "the snapshot marks the group as managed by Treadle" \
 	|| bad "snapshot: $(jsonfilter -i /var/etc/treadle/.active-nodes.json -e '@.groups.g' 2>&1 | head -c 300)"
+# Marked on the tick after the tests, which the reply then shows.
+i=0
+while [ "$i" -lt 25 ] && [ "$(jsonfilter -i /var/etc/treadle/.active-nodes.json -e '@.groups.g.members[*].tested' 2>/dev/null | tr '\n' ' ')" != "true true " ]; do
+	sleep 1; i=$((i + 1))
+done
+[ "$i" -lt 25 ] && ok "a managed group's members are marked tested once Treadle has tested them" \
+	|| bad "managed tested: $(jsonfilter -i /var/etc/treadle/.active-nodes.json -e '@.groups.g' 2>&1 | head -c 300)"
 first=$(tm_now)
 # The node in use is "worse" than its level, so it is speed-checked against
 # the other member, 2 MB each through the hidden selector, counted against
