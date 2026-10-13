@@ -561,8 +561,9 @@ end
 -- group interval (one GET /group/<tag>/delay, sing-box tests them 10 at a
 -- time), probe the member in use every ACTIVE_PROBE_S or as soon as its
 -- traffic starts failing (fail-watch's error file), and ask groupman.lua
--- whether to move. A failed probe of the member in use is repeated at once,
--- so two failures in a row switch the group within seconds. A move is
+-- whether to move. A failed probe of the member in use, or a re-check that
+-- failed it, is repeated at once, so two failures in a row switch the group
+-- within seconds. A move is
 -- applied with PUT /proxies/<group>; sing-box stores it in the cache file.
 -- The connections still open through the old member are then closed after a
 -- failover, after an upgrade only when the group's Interrupt flag is set, and
@@ -951,20 +952,27 @@ local function manage_groups(current, cfg, publish)
 			end
 			meta.url = url
 		end
+		local rechecked = false
 		if tag == due or fresh then
 			group_test(tag, members, url, now)
 			meta.last_test = now
+			rechecked = true
 		end
 		local r = gm.member(gm_state, g.now)
-		if probes > 0 and (hit[tag] or now - (r.tested_at or 0) >= ACTIVE_PROBE_S) then
+		-- A re-check that failed the member in use counts as its first failed
+		-- probe, and gets the same retry at once. Otherwise the re-check,
+		-- having just tested it, holds off its next probe for two ticks, and
+		-- the failover waits for that.
+		local failed = rechecked and r.tested_at == now and r.ring[#r.ring] == false
+		if probes > 0 and not failed and (hit[tag] or now - (r.tested_at or 0) >= ACTIVE_PROBE_S) then
 			local d = test_node(g.now, url)
 			gm.record(gm_state, g.now, now, d)
 			probes = probes - 1
-			if not d and probes > 0 then
-				d = test_node(g.now, url)
-				gm.record(gm_state, g.now, os.time(), d)
-				probes = probes - 1
-			end
+			failed = not d
+		end
+		if failed and probes > 0 then
+			gm.record(gm_state, g.now, os.time(), test_node(g.now, url))
+			probes = probes - 1
 		end
 
 		local view = { now = g.now, members = members, tolerance = gc.tolerance,
