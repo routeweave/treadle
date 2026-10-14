@@ -5,6 +5,14 @@ name: CI
 # rolling snapshot (pages.yml), from the packages this same run tested, so
 # the snapshot is always the latest tested main.
 #
+# Except for a release commit, one that changes the Makefile's PKG_VERSION or
+# PKG_RELEASE: its tag's release.yml deploys the site from the same commit
+# moments later, and GitHub Pages identifies a deployment by its commit
+# (deploy-pages sends GITHUB_SHA as pages_build_version), so the second
+# deploy of a commit does not replace the first. Left to CI, the live feed
+# would be the one built before the release existed, without it. The
+# snapshot stays at the commit before; the next push to main moves it on.
+#
 # Pull requests cancel their own superseded runs. Runs on main queue
 # instead: each one may be deploying the site, and a deploy is never cut off
 # halfway.
@@ -29,9 +37,37 @@ jobs:
       contents: read
       packages: read   # the test images
 
-  publish:
-    needs: test
+  release-commit:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    outputs:
+      is: ${{ steps.check.outputs.is }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          sparse-checkout: Makefile
+          sparse-checkout-cone-mode: false
+
+      - name: Does this commit change the package version?
+        id: check
+        run: |
+          mk_ver() {
+            git show "$1:Makefile" 2>/dev/null | awk -F':=' \
+              '$1 == "PKG_VERSION" || $1 == "PKG_RELEASE" { sub(/^[ \t]+/, "", $2); sub(/[ \t]+$/, "", $2); printf "%s ", $2 }'
+          }
+          now=$(mk_ver HEAD); before=$(mk_ver HEAD^)
+          echo "version: ${before:-none} -> $now"
+          if [ -n "$before" ] && [ "$now" != "$before" ]; then
+            echo "::notice::a release commit: its release deploys the site, so this run does not"
+            echo "is=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  publish:
+    needs: [test, release-commit]
+    if: needs.release-commit.outputs.is == 'false'
     uses: ./.github/workflows/pages.yml
     with:
       snapshot: true

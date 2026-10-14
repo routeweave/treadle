@@ -10,8 +10,7 @@
 # after deploy-pages reports success, this fetches that file until it holds
 # this run's stamp. deploy-pages' "success" means GitHub accepted the
 # deployment, not that the site serves it: of two deploys of one commit
-# seconds apart (a release's and main's CI, every release), the earlier can
-# stay live.
+# minutes apart, the earlier stays live (see pages.yml).
 #
 # The query string differs on every try, so the request reaches GitHub's
 # origin instead of a cached copy. Tries are 10 s apart (default 18, about 3

@@ -14,11 +14,14 @@ name: Feed
 # site as an artifact instead of deploying, which is how to test this
 # workflow on a branch.
 #
-# Main's CI and a release deploy the same commit seconds apart on every
-# release. So a deploy is skipped when a release appeared after its build
-# collected the feed (that release's deploy has it), and is checked against
-# the live site afterwards (deploy-id.txt, written by the build), since
-# GitHub's "success" does not say which deploy the site serves.
+# GitHub Pages identifies a deployment by its commit (deploy-pages sends
+# GITHUB_SHA as pages_build_version): a second deploy of a commit made
+# minutes after the first reports success and leaves the first one live.
+# ci.yml therefore leaves a release commit to its release. A deploy is also skipped when a release
+# appeared after its build collected the feed (that release's deploy has
+# it), and is checked against the live site afterwards (deploy-id.txt,
+# written by the build), since GitHub's "success" does not say which deploy
+# the site serves.
 #
 # The snapshot lives here rather than on a GitHub release because releases
 # are immutable in this repository: a published release's files can never be
@@ -186,31 +189,17 @@ jobs:
         if: ${{ steps.fresh.outputs.stale != 'true' }}
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
 
-      # deploy-pages reports success once GitHub accepts the deployment; the
-      # site can still serve another deploy of the same commit that landed
-      # seconds before. Check the site itself, deploy once more if it is not
-      # this run's, and fail if it still is not.
+      # deploy-pages reports success once GitHub accepts the deployment, also
+      # for a repeat of a commit deployed minutes before, which leaves the
+      # earlier one live, and deploying again here would repeat it once more.
+      # Check the site itself and fail if it is not this run's.
       - name: Check the site serves this deploy
-        id: check
         if: ${{ steps.fresh.outputs.stale != 'true' }}
-        continue-on-error: true
         env:
           SITE: ${{ steps.deploy.outputs.page_url }}
           DEPLOY_ID: ${{ needs.build.outputs.deploy_id }}
-        run: scripts/pages-verify.sh "$SITE" "$DEPLOY_ID"
-
-      - name: Deploy again
-        id: redeploy
-        if: ${{ steps.check.outcome == 'failure' }}
-        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
-
-      - name: Check again
-        if: ${{ steps.check.outcome == 'failure' }}
-        env:
-          SITE: ${{ steps.redeploy.outputs.page_url }}
-          DEPLOY_ID: ${{ needs.build.outputs.deploy_id }}
         run: |
           scripts/pages-verify.sh "$SITE" "$DEPLOY_ID" || {
-            echo "::error::the site does not serve this deploy after a second attempt; run pages.yml by hand"
+            echo "::error::the site does not serve this deploy; another deploy of this commit may be live (see the header); a push to main deploys a new commit"
             exit 1
           }
