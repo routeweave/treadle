@@ -1574,8 +1574,17 @@ if command -v curl >/dev/null 2>&1; then
 	[ "$(jsonfilter -i "$ACT" -e '@.groups.g.members[*].tag' 2>/dev/null | tr '\n' ' ')" = "m1 m2 " ] \
 		&& ok "active-watch records every member of a group" \
 		|| bad "group members: $(jsonfilter -i "$ACT" -e '@.groups.g' 2>&1 | head -c 300)"
-	[ "$(jsonfilter -i "$ACT" -e '@.groups.g.members[*].tested' 2>/dev/null | tr '\n' ' ')" = "true true " ] \
-		&& [ "$(jsonfilter -i "$ACT" -e '@.groups.g.tested' 2>/dev/null)" = true ] \
+	# sing-box keeps a sub-millisecond test as a 0 ms result, which active-watch
+	# does not count, and over loopback both members can come in under 1 ms.
+	# The probe pass above then gives the member in use a result of its own
+	# (through the clash API's default test URL), which the next tick reads.
+	fo_tested() {
+		[ "$(jsonfilter -i "$ACT" -e '@.groups.g.members[*].tested' 2>/dev/null | tr '\n' ' ')" = "true true " ] \
+			&& [ "$(jsonfilter -i "$ACT" -e '@.groups.g.tested' 2>/dev/null)" = true ]
+	}
+	i=0
+	while [ "$i" -lt 30 ] && ! fo_tested; do sleep 1; i=$((i + 1)); done
+	fo_tested \
 		&& ok "a urltest group's members are marked tested once it has a result" \
 		|| bad "urltest tested: $(jsonfilter -i "$ACT" -e '@.groups.g' 2>&1 | head -c 300)"
 	[ -n "$(jsonfilter -i "$ACT" -e '@.nodes.solo.delay_ms' 2>/dev/null)" ] \
