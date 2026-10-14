@@ -5,23 +5,34 @@ name: CI
 # rolling snapshot (pages.yml), from the packages this same run tested, so
 # the snapshot is always the latest tested main.
 #
-# Except for a release commit, one that changes the Makefile's PKG_VERSION or
-# PKG_RELEASE: its tag's release.yml deploys the site from the same commit
-# moments later, and GitHub Pages identifies a deployment by its commit
-# (deploy-pages sends GITHUB_SHA as pages_build_version), so the second
-# deploy of a commit does not replace the first. Left to CI, the live feed
-# would be the one built before the release existed, without it. The
-# snapshot stays at the commit before; the next push to main moves it on.
+# A push to main is also how a release happens. The Makefile's PKG_VERSION /
+# PKG_RELEASE name the version most recently released, so when they name a
+# version that has no v* tag yet, this commit is a release commit: the run
+# builds and tests that version (test.yml with version / release), then
+# release.yml signs the packages it tested and creates the tag and the
+# release on this commit, and pages.yml rebuilds the feed with it. The
+# snapshot stays as it is on that run; the next push to main moves it on.
+# One run per commit is the only one that deploys the site, so no two
+# deploys of the same commit can race.
+#
+# Run by hand with release_dry_run, it does the same for the Makefile's
+# version without publishing: the signed packages are kept as an artifact.
+# That is how to test the release path on a branch.
 #
 # Pull requests cancel their own superseded runs. Runs on main queue
-# instead: each one may be deploying the site, and a deploy is never cut off
-# halfway.
+# instead: each one may be releasing or deploying the site, and neither is
+# ever cut off halfway.
 
 on:
   pull_request:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      release_dry_run:
+        description: Build, test and sign the Makefile's version as a release, without publishing
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -31,46 +42,99 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # tag is empty unless this run builds a release. The version is read from
+  # the Makefile only: a tag is never the input, it is what a release creates.
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
+      version: ${{ steps.ver.outputs.version }}
+      release: ${{ steps.ver.outputs.release }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: Makefile
+          sparse-checkout-cone-mode: false
+
+      - name: Is this a release?
+        id: ver
+        env:
+          EVENT: ${{ github.event_name }}
+          DRY_RUN: ${{ inputs.release_dry_run }}
+        run: |
+          case "$EVENT:$GITHUB_REF:$DRY_RUN" in
+            push:refs/heads/main:*|workflow_dispatch:*:true) ;;
+            *) echo "not a release: $EVENT on $GITHUB_REF"; exit 0 ;;
+          esac
+          mk_var() {
+            awk -F':=' -v key="$1" \
+              '$1 == key { sub(/^[ \t]+/, "", $2); sub(/[ \t]+$/, "", $2); print $2; exit }' \
+              Makefile
+          }
+          VERSION=$(mk_var PKG_VERSION)
+          RELEASE=$(mk_var PKG_RELEASE)
+          [ -n "$VERSION" ] && [ -n "$RELEASE" ] || { echo "::error::no PKG_VERSION / PKG_RELEASE in the Makefile"; exit 1; }
+          # docs/versioning.md: v0.1.0 for release 1, v0.1.0-r2 for a
+          # packaging-only re-release of the same source.
+          if [ "$RELEASE" = 1 ]; then TAG="v$VERSION"; else TAG="v$VERSION-r$RELEASE"; fi
+
+          if [ "$EVENT" = push ]; then
+            # ls-remote exits non-zero when it cannot ask, so an unreachable
+            # remote fails the run instead of reading as "no tags".
+            tags=$(git ls-remote --tags --refs origin 'v[0-9]*') || { echo "::error::could not list the tags"; exit 1; }
+            tags=$(printf '%s\n' "$tags" | sed -n 's|.*refs/tags/||p')
+            if printf '%s\n' "$tags" | grep -qxF "$TAG"; then
+              echo "not a release: $TAG is already released"
+              exit 0
+            fi
+            # A new version that sorts below the newest release is a typo in
+            # the Makefile, not a release: routers would never upgrade to it.
+            newest=$(printf '%s\n%s\n' "$tags" "$TAG" | sed '/^$/d' | sort -V | tail -n 1)
+            if [ "$newest" != "$TAG" ]; then
+              echo "::error::the Makefile names $TAG, which sorts below the newest release $newest"
+              exit 1
+            fi
+            echo "::notice::release commit: this run releases $TAG"
+          else
+            echo "release dry run of $TAG"
+          fi
+          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "release=$RELEASE" >> "$GITHUB_OUTPUT"
+
   test:
+    needs: version
     uses: ./.github/workflows/test.yml
     permissions:
       contents: read
       packages: read   # the test images
+    with:
+      version: ${{ needs.version.outputs.version }}
+      release: ${{ needs.version.outputs.release }}
 
-  release-commit:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
-    outputs:
-      is: ${{ steps.check.outputs.is }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 2
-          sparse-checkout: Makefile
-          sparse-checkout-cone-mode: false
+  release:
+    needs: [version, test]
+    if: needs.version.outputs.tag != ''
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.version.outputs.tag }}
+      version: ${{ needs.version.outputs.version }}
+      release: ${{ needs.version.outputs.release }}
+      dry_run: ${{ github.event_name != 'push' }}
+    secrets: inherit
+    permissions:
+      contents: write   # create the tag and the release
 
-      - name: Does this commit change the package version?
-        id: check
-        run: |
-          mk_ver() {
-            git show "$1:Makefile" 2>/dev/null | awk -F':=' \
-              '$1 == "PKG_VERSION" || $1 == "PKG_RELEASE" { sub(/^[ \t]+/, "", $2); sub(/[ \t]+$/, "", $2); printf "%s ", $2 }'
-          }
-          now=$(mk_ver HEAD); before=$(mk_ver HEAD^)
-          echo "version: ${before:-none} -> $now"
-          if [ -n "$before" ] && [ "$now" != "$before" ]; then
-            echo "::notice::a release commit: its release deploys the site, so this run does not"
-            echo "is=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "is=false" >> "$GITHUB_OUTPUT"
-          fi
-
-  publish:
-    needs: [test, release-commit]
-    if: needs.release-commit.outputs.is == 'false'
+  # After release, when there is one: feed.sh collects every release, and
+  # this one has to be among them.
+  feed:
+    needs: [version, test, release]
+    if: >-
+      !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      && needs.test.result == 'success' && needs.release.result != 'failure'
     uses: ./.github/workflows/pages.yml
     with:
-      snapshot: true
+      snapshot: ${{ needs.version.outputs.tag == '' }}
     secrets: inherit
     permissions:
       contents: read

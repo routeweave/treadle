@@ -18,15 +18,17 @@ recently *released*, never a guess at the next one. A forward-looking version
 has to be predicted correctly and is wrong the moment a hotfix pre-empts a
 planned release; a trailing one only records what already happened.
 
-**The `v*` tag is the release decision, not a second place to declare a
-version.** `release.yml` parses it, compares both fields against the Makefile,
-and fails the release on a mismatch rather than overriding the Makefile. That
-is what keeps the OpenWrt SDK build path — which reads `PKG_VERSION` /
-`PKG_RELEASE` verbatim and never sees the CI environment — labelled
-identically to what is published.
+**The Makefile edit is the release decision, and the `v*` tag is its
+record.** A push to `main` whose `PKG_VERSION` / `PKG_RELEASE` name a version
+with no `v*` tag yet is a release commit: `ci.yml` builds and tests that
+version, and creates the tag and the release on that commit. Nothing pushes a
+tag by hand, so there is no second place to declare a version and nothing to
+disagree with the Makefile. That is what keeps the OpenWrt SDK build path —
+which reads `PKG_VERSION` / `PKG_RELEASE` verbatim and never sees the CI
+environment — labelled identically to what is published.
 
-Releasing therefore means bumping the Makefile in the release commit, then
-tagging. See [Releasing](#releasing).
+Releasing therefore means merging a commit that bumps the Makefile. See
+[Releasing](#releasing).
 
 ## Version shapes
 
@@ -54,8 +56,8 @@ identical source.
 
 In priority order:
 
-1. **`TREADLE_VERSION` is set** — `release.yml` sets it from the pushed tag,
-   after verifying it against the Makefile.
+1. **`TREADLE_VERSION` is set** — `ci.yml` sets it on a release commit, from
+   the Makefile's own `PKG_VERSION`.
 2. **A `v*` tag is reachable from HEAD** — `<highest-tag>_git<TS>`, where
    `<TS>` is HEAD's own committer date. HEAD sitting exactly on the tag drops
    the suffix, so a local build at the tag matches the tagged release. A
@@ -122,8 +124,9 @@ resolves `PKG_RELEASE="${TREADLE_RELEASE:-$PKG_RELEASE}"`, so anything CI sets
 wins over the Makefile. Snapshot ordering belongs in the version body, which
 is what the timestamp is for.
 
-`TREADLE_RELEASE` exists solely for `release.yml`'s `v<X.Y.Z>-r<N>` tags.
-`ci.yml`, which builds snapshots through `test.yml`, deliberately sets nothing.
+`TREADLE_RELEASE` exists solely for releases, `v<X.Y.Z>-r<N>` included.
+`ci.yml` sets it only on a release commit; for a snapshot it deliberately sets
+nothing.
 
 ## apk format constraints
 
@@ -230,22 +233,30 @@ installed snapshot must outrank the release it follows, or the next
 
 ```sh
 # After merging the changes that constitute the release to main:
-git checkout main && git pull
+git switch -c release-0.11.0 origin/main
 
 # Record the version being released. PKG_RELEASE resets to 1 whenever
 # PKG_VERSION changes; bump PKG_RELEASE alone for a packaging-only
-# re-release of the same source, and tag that v0.11.0-r2.
+# re-release of the same source, which is tagged v0.11.0-r2.
 $EDITOR Makefile          # PKG_VERSION:=0.11.0
 git commit -am "Release 0.11.0"
-git push
-
-git tag -a v0.11.0 -m "Release 0.11.0"
-git push origin v0.11.0
+git push -u origin release-0.11.0
+# Open a pull request; merging it to main is the release.
 ```
 
-The Makefile edit is required and the tag must match it — `release.yml` fails
-the release otherwise rather than guessing which of the two is right.
+The push to `main` that carries the bump runs CI with the release version.
+When every check passes, it signs the `.apk` it tested, creates the tag
+(`v0.11.0`) and the release on that commit, and republishes the feed. A
+failing check publishes nothing; fix it and merge again, and the next push
+releases, since the version still has no tag. A version that sorts below the
+newest release fails the run instead of releasing. Never push a `v*` tag by
+hand: a tag that exists is a version already released, so CI would skip it.
+
 Snapshots from the next commit on are `0.11.0_git<TS>-r1` automatically.
+
+To try the release path without releasing, run CI from the Actions tab with
+`release_dry_run`: it builds, tests and signs the Makefile's version and keeps
+the packages as an artifact.
 
 ## Enforcement
 

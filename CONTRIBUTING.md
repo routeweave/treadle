@@ -98,8 +98,8 @@ anything in the packaging pipeline. The shapes:
 
 | Situation                                       | Example version              |
 |---|---|
-| Release (CI from tag `v0.1.0`)                  | `0.1.0-r1`                   |
-| Packaging re-release (CI from tag `v0.1.0-r2`)  | `0.1.0-r2`                   |
+| Release (tag `v0.1.0`)                          | `0.1.0-r1`                   |
+| Packaging re-release (tag `v0.1.0-r2`)          | `0.1.0-r2`                   |
 | Snapshot past `v0.1.0`                          | `0.1.0_git20260105083000-r1` |
 | Snapshot, no `v*` tag yet (bootstrap)           | `0.1.0_pre20260105083000-r1` |
 
@@ -107,8 +107,8 @@ Three rules carry most of it:
 
 - `PKG_VERSION` / `PKG_RELEASE` in the `Makefile` are authoritative and
   **trail** the timeline — they name the version most recently released.
-  The `v*` tag is the release decision, and `release.yml` fails the
-  release if the two disagree rather than overriding the Makefile.
+  Merging a commit that bumps them is the release decision: CI creates
+  the `v*` tag from them, so the two can never disagree.
 - The snapshot suffix is HEAD's **commit timestamp**, never a commit
   count. A count collides across branches and moves backwards when a
   branch is rebased.
@@ -124,46 +124,45 @@ scripts/version-check.sh
 
 ## Releasing
 
-Releases are an explicit, deliberate act — pushing a `v*` tag is the
-release decision. Merges to `main` do not trigger releases.
+A release is a commit that bumps the Makefile's version. When it reaches
+`main`, CI sees a version with no `v*` tag yet and releases it; every
+other push to `main` only moves the snapshot.
 
 ```sh
 # After merging the changes that constitute the release to main:
-git checkout main && git pull
+git switch -c release-0.11.0 origin/main
 $EDITOR Makefile            # PKG_VERSION:=0.11.0
 git commit -am "Release 0.11.0"
-git push
-
-git tag -a v0.11.0 -m "Release 0.11.0"
-git push origin v0.11.0
+git push -u origin release-0.11.0
+# Open a pull request; merging it to main is the release.
 ```
 
-Record the version being released in the Makefile first — the tag must
-match it, or `release.yml` fails the release rather than guessing which
-of the two is right. `PKG_RELEASE` resets to `1` whenever `PKG_VERSION`
-changes; bump only `PKG_RELEASE` for a packaging-only re-release of the
-same source, and tag that `v0.11.0-r2`.
+`PKG_RELEASE` resets to `1` whenever `PKG_VERSION` changes; bump only
+`PKG_RELEASE` for a packaging-only re-release of the same source, which
+is tagged `v0.11.0-r2`. Never push a `v*` tag by hand: CI creates it,
+and a version that already has one is not released again.
 
 Snapshots from the next commit on are `0.11.0_git<timestamp>-r1`
 automatically.
 
-The tag publishes nothing until the release build passes the same checks
-as a pull request: lint, the staged-tree check and the smoke tests on both
-OpenWrt releases. The packages it publishes are the ones those tests
-installed. To try a change to `release.yml` without a tag, run it from the
-Actions tab on the branch: it builds, tests and signs, and keeps the
-packages as an artifact instead of publishing them.
+The release commit's CI run builds and tests the release version with the
+same checks as a pull request: lint, the staged-tree check and the smoke
+tests on both OpenWrt releases. Only when they pass does it sign the
+packages those tests installed, create the tag and the release, and
+republish the feed. To try the release path without releasing, run CI
+from the Actions tab with `release_dry_run`: it builds, tests and signs
+the Makefile's version, and keeps the packages as an artifact.
 
 ## CI
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| **Test (shared)** | Called by CI, Release and Weekly; never runs on its own | Lint, package build and staged-tree check, smoke, system and browser tests on OpenWrt 25.12 (apk) and 24.10 (opkg). |
-| **CI**      | Pull request, push to `main` | Runs Test. On a `main` push that passes, publishes the feed with that build as the snapshot. Runs on `main` queue rather than cancel each other. |
-| **Release** | Push of a `v*` tag           | Runs Test on the release version, then signs the `.apk` it tested with the feed key, creates an immutable GitHub release and republishes the feed. A failing check publishes nothing. Run by hand, it does everything but publish. |
-| **Test images** | Weekly, a `main` push that changes them, or by hand | Builds the test images (`tests/image/`): each tested OpenWrt release with Treadle's dependencies preinstalled, pushed to GHCR. Test runs on them and so downloads nothing from the OpenWrt mirrors; without an image it falls back to a full install. A pull request that changes them builds without pushing. |
+| **Test (shared)** | Called by CI and Weekly; never runs on its own | Lint, package build and staged-tree check, smoke, system and browser tests on OpenWrt 25.12 (apk) and 24.10 (opkg). |
+| **CI**      | Pull request, push to `main` | Runs Test. On a `main` push that passes, publishes the feed with that build as the snapshot. On a release commit, Test builds the release version, then Release publishes it and the feed is republished with it. Runs on `main` queue rather than cancel each other. Run by hand with `release_dry_run`, it does a release's build, test and signing without publishing. |
+| **Release** | Called by CI on a release commit | Signs the `.apk` that Test just tested with the feed key and creates the tag and an immutable GitHub release on that commit. A failing check publishes nothing. |
+| **Test images** | Weekly, a `main` push that changes them, or by hand | Builds the test images (`tests/image/`): each tested OpenWrt release with Treadle's dependencies preinstalled, pushed to GHCR. Test runs on them and so downloads nothing from the OpenWrt mirrors; without an image it falls back to a full install. A pull request that changes them builds without pushing. A version bump alone does not rebuild them. |
 | **Weekly**  | Mondays, or by hand          | Runs Test fresh from the OpenWrt feeds instead of the test images, on 25.12, 24.10 and OpenWrt's snapshot (allowed to fail, as early warning). Checks the versions pinned by hand that Dependabot cannot see (`scripts/check-pins.mjs`) and keeps one issue open while any is behind. |
-| **Feed**    | Called by CI and Release, or by hand | Rebuilds the GitHub Pages site: the signed feed from every `v*` release, and the rolling snapshot. Run by hand with `dry_run`, it builds the site as an artifact without deploying. |
+| **Feed**    | Called by CI, or by hand | Rebuilds the GitHub Pages site: the signed feed from every `v*` release, and the rolling snapshot. Run by hand with `dry_run`, it builds the site as an artifact without deploying. |
 
 Every action is pinned to a commit SHA, with the tag in a trailing comment;
 Dependabot proposes updates monthly.
@@ -189,9 +188,9 @@ branch you have checked out.
 ├── actions/install-usign/       # CI: build OpenWrt's usign
 ├── dependabot.yml               # Keeps the pinned actions current
 └── workflows/
-    ├── test.yml                 # The checks, called by ci.yml and release.yml
-    ├── ci.yml                   # Every PR and main push; publishes main's snapshot
-    ├── release.yml              # Release on v* tag push
+    ├── test.yml                 # The checks, called by ci.yml and weekly.yml
+    ├── ci.yml                   # Every PR and main push; snapshot, and releases
+    ├── release.yml              # Sign and publish a release, called by ci.yml
     ├── test-images.yml          # Builds the test images for GHCR
     ├── privacy.yml              # The privacy check over every pull request
     ├── weekly.yml               # Fresh-from-the-feeds run, snapshot, pinned versions

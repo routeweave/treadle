@@ -1,105 +1,48 @@
 name: Release
 
-# Releases are triggered by a v* tag, not by merges to main. The tag can be
-# pushed from git (`git push origin v0.1.0`) or created together with the
-# release in the GitHub UI — this workflow handles both: it creates the
-# release when only the tag exists, or uploads the built packages to a
-# release already created in the UI. Assets stay immutable: a re-run that
-# would overwrite an existing asset fails instead of clobbering it.
-#
-# The packages are built and tested by test.yml, the same jobs every pull
-# request runs, called with the release version: lint, the stripped-tree syntax check and the smoke
-# tests on both OpenWrt releases. Only when all of them pass are the same
-# packages signed and published, so what ships is what the smoke tests
-# installed, and a tag on a commit that fails them publishes nothing.
+# Publishes a release from packages that have already been built and tested.
+# Reusable only: ci.yml calls it on a release commit, a push to main whose
+# Makefile names a version with no v* tag yet, after test.yml has built and
+# tested that version in the same run (see ci.yml). So what ships is what the
+# smoke tests installed, and a release commit that fails them publishes
+# nothing.
 #
 # The .apk is signed here with the feed key, so the release asset and the
 # package the feed serves are the same bytes with the same checksum.
 #
-# After the release is created, the feed is rebuilt from every release and
-# deployed (pages.yml), keeping the live snapshot.
+# gh release create makes the tag on the tested commit together with the
+# release; nothing pushes a tag by hand. Releases are immutable in this
+# repository, so a release that already exists is never touched: creating
+# it again fails instead.
 #
-# workflow_dispatch builds, tests and signs the Makefile's version without
-# publishing anything; the signed packages are kept as an artifact. That is
-# how to test this workflow on a branch.
-#
-# Tag format (see docs/versioning.md):
-#   v0.1.0       — normal release; PKG_RELEASE defaults to 1
-#   v0.1.0-r2    — packaging-only re-release of the same source (rare)
+# With dry_run it signs and keeps the packages as an artifact, and creates
+# nothing.
 
 on:
-  push:
-    tags:
-      - 'v[0-9]*'
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      tag:
+        description: The release's tag, v<X.Y.Z> or v<X.Y.Z>-r<N>
+        type: string
+        required: true
+      version:
+        description: PKG_VERSION being released
+        type: string
+        required: true
+      release:
+        description: PKG_RELEASE being released
+        type: string
+        required: true
+      dry_run:
+        description: Sign and keep the packages as an artifact, without publishing
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
-  version:
-    runs-on: ubuntu-24.04
-    outputs:
-      tag: ${{ steps.ver.outputs.tag }}
-      version: ${{ steps.ver.outputs.version }}
-      release: ${{ steps.ver.outputs.release }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # The Makefile is authoritative for the version on every build path;
-      # the tag is the release *decision*, not a second place to declare a
-      # version. A mismatch is a mistake in one of the two, and guessing
-      # which would be worse than stopping. A dry run has no tag and takes
-      # the Makefile's version as is.
-      - name: Read the version and check it against the tag
-        id: ver
-        env:
-          EVENT: ${{ github.event_name }}
-        run: |
-          mk_var() {
-            awk -F':=' -v key="$1" \
-              '$1 == key { sub(/^[ \t]+/, "", $2); sub(/[ \t]+$/, "", $2); print $2; exit }' \
-              Makefile
-          }
-          MK_VERSION=$(mk_var PKG_VERSION)
-          MK_RELEASE=$(mk_var PKG_RELEASE)
-          if [ "$EVENT" = push ]; then
-            TAG="${GITHUB_REF_NAME}"           # v0.1.0 or v0.1.0-r2
-            STRIPPED="${TAG#v}"
-            case "$STRIPPED" in
-              *-r*) VERSION="${STRIPPED%-r*}"; RELEASE="${STRIPPED##*-r}" ;;
-              *)    VERSION="$STRIPPED";       RELEASE="1" ;;
-            esac
-          else
-            VERSION="$MK_VERSION"; RELEASE="$MK_RELEASE"
-            TAG="v${VERSION}-r${RELEASE}"
-          fi
-          echo "tag:      version=${VERSION} release=${RELEASE}"
-          echo "Makefile: version=${MK_VERSION} release=${MK_RELEASE}"
-          fail=0
-          [ "$MK_VERSION" = "$VERSION" ] || { echo "::error::Makefile PKG_VERSION is '${MK_VERSION}' but tag says '${VERSION}'"; fail=1; }
-          [ "$MK_RELEASE" = "$RELEASE" ] || { echo "::error::Makefile PKG_RELEASE is '${MK_RELEASE}' but tag says '${RELEASE}'"; fail=1; }
-          if [ "$fail" -ne 0 ]; then
-            echo "::error::Update the Makefile to match the tag (or retag), then re-run."
-            exit 1
-          fi
-          echo "tag=${TAG}"         >> "$GITHUB_OUTPUT"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "release=${RELEASE}" >> "$GITHUB_OUTPUT"
-          echo "Building ${TAG} (version=${VERSION} release=${RELEASE})"
-
-  test:
-    needs: version
-    uses: ./.github/workflows/test.yml
-    permissions:
-      contents: read
-      packages: read   # the test images
-    with:
-      version: ${{ needs.version.outputs.version }}
-      release: ${{ needs.version.outputs.release }}
-
   publish:
-    needs: [version, test]
     runs-on: ubuntu-24.04
     permissions:
       contents: write   # create the GitHub release
@@ -116,7 +59,7 @@ jobs:
 
       - name: Check the tested packages carry the release version
         env:
-          FULL_VERSION: ${{ needs.version.outputs.version }}-r${{ needs.version.outputs.release }}
+          FULL_VERSION: ${{ inputs.version }}-r${{ inputs.release }}
         run: |
           ls -l dist/
           for f in "dist/luci-app-treadle-${FULL_VERSION}.apk" \
@@ -139,7 +82,7 @@ jobs:
           for f in dist/*.apk; do sha256sum "$f" | awk '{print $1}' > "$f.sha256"; done
 
       - name: Keep the signed packages (dry run)
-        if: github.event_name != 'push'
+        if: inputs.dry_run
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-dry-run
@@ -147,52 +90,32 @@ jobs:
           if-no-files-found: error
 
       - name: Publish GitHub release
-        if: github.event_name == 'push'
+        if: ${{ !inputs.dry_run }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.version.outputs.tag }}
-          VERSION: ${{ needs.version.outputs.version }}
-          RELEASE: ${{ needs.version.outputs.release }}
+          TAG: ${{ inputs.tag }}
+          VERSION: ${{ inputs.version }}
+          RELEASE: ${{ inputs.release }}
         run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            # Created from the GitHub UI together with the tag: attach the
-            # packages. Without --clobber a genuine re-run errors, so
-            # published bytes stay immutable. UI-authored notes are kept.
-            echo "Release $TAG exists — uploading assets to it"
-            gh release upload "$TAG" \
-              dist/*.apk dist/*.apk.sha256 \
-              dist/*.ipk dist/*.ipk.sha256
-            gh release edit "$TAG" --latest
-          else
-            echo "Release $TAG does not exist — creating it"
-            NOTES_FILE=$(mktemp)
-            DL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
-            # GitHub's own "What's Changed" list first, then the install
-            # commands. A first release has nothing to diff against, so
-            # fall back to a bare header rather than lose the commands.
-            CHANGELOG=$(gh api -X POST \
-              "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
-              -f tag_name="$TAG" --jq .body 2>/dev/null) || CHANGELOG=""
-            [ -n "$CHANGELOG" ] || CHANGELOG="Release $TAG"
-            printf '%s\n' "$CHANGELOG" | sh scripts/release-notes.sh \
-              "${DL}/luci-app-treadle-${VERSION}-r${RELEASE}.apk" \
-              "${DL}/luci-app-treadle_${VERSION}-r${RELEASE}_all.ipk" \
-              > "$NOTES_FILE"
-            gh release create "$TAG" \
-              dist/*.apk dist/*.apk.sha256 \
-              dist/*.ipk dist/*.ipk.sha256 \
-              --title "$TAG" \
-              --notes-file "$NOTES_FILE" \
-              --latest
-          fi
-
-  feed:
-    needs: publish
-    if: github.event_name == 'push'
-    uses: ./.github/workflows/pages.yml
-    secrets: inherit
-    permissions:
-      contents: read
-      actions: read
-      pages: write
-      id-token: write
+          NOTES_FILE=$(mktemp)
+          DL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          # GitHub's own "What's Changed" list first, then the install
+          # commands. The tag does not exist yet, so the notes are asked for
+          # against this commit. A first release has nothing to diff against,
+          # so fall back to a bare header rather than lose the commands.
+          CHANGELOG=$(gh api -X POST \
+            "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="$TAG" -f target_commitish="$GITHUB_SHA" \
+            --jq .body 2>/dev/null) || CHANGELOG=""
+          [ -n "$CHANGELOG" ] || CHANGELOG="Release $TAG"
+          printf '%s\n' "$CHANGELOG" | sh scripts/release-notes.sh \
+            "${DL}/luci-app-treadle-${VERSION}-r${RELEASE}.apk" \
+            "${DL}/luci-app-treadle_${VERSION}-r${RELEASE}_all.ipk" \
+            > "$NOTES_FILE"
+          gh release create "$TAG" \
+            dist/*.apk dist/*.apk.sha256 \
+            dist/*.ipk dist/*.ipk.sha256 \
+            --target "$GITHUB_SHA" \
+            --title "$TAG" \
+            --notes-file "$NOTES_FILE" \
+            --latest

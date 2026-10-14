@@ -5,30 +5,28 @@ name: Feed
 # the rolling snapshot of main under snapshot/. Every run rebuilds the whole
 # site: the feed from every v* release, and the snapshot.
 #
-# Called directly, never chained through workflow_run:
-#   - by ci.yml after a push to main passes, with snapshot: true, so the
-#     snapshot is the packages that same run just tested;
-#   - by release.yml after a release is created; the snapshot stays as the
-#     live site serves it.
-# Run by hand it rebuilds the site the same way; with dry_run it uploads the
-# site as an artifact instead of deploying, which is how to test this
-# workflow on a branch.
+# Called directly by ci.yml, never chained through workflow_run, after a
+# push to main passes: with snapshot: true, so the snapshot is the packages
+# that same run just tested; on a release commit, after the release is
+# created, keeping the snapshot as the live site serves it. Run by hand it
+# rebuilds the site the same way; with dry_run it uploads the site as an
+# artifact instead of deploying, which is how to test this workflow on a
+# branch.
 #
 # GitHub Pages identifies a deployment by its commit (deploy-pages sends
 # GITHUB_SHA as pages_build_version): a second deploy of a commit made
 # minutes after the first reports success and leaves the first one live.
-# ci.yml therefore leaves a release commit to its release. A deploy is also skipped when a release
-# appeared after its build collected the feed (that release's deploy has
-# it), and is checked against the live site afterwards (deploy-id.txt,
-# written by the build), since GitHub's "success" does not say which deploy
-# the site serves.
+# That is why one CI run per commit is the only automatic deploy of it, and
+# why each deploy is checked against the live site afterwards
+# (deploy-id.txt, written by the build): GitHub's "success" does not say
+# which deploy the site serves.
 #
 # The snapshot lives here rather than on a GitHub release because releases
 # are immutable in this repository: a published release's files can never be
 # replaced, and a rolling snapshot is by definition a file that changes.
 #
-# The github-pages environment admits main and v* tags, the refs its two
-# callers run on. A branch gets as far as a dry run.
+# The github-pages environment admits main, the ref ci.yml deploys from. A
+# branch gets as far as a dry run.
 #
 # One-time setup (see README "Install from the Treadle feed"):
 #   - run scripts/feed-keygen.sh, commit feed/keys/*.pub
@@ -64,7 +62,6 @@ jobs:
     # binds it.
     outputs:
       deploy_id: ${{ steps.stamp.outputs.deploy_id }}
-      releases: ${{ steps.stamp.outputs.releases }}
     permissions:
       contents: read
       actions: read   # download this run's packages
@@ -122,17 +119,13 @@ jobs:
         run: scripts/pages-snapshot.sh
 
       # Lets deploy check that the live site is this run's build, and not
-      # only that GitHub accepted it (scripts/pages-verify.sh), and that no
-      # release appeared after this build collected the feed.
+      # only that GitHub accepted it (scripts/pages-verify.sh).
       - name: Stamp the site with this run
         id: stamp
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           id="$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT"
           printf '%s\n' "$id" > public/deploy-id.txt
           echo "deploy_id=$id" >> "$GITHUB_OUTPUT"
-          echo "releases=$(gh release list --limit 1000 --json tagName -q '.[].tagName' | sort | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
 
       - name: Upload Pages artifact
         if: ${{ !inputs.dry_run }}
@@ -156,7 +149,7 @@ jobs:
       group: pages-deploy
       cancel-in-progress: false
     permissions:
-      contents: read   # the verify script and the release list
+      contents: read   # the verify script
       pages: write
       id-token: write
     environment:
@@ -168,33 +161,16 @@ jobs:
           sparse-checkout: scripts/pages-verify.sh
           sparse-checkout-cone-mode: false
 
-      # On a release, main's CI builds the site from the same commit at the
-      # same time. If the release was created after that build collected the
-      # feed, deploying it would replace the release's feed with one that
-      # lacks the release; that release's own deploy publishes the feed.
-      - name: Check no release appeared since the build
-        id: fresh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BUILT_WITH: ${{ needs.build.outputs.releases }}
-        run: |
-          now=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 --json tagName -q '.[].tagName' | sort | tr '\n' ' ')
-          if [ "$now" != "$BUILT_WITH" ]; then
-            echo "::notice::a release appeared after this site was built; its own deploy publishes the feed, so this one is skipped"
-            echo "stale=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Deploy to GitHub Pages
         id: deploy
-        if: ${{ steps.fresh.outputs.stale != 'true' }}
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
 
       # deploy-pages reports success once GitHub accepts the deployment, also
-      # for a repeat of a commit deployed minutes before, which leaves the
-      # earlier one live, and deploying again here would repeat it once more.
-      # Check the site itself and fail if it is not this run's.
+      # for a repeat of a commit deployed minutes before (a rebuild by hand),
+      # which leaves the earlier one live, and deploying again here would
+      # repeat it once more. Check the site itself and fail if it is not this
+      # run's.
       - name: Check the site serves this deploy
-        if: ${{ steps.fresh.outputs.stale != 'true' }}
         env:
           SITE: ${{ steps.deploy.outputs.page_url }}
           DEPLOY_ID: ${{ needs.build.outputs.deploy_id }}

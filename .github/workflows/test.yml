@@ -5,10 +5,10 @@ name: Test (shared)
 # tests on real OpenWrt userlands (one apk-era, one opkg-era release): the
 # smoke test, the system test under procd and the browser test.
 #
-# Reusable only. ci.yml calls it for pull requests and pushes to main;
-# release.yml calls it with the release version, so a release is built and
+# Reusable only. ci.yml calls it for pull requests and pushes to main, and
+# with the release version on a release commit, so a release is built and
 # tested by exactly these jobs and publishes the packages they tested. The
-# inputs are empty on every other call.
+# version inputs are empty on every other call.
 #
 # Actions are pinned by commit SHA; the tag each SHA was taken from is in
 # the trailing comment. Dependabot keeps both in step.

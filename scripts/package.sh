@@ -147,14 +147,14 @@ done
 # and runs in both workflows — add a case there for any change.
 #
 # Priority:
-#   1. TREADLE_VERSION — set by release.yml from a v* tag, already verified
-#      against the Makefile.
+#   1. TREADLE_VERSION — set by ci.yml on a release commit, from the
+#      Makefile's own PKG_VERSION.
 #   2. A v* tag reachable from HEAD — <last-tag>_git<TS>, the commit's own
 #      UTC timestamp. HEAD on the tag drops the suffix.
 #   3. No v* tag — <PKG_VERSION>_pre<TS>, the bootstrap before a first release.
 #
 # TREADLE_RELEASE overrides PKG_RELEASE on all three paths and exists for
-# release.yml's v<X.Y.Z>-r<N> tags ONLY. -r<N> is the packaging revision;
+# a release's v<X.Y.Z>-r<N> tag ONLY. -r<N> is the packaging revision;
 # never route a build counter through it.
 
 PKG_RELEASE="${TREADLE_RELEASE:-$PKG_RELEASE}"
@@ -193,7 +193,7 @@ elif command -v git >/dev/null 2>&1 && git -C "$REPO_DIR" rev-parse --git-dir >/
 			|| die "could not count commits since ${LAST_TAG} (shallow clone? need fetch-depth: 0)"
 
 		# Split the tag into version and packaging-revision parts the same
-		# way release.yml does. A packaging re-release is tagged v1.1.3-r2,
+		# way ci.yml names a release. A packaging re-release is tagged v1.1.3-r2,
 		# and `${LAST_TAG#v}` alone would carry that "-r2" into the version
 		# BODY, yielding 1.1.3-r2_git2-r1. apk's grammar treats -r<N> as a
 		# terminal revision token, so anything after it fails to parse and

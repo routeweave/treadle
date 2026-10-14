@@ -16,10 +16,10 @@ LUCI_PKGARCH:=all
 PKG_NAME:=luci-app-treadle
 # PKG_VERSION/PKG_RELEASE name the version most recently RELEASED — they
 # trail the timeline rather than predicting the next release. Bump them in
-# the release commit itself; release.yml then verifies the pushed v* tag
-# agrees with them and refuses to publish on a mismatch, so the OpenWrt SDK
-# build path (which reads these verbatim) and the published package can
-# never disagree about what version this tree is.
+# the release commit itself: a push to main whose version has no v* tag yet
+# is a release, and ci.yml builds, tags and publishes exactly this version,
+# so the OpenWrt SDK build path (which reads these verbatim) and the
+# published package can never disagree about what version this tree is.
 PKG_VERSION:=0.19.0
 PKG_RELEASE:=1
 PKG_MAINTAINER:=RouteWeave
