@@ -246,6 +246,12 @@ function downloadConfig(json) {
 var CHIP_ON = '#26a65b';
 var SWITCH_ON = '#1e8449';
 var SWITCH_OFF = '#767676';
+// Activity log levels are coloured text, not badges, so every row keeps one
+// height and the messages line up. The themes' own warning colours are meant
+// for backgrounds (Bootstrap's light yellow is unreadable as text on white);
+// these clear 3:1 on both the light and the dark themes, and are set bold.
+var LOG_ERROR = '#d9534f';
+var LOG_WARNING = '#c27c0e';
 
 // Same red as lib/badges.js: Bootstrap has no red label class.
 var DANGER_STYLE =
@@ -278,6 +284,9 @@ var STATUS_CSS =
 	'.treadle-status .treadle-log{font-family:monospace;font-size:.85em;max-height:16em;overflow-y:auto}' +
 	'.treadle-status .treadle-log > div{display:flex;gap:.8em;padding:.15em 0;white-space:nowrap;align-items:baseline}' +
 	'.treadle-status .treadle-log .treadle-msg{overflow:hidden;text-overflow:ellipsis}' +
+	'.treadle-status .treadle-log .treadle-lvl{flex:0 0 auto;min-width:4.5em}' +
+	'.treadle-status .treadle-log .treadle-lvl-error{color:' + LOG_ERROR + ';font-weight:bold}' +
+	'.treadle-status .treadle-log .treadle-lvl-warning{color:' + LOG_WARNING + ';font-weight:bold}' +
 	'@media (max-width:600px){.treadle-status .treadle-hide-narrow{display:none}' +
 	'.treadle-status .treadle-show-narrow{display:block;font-size:.85em}}';
 
@@ -801,14 +810,14 @@ return baseclass.extend({
 			return;
 		}
 		dom.content(this._els.log, lines.map(function(l) {
-			var badge = l.level === 'error'
-				? E('span', { 'class': 'label', 'style': 'text-transform:none; flex:0 0 auto;' + DANGER_STYLE }, [ _('error') ])
+			var level = l.level === 'error'
+				? E('span', { 'class': 'treadle-lvl treadle-lvl-error' }, [ _('error') ])
 				: l.level === 'warning'
-					? E('span', { 'class': 'label warning', 'style': 'text-transform:none; flex:0 0 auto;' }, [ _('warning') ])
-					: E('span', { 'class': 'treadle-muted', 'style': 'flex:0 0 auto; min-width:4.5em;' }, [ _('info') ]);
+					? E('span', { 'class': 'treadle-lvl treadle-lvl-warning' }, [ _('warning') ])
+					: E('span', { 'class': 'treadle-lvl treadle-muted' }, [ _('info') ]);
 			return E('div', {}, [
 				E('span', { 'class': 'treadle-muted', 'style': 'flex:0 0 auto;' }, [ l.time ]),
-				badge,
+				level,
 				E('span', { 'class': 'treadle-msg', 'title': l.msg }, [ l.msg ])
 			]);
 		}));
