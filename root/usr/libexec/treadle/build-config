@@ -364,6 +364,7 @@ local function build_inbounds(c)
 			-- to the proxy server back into the tun — a self-loop that times
 			-- out every connection. Requires auto_route, so it is gated on it.
 			auto_redirect = auto_route,
+			auto_redirect_output_mark = auto_route and lib.TUN_OUTPUT_MARK or nil,
 			strict_route  = false,
 			stack         = c:get("treadle", "inbounds", "tun_stack") or "system"
 		}
@@ -2463,12 +2464,15 @@ end
 -- /proxies/<tag>/delay on PROBE_CLASH_HOST and tears the instance down
 -- when the batch finishes.
 --
--- Loop safety mirrors the production config: auto_detect_interface binds
--- dials to the real upstream interface (escaping the live instance's TUN
--- auto-route), and default_mark=255 makes firewall.sh's OUTPUT chain skip
--- probe sockets in tproxy(_mixed) mode exactly like the live instance's
--- own traffic — without these, probes would tunnel through the live proxy
--- and measure the double-hop instead of the node.
+-- The probe must dial each node the way the live instance does, not through
+-- it: a probe routed by the live rules measures two hops, and fails every
+-- node when the route it lands on is down. auto_detect_interface binds
+-- dials to the upstream interface, which keeps UDP off the tun's policy
+-- routes; it does not stop auto_redirect, whose nftables output chain sends
+-- every TCP connection the router opens into the live instance unless it
+-- carries the live instance's own mark. So the probe carries that mark in
+-- tun mode, and in tproxy mode the 255 that firewall.sh's OUTPUT chain
+-- skips.
 local function build_probe_config(c)
 	local all_ordered = load_all_nodes(c)
 
@@ -2496,6 +2500,8 @@ local function build_probe_config(c)
 	local imode = c:get("treadle", "inbounds", "mode") or "tun"
 	if imode == "tproxy" then
 		route.default_mark = 255
+	elseif imode == "tun" then
+		route.default_mark = lib.TUN_OUTPUT_MARK
 	end
 
 	local config = {

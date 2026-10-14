@@ -444,6 +444,24 @@ build "probe" --probe
 probed=$(jsonfilter -i "$OUT/probe.json" -e '@.outbounds[@.type!="direct"].tag' | wc -l)
 [ "$probed" -eq "$NODES" ] && ok "probe config dials all $NODES nodes" \
 	|| bad "probe config has $probed nodes, want $NODES"
+
+# The probe dials each node directly, as the live instance does, not through
+# it. In tproxy mode it carries the 255 that firewall.sh's OUTPUT chain skips;
+# in tun mode auto_redirect sends every TCP connection the router opens into
+# the live instance unless it carries the mark the live tun inbound declares.
+jmark() { jsonfilter -i "$OUT/$1.json" -e "$2"; }
+got=$(jmark probe '@.route.default_mark')
+[ "$got" = 255 ] && ok "tproxy probe carries mark 255" \
+	|| bad "tproxy probe default_mark is '$got', want 255"
+uci set treadle.inbounds.mode=tun
+uci commit treadle
+build "probe / tun" --probe
+live=$(jmark advanced___tun '@.inbounds[@.type="tun"].auto_redirect_output_mark')
+got=$(jmark probe___tun '@.route.default_mark')
+[ -n "$live" ] && [ "$got" = "$live" ] && ok "tun probe carries the live tun's own mark ($live)" \
+	|| bad "tun probe default_mark is '$got', live tun auto_redirect_output_mark is '$live'"
+uci set treadle.inbounds.mode=tproxy
+uci commit treadle
 uci set treadle.global.clash_api_enabled=0
 uci commit treadle
 

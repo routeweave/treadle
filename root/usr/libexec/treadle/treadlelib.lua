@@ -192,6 +192,14 @@ M.PROBE_CLASH_HOST  = "127.0.0.1:9091"
 M.PROBE_CONFIG_PATH = "/var/etc/treadle/sing-box-probe.json"
 M.BOOTSTRAP_CONFIG_PATH = "/var/etc/treadle/sing-box-bootstrap.json"
 
+-- The mark the tun inbound's auto_redirect puts on sing-box's own outbound
+-- traffic, which its nftables rules pass untouched; every other TCP
+-- connection the router opens is redirected into the live instance.
+-- build-config sets it on the live tun inbound and on the latency-test
+-- instance, so the test dials each node directly as the live instance does.
+-- 0x2024 is sing-box's own default.
+M.TUN_OUTPUT_MARK = 0x2024
+
 -- Read a whole file. Returns its contents, or nil when it cannot be opened.
 function M.read_file(path)
 	local f = io.open(path, "r")
