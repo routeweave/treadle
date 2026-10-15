@@ -14,9 +14,7 @@
 #
 # The feed serves the newest release only, as OpenWrt's own feeds carry one
 # version per package: upgrades only ever need the newest, and rollback is
-# not supported (an older version is still on its GitHub release page). With
-# FEED_SRC_DIR it serves those packages instead, which is how ci.yml builds
-# the snapshot feed under snapshot/ from a run's own packages. The
+# not supported (an older version is still on its GitHub release page). The
 # package is `noarch`/`all`, so one index per format covers every
 # architecture — no per-arch subdirectories.
 #
@@ -27,9 +25,6 @@
 #   FEED_TAG          the release to serve           (default: the latest)
 #   FEED_SRC_DIR      pre-populated dir of *.apk/*.ipk; skips the gh
 #                     download (for local testing)              (optional)
-#   FEED_NAME         the feed's name in opkg's customfeeds.conf
-#                     (default treadle; the snapshot feed is treadle-snapshot)
-#   FEED_TITLE        the landing page's heading   (default Treadle package feed)
 #   PAGES_URL         absolute feed URL baked into index.html
 #                     (default https://routeweave.github.io/treadle)
 #
@@ -45,8 +40,6 @@ for cmd in apk usign gzip tar sha256sum awk find; do require_cmd "$cmd"; done
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 FEED_OUT="${FEED_OUT:-$REPO_DIR/public}"
 PAGES_URL="${PAGES_URL:-https://routeweave.github.io/treadle}"
-FEED_NAME="${FEED_NAME:-treadle}"
-FEED_TITLE="${FEED_TITLE:-Treadle package feed}"
 KEYS_SRC="$REPO_DIR/feed/keys"
 
 [ -n "${APK_SIGN_KEY_FILE:-}" ] && [ -f "$APK_SIGN_KEY_FILE" ] || die "APK_SIGN_KEY_FILE not set or missing"
@@ -156,7 +149,7 @@ cat > "$FEED_OUT/index.html" <<HTML
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${FEED_TITLE}</title>
+<title>Treadle package feed</title>
 <style>
   body { font-family: system-ui, sans-serif; max-width: 46rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
   code, pre { background: #f4f4f4; border-radius: 4px; }
@@ -168,7 +161,7 @@ cat > "$FEED_OUT/index.html" <<HTML
 </style>
 </head>
 <body>
-<h1>${FEED_TITLE}</h1>
+<h1>Treadle package feed</h1>
 <p>An OpenWrt-style repository for
 <a href="https://github.com/routeweave/treadle">luci-app-treadle</a>.
 Add it once, then install and upgrade Treadle with your package manager.</p>
@@ -183,7 +176,7 @@ service rpcd reload</code></pre>
 <h2>OpenWrt 24.10 (opkg)</h2>
 <pre><code>wget -O /tmp/treadle-feed.pub ${PAGES_URL}/keys/treadle-feed.pub
 opkg-key add /tmp/treadle-feed.pub
-echo "src/gz ${FEED_NAME} ${PAGES_URL}/opkg" >> /etc/opkg/customfeeds.conf
+echo "src/gz treadle ${PAGES_URL}/opkg" >> /etc/opkg/customfeeds.conf
 opkg update
 opkg install luci-app-treadle
 service rpcd reload</code></pre>

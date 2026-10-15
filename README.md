@@ -98,31 +98,33 @@ your first subscription from the **Nodes** tab (**Add subscription**).
 > when someone asks you to verify one. For anything you depend on, use a
 > tagged release.
 
-Snapshots have a signed feed of their own, next to the release feed:
-every push to `main` that passes CI replaces it. With the feed's key
-installed (see [From the Treadle feed](#from-the-treadle-feed-recommended)),
-add it once:
+The latest `main` that passed CI is published at a fixed URL, signed
+with the feed's key. Install it in one line:
 
 **OpenWrt 25.12+** (APK):
 
 ```sh
-echo "https://routeweave.github.io/treadle/snapshot/apk/Packages.adb" >> /etc/apk/repositories.d/customfeeds.list
-apk update && apk add -u luci-app-treadle && service rpcd reload
+wget -O /tmp/treadle.apk https://routeweave.github.io/treadle/snapshot/luci-app-treadle-snapshot.apk && apk add /tmp/treadle.apk luci-app-treadle && service rpcd reload
 ```
+
+Naming `luci-app-treadle` next to the file makes apk keep the package by
+name rather than pinned to that file, so release upgrades still apply
+later. A router without the feed's key (see
+[From the Treadle feed](#from-the-treadle-feed-recommended)) needs
+`--allow-untrusted`.
 
 **OpenWrt 24.10** (opkg):
 
 ```sh
-echo "src/gz treadle-snapshot https://routeweave.github.io/treadle/snapshot/opkg" >> /etc/opkg/customfeeds.conf
-opkg update && opkg upgrade luci-app-treadle && service rpcd reload
+wget -O /tmp/treadle.ipk https://routeweave.github.io/treadle/snapshot/luci-app-treadle-snapshot.ipk && opkg install /tmp/treadle.ipk && service rpcd reload
 ```
 
-From then on the usual upgrade commands follow `main`. A snapshot sorts
-above the releases of its own version, so with both feeds the router
-always takes the snapshot. Removing the snapshot line keeps the installed
-snapshot until a higher release comes out: going back to an older release
-is not supported. On 24.10 a snapshot has passed the 25.12 tests only;
-24.10 itself is tested at each release and weekly.
+Nothing is added to the router's feeds, and the Status page footer shows
+which build is installed. A snapshot sorts above the releases of its own
+version, so the router keeps it until a higher release is out, which the
+usual upgrade from the release feed then installs. Going back to an older
+release is not supported. On 24.10 a snapshot has passed the 25.12 tests
+only; 24.10 itself is tested at each release and weekly.
 
 ### On iStoreOS and other OpenWrt forks
 

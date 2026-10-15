@@ -66,9 +66,8 @@ above every release with the same `PKG_VERSION`:
 
 Nothing can sit between `0.1.0-r1` and `0.1.0-r2`: the revision is a whole
 number and nothing may follow it. This is the intended behaviour, not a
-defect. A router that installed a snapshot, from the snapshot feed or as a
-file, stays on the snapshot channel, and the release feed moves it on only
-when a higher version is released; going to a
+defect. A router that installed a snapshot stays on it, and the release feed
+moves it on only when a higher version is released; going to a
 release with the same version would be a rollback, which Treadle does not
 support. Nothing is lost by staying. The release PR's build is the release's
 code. An `-r2` changes no code, and the snapshots built after the bump carry
@@ -189,9 +188,8 @@ Treadle publishes none today, and **one version string cannot mean
 So publishing an RC means choosing one of:
 
 1. **Ship RCs as snapshots.** Costs nothing — the mechanism exists, and
-   snapshots live in their own feed (`snapshot/`), apart from the release
-   feed, so no release-feed user is offered one. You give up having the RC
-   installable from the *release* feed.
+   snapshots are installed by hand and kept out of the feed, so no ordering
+   question arises. You give up having the RC installable *from the feed*.
 2. **Version the two formats differently** — `1.2.0_rc1` for the apk,
    `1.2.0~rc1` for the ipk. Both then sort correctly in their own manager.
    This gives up the single-`VERSION`-for-both-formats property that the rest
@@ -202,9 +200,9 @@ Until one is chosen, **do not put `_pre` / `_alpha` / `_beta` / `_rc` in a
 version that is also built as an ipk** — not as a permanent rule, but because
 nothing downstream is prepared for it yet.
 
-**A local-file install is version-gated on opkg but not on apk.** A snapshot
-installed as a file, a branch build above all, never comes from a feed, so
-this decides what any snapshot-ordering bug actually costs there:
+**A local-file install is version-gated on opkg but not on apk.** Snapshots
+are installed by hand and kept out of the feed, so this decides what any
+snapshot-ordering bug actually costs:
 
 - `opkg install <file>` compares versions (`opkg_install.c` →
   `pkg_compare_versions`): `cmp > 0` prints "Not downgrading package …",
@@ -213,16 +211,18 @@ this decides what any snapshot-ordering bug actually costs there:
 - `apk add <file>` does not. `app_add.c` sends a file argument through
   `apk_dep_from_pkg()`, which pins the world constraint to the package's
   **content hash** (`APK_DEPMASK_CHECKSUM`), never its version — so the file
-  always installs.
+  always installs. That pin (`luci-app-treadle><Q1…` in `/etc/apk/world`)
+  also stops a later release from replacing the file, unless the package
+  name is given in the same command: `apk add /tmp/treadle.apk
+  luci-app-treadle` records the name, and the file satisfies it. The
+  README's snapshot line does exactly that.
 
 Do not weaken the version scheme on the strength of apk's leniency; 24.10 is
 supported.
 
-Ordering against the **feeds** is a separate property that applies to both:
+Ordering against the **feed** is a separate property that applies to both:
 an installed snapshot must outrank the release it follows, or the next
-`apk upgrade` / `opkg upgrade` pulls the user back to an older release; and
-within the snapshot feed each snapshot must outrank the one before, which the
-timestamp guarantees.
+`apk upgrade` / `opkg upgrade` pulls the user back to an older release.
 
 ## Releasing
 

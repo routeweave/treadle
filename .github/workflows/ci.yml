@@ -6,10 +6,10 @@ name: CI
 # one of a branch).
 #
 # Every push to main that passes then publishes the site on GitHub Pages: the
-# package feed (the newest release) and, under snapshot/, a second signed
-# feed holding this run's own packages, which a router can follow to track
-# main. One run per commit is the only deploy of that commit, so no two
-# deploys of a commit can race (Pages keeps the first one of a commit).
+# package feed (the newest release) and, under snapshot/, this run's own
+# packages at fixed names, signed, to download and try once. One run per
+# commit is the only deploy of that commit, so no two deploys of a commit can
+# race (Pages keeps the first one of a commit).
 #
 # A push to main is also how a release happens. The Makefile's PKG_VERSION /
 # PKG_RELEASE name the version most recently released, so when they name a
@@ -230,9 +230,9 @@ jobs:
   # The site: the feed is the newest release only, indexed and signed
   # (scripts/feed.sh). It downloads the release, so it serves the release
   # assets byte for byte; a dry run creates no release and indexes the latest
-  # existing one. snapshot/ is the same kind of feed for this run's packages:
-  # on a release commit the release's own, otherwise packages-<sha> with the
-  # apk signed here.
+  # existing one. snapshot/ holds this run's packages at fixed names: on a
+  # release commit the release's own, otherwise packages-<sha> with the apk
+  # signed here.
   feed:
     needs: [version, test, release]
     if: >-
@@ -288,9 +288,9 @@ jobs:
           name: packages-${{ github.sha }}
           path: ${{ runner.temp }}/snapshot
 
-      # A release commit's snapshot is the release itself, so a router on
-      # both feeds sees one package, not two signings of one version.
-      - name: Sign this run's apk for the snapshot
+      # A release commit's snapshot is the release itself: signing the same
+      # package again would give a second file with the same version.
+      - name: Add the snapshot
         run: |
           snap="$RUNNER_TEMP/snapshot"
           if [ "$RELEASED" = true ]; then
@@ -299,18 +299,10 @@ jobs:
           else
             ( cd "$snap" && apk --allow-untrusted adbsign --sign-key "$RUNNER_TEMP/keys/apk.ec" ./*.apk )
           fi
-          ls -l "$snap"
-
-      - name: Build the snapshot feed
-        env:
-          FEED_SRC_DIR: ${{ runner.temp }}/snapshot
-          FEED_OUT: ${{ github.workspace }}/public/snapshot
-          FEED_NAME: treadle-snapshot
-          FEED_TITLE: Treadle snapshot feed
-          APK_SIGN_KEY_FILE: ${{ runner.temp }}/keys/apk.ec
-          OPKG_SIGN_KEY_FILE: ${{ runner.temp }}/keys/usign.sec
-          PAGES_URL: ${{ steps.pages.outputs.base_url }}/snapshot
-        run: scripts/feed.sh
+          mkdir -p public/snapshot
+          cp "$snap"/*.apk public/snapshot/luci-app-treadle-snapshot.apk
+          cp "$snap"/*.ipk public/snapshot/luci-app-treadle-snapshot.ipk
+          ls -l public/snapshot
 
       - name: Upload the Pages artifact
         if: env.DRY_RUN != 'true'
