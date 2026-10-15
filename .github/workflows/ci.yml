@@ -2,8 +2,14 @@ name: CI
 
 # Every pull request and every push to main runs the checks in test.yml, on
 # OpenWrt 25.12 and against an upstream sing-box. Each run keeps its packages
-# as an artifact for 30 days; that is what a snapshot is
-# (scripts/push-to-router.sh installs the newest one of a branch).
+# as an artifact for 30 days (scripts/push-to-router.sh installs the newest
+# one of a branch).
+#
+# Every push to main that passes then publishes the site on GitHub Pages: the
+# package feed (the newest release) and, under snapshot/, a second signed
+# feed holding this run's own packages, which a router can follow to track
+# main. One run per commit is the only deploy of that commit, so no two
+# deploys of a commit can race (Pages keeps the first one of a commit).
 #
 # A push to main is also how a release happens. The Makefile's PKG_VERSION /
 # PKG_RELEASE name the version most recently released, so when they name a
@@ -12,14 +18,14 @@ name: CI
 #   test     builds and tests that version (release: true), on 24.10 as well;
 #   release  signs the apk those tests installed and creates the tag and the
 #            release on this commit;
-#   feed     indexes and signs that release as the package feed;
-#   deploy   publishes the feed on GitHub Pages.
-# Pages is deployed by release commits only, one deploy per commit.
+#   feed     indexes and signs that release as the package feed, and serves
+#            the same packages as the snapshot;
+#   deploy   publishes the site.
 #
 # Run by hand with release_dry_run, it does all of that for the Makefile's
-# version except publishing: the signed packages and the feed (built from the
-# latest existing release) are kept as artifacts. That is how to test the
-# release path on a branch.
+# version except publishing: the signed packages and the site (its feed
+# built from the latest existing release) are kept as artifacts. That is how
+# to test the release path on a branch.
 #
 # Pull requests cancel their own superseded runs. Runs on main queue
 # instead: one may be releasing, and a release is never cut off halfway.
@@ -221,18 +227,25 @@ jobs:
             --notes-file "$NOTES_FILE" \
             --latest
 
-  # The feed is the newest release only, indexed and signed (scripts/feed.sh).
-  # It downloads the release just created, so it serves the release assets
-  # byte for byte. A dry run creates no release and indexes the latest
-  # existing one instead.
+  # The site: the feed is the newest release only, indexed and signed
+  # (scripts/feed.sh). It downloads the release, so it serves the release
+  # assets byte for byte; a dry run creates no release and indexes the latest
+  # existing one. snapshot/ is the same kind of feed for this run's packages:
+  # on a release commit the release's own, otherwise packages-<sha> with the
+  # apk signed here.
   feed:
-    needs: [version, release]
+    needs: [version, test, release]
+    if: >-
+      !cancelled() && needs.test.result == 'success' && needs.release.result != 'failure'
+      && (github.event_name == 'push' && github.ref == 'refs/heads/main' || needs.release.result == 'success')
     runs-on: ubuntu-24.04
     permissions:
-      contents: read   # download the release
+      contents: read   # download the release and this run's packages
+      actions: read
       pages: read      # the site's URL
     env:
       DRY_RUN: ${{ github.event_name != 'push' }}
+      RELEASED: ${{ github.event_name == 'push' && needs.version.outputs.tag != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -261,11 +274,42 @@ jobs:
       - name: Build the feed
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          FEED_TAG: ${{ env.DRY_RUN != 'true' && needs.version.outputs.tag || '' }}
+          FEED_TAG: ${{ env.RELEASED == 'true' && needs.version.outputs.tag || '' }}
           FEED_OUT: ${{ github.workspace }}/public
           APK_SIGN_KEY_FILE: ${{ runner.temp }}/keys/apk.ec
           OPKG_SIGN_KEY_FILE: ${{ runner.temp }}/keys/usign.sec
           PAGES_URL: ${{ steps.pages.outputs.base_url }}
+        run: scripts/feed.sh
+
+      - name: Take this run's packages
+        if: env.RELEASED != 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: packages-${{ github.sha }}
+          path: ${{ runner.temp }}/snapshot
+
+      # A release commit's snapshot is the release itself, so a router on
+      # both feeds sees one package, not two signings of one version.
+      - name: Sign this run's apk for the snapshot
+        run: |
+          snap="$RUNNER_TEMP/snapshot"
+          if [ "$RELEASED" = true ]; then
+            mkdir -p "$snap"
+            cp public/apk/*.apk public/opkg/*.ipk "$snap/"
+          else
+            ( cd "$snap" && apk --allow-untrusted adbsign --sign-key "$RUNNER_TEMP/keys/apk.ec" ./*.apk )
+          fi
+          ls -l "$snap"
+
+      - name: Build the snapshot feed
+        env:
+          FEED_SRC_DIR: ${{ runner.temp }}/snapshot
+          FEED_OUT: ${{ github.workspace }}/public/snapshot
+          FEED_NAME: treadle-snapshot
+          FEED_TITLE: Treadle snapshot feed
+          APK_SIGN_KEY_FILE: ${{ runner.temp }}/keys/apk.ec
+          OPKG_SIGN_KEY_FILE: ${{ runner.temp }}/keys/usign.sec
+          PAGES_URL: ${{ steps.pages.outputs.base_url }}/snapshot
         run: scripts/feed.sh
 
       - name: Upload the Pages artifact
@@ -284,7 +328,7 @@ jobs:
   # The github-pages environment admits main, the ref this runs on.
   deploy:
     needs: feed
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     # One deploy at a time, and never cut off: a newer one waits its turn.
     concurrency:

@@ -163,7 +163,7 @@ the Makefile's version, and keeps the packages as an artifact.
 | Workflow | Trigger | What it does |
 |---|---|---|
 | **Test (shared)** | Called by CI and Weekly; never runs on its own | Lint, package build and staged-tree check, smoke, system and browser tests on OpenWrt 25.12 (apk) and 24.10 (opkg), plus the smoke test against an upstream sing-box. |
-| **CI**      | Pull request, push to `main` | Runs Test on 25.12. On a release commit it also tests 24.10, signs the `.apk` it tested, creates the tag and an immutable GitHub release on that commit, and publishes that release as the feed on GitHub Pages; a failing check publishes nothing. Runs on `main` queue rather than cancel each other. Run by hand with `release_dry_run`, it does all of that except publishing, and keeps the signed packages and the feed as artifacts. |
+| **CI**      | Pull request, push to `main` | Runs Test on 25.12. A `main` push that passes publishes the GitHub Pages site: the feed (the newest release) and the snapshot feed (that run's packages). On a release commit it first also tests 24.10, signs the `.apk` it tested and creates the tag and an immutable GitHub release on that commit, which the feed then serves; a failing check publishes nothing. Runs on `main` queue rather than cancel each other. Run by hand with `release_dry_run`, it does all of that except publishing, and keeps the signed packages and the feed as artifacts. |
 | **Weekly**  | Mondays, or by hand          | Rebuilds the test images (`tests/image/`): each tested OpenWrt release with Treadle's dependencies preinstalled, pushed to GHCR, so Test downloads nothing from the OpenWrt mirrors; without an image, or when one lacks a package, Test installs from the feeds instead. Run it by hand on `main` after a dependency change to rebuild at once; on another branch it builds without pushing. Runs Test fresh from the OpenWrt feeds, on 25.12, 24.10 and OpenWrt's snapshot (allowed to fail, as early warning). Checks the versions pinned by hand that Dependabot cannot see (`scripts/check-pins.mjs`) and keeps one issue open while any is behind. |
 
 Every action is pinned to a commit SHA, with the tag in a trailing comment;
@@ -171,11 +171,13 @@ Dependabot proposes updates monthly.
 
 ### What a snapshot is
 
-A CI build that is not a release: every run uploads its packages as a
-workflow artifact, `packages-<commit>`, kept 30 days.
+A CI build that is not a release. Every run uploads its packages as a
+workflow artifact, `packages-<commit>`, kept 30 days, and
 `scripts/push-to-router.sh` installs the newest successful build of the
-branch you have checked out (`TREADLE_BRANCH=main` for `main`). The feed
-serves releases only, the newest one.
+branch you have checked out. Every push to `main` that passes also
+publishes its own packages as the snapshot feed, `snapshot/` on the Pages
+site, a signed feed a router can follow (README § Snapshot). The release
+feed serves the newest release only.
 
 ## Repository layout
 

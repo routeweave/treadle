@@ -98,28 +98,31 @@ your first subscription from the **Nodes** tab (**Add subscription**).
 > when someone asks you to verify one. For anything you depend on, use a
 > tagged release.
 
-Every CI run keeps the packages it built and tested for 30 days, as an
-artifact named `packages-<commit>`. Take the newest successful run on
-`main`: from the Actions tab (CI → the run → Artifacts, which needs a
-GitHub login), or with the [gh CLI](https://cli.github.com):
+Snapshots have a signed feed of their own, next to the release feed:
+every push to `main` that passes CI replaces it. With the feed's key
+installed (see [From the Treadle feed](#from-the-treadle-feed-recommended)),
+add it once:
+
+**OpenWrt 25.12+** (APK):
 
 ```sh
-gh run download --repo routeweave/treadle --pattern 'packages-*' \
-  "$(gh run list --repo routeweave/treadle --workflow ci.yml --branch main \
-     --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
+echo "https://routeweave.github.io/treadle/snapshot/apk/Packages.adb" >> /etc/apk/repositories.d/customfeeds.list
+apk update && apk add -u luci-app-treadle && service rpcd reload
 ```
 
-Copy the `.apk` (OpenWrt 25.12+) or the `.ipk` (OpenWrt 24.10) to the
-router's `/tmp`, then:
+**OpenWrt 24.10** (opkg):
 
 ```sh
-apk add --allow-untrusted /tmp/luci-app-treadle-*.apk && service rpcd reload   # 25.12+
-opkg install /tmp/luci-app-treadle_*.ipk && service rpcd reload               # 24.10
+echo "src/gz treadle-snapshot https://routeweave.github.io/treadle/snapshot/opkg" >> /etc/opkg/customfeeds.conf
+opkg update && opkg upgrade luci-app-treadle && service rpcd reload
 ```
 
-A snapshot sorts above the releases of its own version, so once one is
-installed the feed moves the router on only at the next higher release.
-Going back to an older release is not supported.
+From then on the usual upgrade commands follow `main`. A snapshot sorts
+above the releases of its own version, so with both feeds the router
+always takes the snapshot. Removing the snapshot line keeps the installed
+snapshot until a higher release comes out: going back to an older release
+is not supported. On 24.10 a snapshot has passed the 25.12 tests only;
+24.10 itself is tested at each release and weekly.
 
 ### On iStoreOS and other OpenWrt forks
 
