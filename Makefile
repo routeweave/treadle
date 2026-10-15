@@ -14,13 +14,14 @@ TREADLE_DEP_MIN:=sing-box>=1.12
 LUCI_PKGARCH:=all
 
 PKG_NAME:=luci-app-treadle
-# PKG_VERSION names the version most recently RELEASED — it trails the
-# timeline rather than predicting the next release. Bump it in the release
-# commit itself: a push to main whose version has no v* tag yet is a
-# release, and ci.yml builds, tags and publishes exactly this version, so
-# the OpenWrt SDK build path (which reads it verbatim) and the published
-# package can never disagree about what version this tree is. PKG_RELEASE
-# stays 1: a packaging fix is a patch release.
+# PKG_VERSION/PKG_RELEASE name the version most recently RELEASED — they
+# trail the timeline rather than predicting the next release. Bump them in
+# the release commit itself: a push to main whose version has no v* tag yet
+# is a release, and ci.yml builds, tags and publishes exactly this version,
+# so the OpenWrt SDK build path (which reads them verbatim) and the
+# published package can never disagree about what version this tree is.
+# A change to the app bumps PKG_VERSION and resets PKG_RELEASE to 1; a
+# packaging-only change bumps PKG_RELEASE alone.
 PKG_VERSION:=0.19.0
 PKG_RELEASE:=1
 PKG_MAINTAINER:=RouteWeave

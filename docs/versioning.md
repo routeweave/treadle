@@ -12,46 +12,66 @@ checked against apk's own parser on every build.
 
 ## The model
 
-**`PKG_VERSION` in the `Makefile` is the only input, and it trails the
-timeline** — it names the version most recently *released*, never a guess at
-the next one. A forward-looking version has to be predicted correctly and is
-wrong the moment a hotfix pre-empts a planned release; a trailing one only
-records what already happened.
+**`PKG_VERSION` and `PKG_RELEASE` in the `Makefile` are the only input, and
+they trail the timeline** — they name the version most recently *released*,
+never a guess at the next one. A forward-looking version has to be predicted
+correctly and is wrong the moment a hotfix pre-empts a planned release; a
+trailing one only records what already happened.
 
 A build is one of two things:
 
 | Build | Version | Example |
 |---|---|---|
-| The release itself | `<PKG_VERSION>-r1` | `0.1.0-r1` |
-| Anything else: a pull request, `main`, a local build | `<PKG_VERSION>_git<TS>-r1` | `0.1.0_git20260105083000-r1` |
+| The release itself | `<PKG_VERSION>-r<PKG_RELEASE>` | `0.1.0-r1` |
+| Anything else: a pull request, `main`, a local build | `<PKG_VERSION>_git<TS>-r<PKG_RELEASE>` | `0.1.0_git20260105083000-r1` |
 
 `package.sh` builds the release shape only when `TREADLE_RELEASE_BUILD=1`,
 which `ci.yml` sets on a release commit, and the snapshot shape otherwise. It
-reads no tags. Because `PKG_VERSION` names the last release, a snapshot is
-always `<last release>_git<TS>`: it sorts above the release it follows and
-below the next one.
+reads no tags. Because the Makefile names the last release, a snapshot is
+always `<last release>_git<TS>`.
+
+**What a change bumps** follows OpenWrt's rule for `PKG_RELEASE`, with
+Treadle as its own upstream:
+
+| What changed | Release | Version |
+|---|---|---|
+| CI, tests, docs, scripts outside the package | none | unchanged |
+| Packaging only: `LUCI_DEPENDS`, `TREADLE_DEP_MIN`, postinst / prerm, conffiles, `package.sh` | yes | `PKG_RELEASE` + 1, tag `v0.1.0-r2` |
+| App code: `htdocs/`, `root/`, `po/` | yes | `PKG_VERSION` bumped, `PKG_RELEASE` back to 1, tag `v0.2.0` |
+
+CI checks the arithmetic, not the judgement: the new version must sort above
+the newest release, and a new `PKG_VERSION` must come with `PKG_RELEASE` 1.
+Whether a change was packaging-only is for the release PR to get right.
 
 **The Makefile edit is the release decision, and the `v*` tag is its
-record.** A push to `main` whose `PKG_VERSION` has no `v<PKG_VERSION>` tag yet
-is a release commit: `ci.yml` builds and tests that version, and creates the
-tag and the release on that commit. Nothing pushes a tag by hand, so there is
-no second place to declare a version. That is what keeps the OpenWrt SDK
-build path — which reads `PKG_VERSION` / `PKG_RELEASE` verbatim and never sees
-the CI environment — labelled identically to what is published.
-
-**`PKG_RELEASE` stays `1`.** A packaging fix is a patch release
-(`0.1.0` → `0.1.1`), not a `-r2`. CI fails any run whose `PKG_RELEASE` is
-not `1`. The field remains because OpenWrt's version spelling needs it (next
-section).
-
-**One quirk to know.** The release pull request already carries the new
-`PKG_VERSION`, so its own builds are `0.2.0_git<TS>-r1`, which sorts *above*
-the `0.2.0-r1` it is about to release. Install the release, not the release
-PR's build; a router that installed the PR build moves on with the next
-snapshot or release.
+record.** A push to `main` whose version has no tag yet is a release commit:
+`ci.yml` builds and tests that version, and creates the tag and the release on
+that commit. Nothing pushes a tag by hand, so there is no second place to
+declare a version. That is what keeps the OpenWrt SDK build path — which reads
+`PKG_VERSION` / `PKG_RELEASE` verbatim and never sees the CI environment —
+labelled identically to what is published.
 
 Releasing therefore means merging a commit that bumps the Makefile. See
 [Releasing](#releasing).
+
+## Snapshots are a channel, and rollback is not supported
+
+apk and opkg compare the version body before the revision, so a snapshot sorts
+above every release with the same `PKG_VERSION`:
+
+- the release PR's own builds, `0.2.0_git<TS>-r1`, sort above the `0.2.0-r1`
+  they become;
+- a snapshot made after `0.1.0-r1`, `0.1.0_git<TS>-r1`, sorts above a later
+  `0.1.0-r2`.
+
+Nothing can sit between `0.1.0-r1` and `0.1.0-r2`: the revision is a whole
+number and nothing may follow it. This is the intended behaviour, not a
+defect. A router that installed a snapshot stays on the snapshot channel, and
+the feed moves it on only when a higher version is released; going to a
+release with the same version would be a rollback, which Treadle does not
+support. Nothing is lost by staying. The release PR's build is the release's
+code. An `-r2` changes no code, and the snapshots built after the bump carry
+the fix as `0.1.0_git<TS>-r2`, which sorts above all of these.
 
 ## OpenWrt's `<version>-r<release>` spelling
 
@@ -206,8 +226,9 @@ installed snapshot must outrank the release it follows, or the next
 # After merging the changes that constitute the release to main:
 git switch -c release-0.11.0 origin/main
 
-# Record the version being released. A packaging-only fix is a patch
-# release too; PKG_RELEASE stays 1.
+# Record the version being released: PKG_VERSION for a change to the app,
+# with PKG_RELEASE back to 1; PKG_RELEASE alone for a packaging-only change,
+# which is tagged v0.11.0-r2.
 $EDITOR Makefile          # PKG_VERSION:=0.11.0
 git commit -am "Release 0.11.0"
 git push -u origin release-0.11.0
@@ -222,7 +243,8 @@ releases, since the version still has no tag. A version that sorts below the
 newest release fails the run instead of releasing. Never push a `v*` tag by
 hand: a tag that exists is a version already released, so CI would skip it.
 
-Snapshots from the next commit on are `0.11.0_git<TS>-r1` automatically.
+Snapshots from the next commit on are `0.11.0_git<TS>-r1` automatically, or
+`…-r2` after a packaging-only release.
 
 To try the release path without releasing, run CI from the Actions tab with
 `release_dry_run`: it builds, tests and signs the Makefile's version and keeps

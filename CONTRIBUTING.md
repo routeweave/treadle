@@ -99,19 +99,23 @@ anything in the packaging pipeline. The shapes:
 | Build                                           | Example version              |
 |---|---|
 | The release (tag `v0.1.0`)                      | `0.1.0-r1`                   |
+| A packaging-only re-release (tag `v0.1.0-r2`)   | `0.1.0-r2`                   |
 | Anything else after it                          | `0.1.0_git20260105083000-r1` |
 
 Three rules carry most of it:
 
-- `PKG_VERSION` in the `Makefile` is the only input and **trails** the
-  timeline — it names the version most recently released. Merging a
-  commit that bumps it is the release decision: CI creates the `v*` tag
-  from it, so the two can never disagree. No build reads a tag.
+- `PKG_VERSION` / `PKG_RELEASE` in the `Makefile` are the only input and
+  **trail** the timeline — they name the version most recently released.
+  Merging a commit that bumps them is the release decision: CI creates
+  the `v*` tag from them, so the two can never disagree. No build reads
+  a tag.
 - The snapshot suffix is HEAD's **commit timestamp**, never a commit
   count. A count collides across branches and moves backwards when a
   branch is rebased.
-- `PKG_RELEASE` stays `1`: a packaging fix is a patch release. The
-  `-r<N>` is never a build counter.
+- A change to the app (`htdocs/`, `root/`, `po/`) bumps `PKG_VERSION` and
+  resets `PKG_RELEASE` to `1`; a packaging-only change bumps
+  `PKG_RELEASE`; CI, test and doc changes bump nothing. `-r<N>` is never
+  a build counter.
 
 `version-check.sh` asserts these against apk's own parser and runs on
 every build. With an `apk` on PATH it also runs locally:
@@ -135,13 +139,16 @@ git push -u origin release-0.11.0
 # Open a pull request; merging it to main is the release.
 ```
 
-A packaging-only fix is a patch release too; `PKG_RELEASE` stays `1`,
-and CI fails a pull request that changes it. Never push a `v*` tag by
-hand: CI creates it, and a version that already has one is not released
-again.
+For a packaging-only change, bump `PKG_RELEASE` alone instead; that is
+tagged `v0.11.0-r2`. CI fails a pull request whose version sorts below
+the newest release, or that bumps `PKG_VERSION` without resetting
+`PKG_RELEASE` to `1`. Never push a `v*` tag by hand: CI creates it, and
+a version that already has one is not released again.
 
 Snapshots from the next commit on are `0.11.0_git<timestamp>-r1`
-automatically.
+automatically. A snapshot sorts above every release of its
+`PKG_VERSION`, so a router on a snapshot stays on snapshots until a
+higher version is released; rollback is not supported.
 
 The release commit's CI run builds and tests the release version with the
 same checks as a pull request: lint, the staged-tree check and the smoke

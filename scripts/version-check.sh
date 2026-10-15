@@ -5,8 +5,8 @@
 # Checks Treadle's version scheme against apk's own parser, so a change to the
 # version-building code in package.sh cannot quietly start emitting strings
 # apk rejects or orders the wrong way. The scheme has two shapes, a release
-# (1.2.0-r1) and a snapshot past it (1.2.0_git<TS>-r1); see
-# docs/versioning.md.
+# (1.2.0-r1, or 1.2.0-r2 for a packaging-only change) and a snapshot past it
+# (1.2.0_git<TS>-r1); see docs/versioning.md.
 #
 # Usage:
 #   version-check.sh              — run the built-in matrix
@@ -29,18 +29,22 @@ fail=0
 note() { printf '  %-34s %s\n' "$1" "$2"; }
 
 # --- versions the scheme is allowed to produce --------------------------------
-# A release and a snapshot (commit timestamp in the body).
+# A release, a packaging-only re-release, and a snapshot of each (commit
+# timestamp in the body).
 VALID="
 1.2.0-r1
+1.2.0-r2
 1.2.0_git20260105083000-r1
+1.2.0_git20260105083000-r2
 1.10.0-r1
 "
 
 # --- versions that must NOT parse ---------------------------------------------
-# The first is the Debian release separator, which OpenWrt does not use and
+# The first is a snapshot suffix after the revision: -r<N> is a terminal
+# token, so nothing may follow it. The second is the Debian release separator, which OpenWrt does not use and
 # apk does not accept (see openwrt/openwrt#15656, "1.2-1" rejected).
 #
-# The second is why a release candidate is not simply a matter of picking
+# The third is why a release candidate is not simply a matter of picking
 # Debian's spelling: "~rc1" reads to opkg as a pre-release sorting below
 # 1.2.0, which is exactly what an RC needs — but apk spans HEX DIGITS after
 # "~" and requires at least one, and "r" is not hex, so the version does not
@@ -48,17 +52,27 @@ VALID="
 # failing assertion rather than from a rejected package. See
 # docs/versioning.md § "Release candidates are unsolved, not forbidden".
 INVALID="
+1.2.0-r2_git20260105083000
 1.2.0-1
 1.2.0~rc1
 "
 
 # --- orderings the documented guarantee depends on ----------------------------
 # Each line is "A|B" and must compare strictly A < B. Together these assert:
-# a snapshot sorts above the release it follows; snapshots advance with the
-# commit timestamp alone; the next release outranks every snapshot of the
-# previous one.
+# a packaging re-release sorts above the release it fixes; a snapshot sorts
+# above the release it follows; snapshots advance with the commit timestamp
+# alone, with no help from the revision; the next version outranks every
+# snapshot of the previous one.
+#
+# Not asserted, because it is false by design: a snapshot made after 1.2.0-r1
+# sorts ABOVE a later 1.2.0-r2 (the version body is compared before the
+# revision). Rollback is not supported, so a router on a snapshot stays on the
+# snapshot channel until a higher version is released (docs/versioning.md).
 ORDER="
+1.2.0-r1|1.2.0-r2
 1.2.0-r1|1.2.0_git20260105083000-r1
+1.2.0-r2|1.2.0_git20260105083000-r2
+1.2.0_git20260105083000-r1|1.2.0_git20260105090000-r2
 1.2.0_git20260105083000-r1|1.2.0_git20260105090000-r1
 1.2.0_git20260105083000-r1|1.2.0_git20260106010000-r1
 1.2.0_git20260105083000-r1|1.10.0-r1
@@ -119,6 +133,7 @@ done
 
 OPKG_ORDER="
 1.1.3-1|1.1.3-r1
+1.2.0-r1|1.2.0-r2
 1.2.0-r1|1.2.0_git20260105083000-r1
 1.2.0_git20260105083000-r1|1.2.0_git20260105090000-r1
 1.2.0_git20260105083000-r1|1.10.0-r1
