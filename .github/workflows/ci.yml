@@ -59,73 +59,13 @@ jobs:
       release: ${{ steps.ver.outputs.release }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          sparse-checkout: Makefile
-          sparse-checkout-cone-mode: false
 
       - name: Is this a release?
         id: ver
         env:
           EVENT: ${{ github.event_name }}
           DRY_RUN: ${{ inputs.release_dry_run }}
-        run: |
-          mk_var() {
-            awk -F':=' -v key="$1" \
-              '$1 == key { sub(/^[ \t]+/, "", $2); sub(/[ \t]+$/, "", $2); print $2; exit }' \
-              Makefile
-          }
-          VERSION=$(mk_var PKG_VERSION)
-          RELEASE=$(mk_var PKG_RELEASE)
-          [ -n "$VERSION" ] || { echo "::error::no PKG_VERSION in the Makefile"; exit 1; }
-          case "$RELEASE" in
-            [1-9]|[1-9][0-9]) ;;
-            *) echo "::error::PKG_RELEASE is '$RELEASE', not a number from 1"; exit 1 ;;
-          esac
-          # docs/versioning.md: v0.1.0 for release 1, v0.1.0-r2 for a
-          # packaging-only change to the same code.
-          if [ "$RELEASE" = 1 ]; then TAG="v$VERSION"; else TAG="v$VERSION-r$RELEASE"; fi
-
-          # Listed on every run, so a wrong bump fails its own pull request.
-          # ls-remote exits non-zero when it cannot ask, so an unreachable
-          # remote fails the run instead of reading as "no tags".
-          tags=$(git ls-remote --tags --refs origin 'v[0-9]*') || { echo "::error::could not list the tags"; exit 1; }
-          tags=$(printf '%s\n' "$tags" | sed -n 's|.*refs/tags/||p')
-
-          if printf '%s\n' "$tags" | grep -qxF "$TAG"; then
-            if [ "$EVENT:$DRY_RUN" != workflow_dispatch:true ]; then
-              echo "not a release: $TAG is already released"
-              exit 0
-            fi
-          else
-            # A new version that sorts below the newest release is a typo in
-            # the Makefile, not a release: routers would never upgrade to it.
-            # sort -V puts v0.1.0 < v0.1.0-r2 < v0.1.0-r10 < v0.2.0.
-            newest=$(printf '%s\n%s\n' "$tags" "$TAG" | sed '/^$/d' | sort -V | tail -n 1)
-            if [ "$newest" != "$TAG" ]; then
-              echo "::error::the Makefile names $TAG, which sorts below the newest release $newest"
-              exit 1
-            fi
-            # A new PKG_VERSION starts again at PKG_RELEASE 1.
-            last=$(printf '%s\n' "$tags" | sed '/^$/d' | sort -V | tail -n 1)
-            last_version=${last#v}; last_version=${last_version%-r*}
-            if [ "$VERSION" != "$last_version" ] && [ "$RELEASE" != 1 ]; then
-              echo "::error::PKG_VERSION moves from $last_version to $VERSION, so PKG_RELEASE goes back to 1"
-              exit 1
-            fi
-          fi
-
-          case "$EVENT:$GITHUB_REF:$DRY_RUN" in
-            push:refs/heads/main:*)
-              echo "::notice::release commit: this run releases $TAG" ;;
-            workflow_dispatch:*:true)
-              echo "release dry run of $TAG" ;;
-            *)
-              echo "not a release: $EVENT on $GITHUB_REF ($TAG would be released on main)"
-              exit 0 ;;
-          esac
-          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "release=$RELEASE" >> "$GITHUB_OUTPUT"
+        run: sh scripts/decide-release.sh
 
   test:
     needs: version

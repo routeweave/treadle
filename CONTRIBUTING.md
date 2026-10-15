@@ -201,6 +201,7 @@ scripts/
 ├── privacy-check.mjs            # Nothing personal in a push, a PR or the tree
 ├── check-pins.mjs               # Pinned versions against upstream releases
 ├── version-check.sh             # Version scheme asserted against apk's parser
+├── decide-release.sh            # Whether a CI run releases (check-decide-release.sh tests it)
 ├── feed.sh  feed-keygen.sh      # Signed apk + opkg feed of the newest release, key setup
 ├── release-notes.sh             # Release notes body
 └── push-to-router.sh            # Install a branch's CI build on a router

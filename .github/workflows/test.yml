@@ -78,8 +78,6 @@ jobs:
 
   build:
     runs-on: ubuntu-24.04
-    outputs:
-      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -92,11 +90,9 @@ jobs:
         run: scripts/package.sh
 
       - name: Check version against apk's parser
-        id: version
         run: |
           BUILT=$(basename "$(ls dist/*.apk | head -n1)" .apk)
           BUILT="${BUILT#luci-app-treadle-}"
-          echo "version=${BUILT}" >> "$GITHUB_OUTPUT"
           scripts/version-check.sh "$BUILT"
 
       - name: Syntax-check the staged package tree

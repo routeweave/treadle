@@ -60,6 +60,7 @@ run "node field parity (editor vs link import)" sh scripts/check-node-fields.sh
 run "views, ACL, handler, menu and test images in step" node scripts/check-consistency.mjs
 run "translation template in step with the views" sh scripts/update-pot.sh --check
 run "nothing personal in the tree" node scripts/privacy-check.mjs tree
+run "release decision against its cases" sh scripts/check-decide-release.sh
 
 # The decision log is not published, so nothing here may cite an entry of it
 # (CONTRIBUTING.md § Comments): "decision" plus a number, a bare four-digit

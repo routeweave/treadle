@@ -41,6 +41,8 @@ Treadle as its own upstream:
 
 CI checks the arithmetic, not the judgement: the new version must sort above
 the newest release, and a new `PKG_VERSION` must come with `PKG_RELEASE` 1.
+`scripts/decide-release.sh` makes that check and the release decision on every
+run, and `scripts/check-decide-release.sh` tests it against a matrix of cases.
 Whether a change was packaging-only is for the release PR to get right.
 
 **The Makefile edit is the release decision, and the `v*` tag is its
