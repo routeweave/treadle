@@ -38,7 +38,7 @@ permissions:
 env:
   # Headless Chromium for tests/browser.mjs. Dependabot does not track it
   # (there is no package.json); bump it by hand.
-  PLAYWRIGHT_VERSION: 1.64.0
+  PLAYWRIGHT_VERSION: 1.64.1
   SHELLCHECK_VERSION: v0.11.0
   SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
   # Upstream sing-box release the smoke test also runs against, ahead of what
