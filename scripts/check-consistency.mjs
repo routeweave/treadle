@@ -5,7 +5,8 @@
 // lint.sh. A mismatch here otherwise shows up only at runtime: a method the
 // ACL omits makes LuCI answer "Access denied" while a root `ubus call` still
 // works, a misspelt require leaves a tab blank, a handler method no ACL
-// lists is unreachable from the UI.
+// lists is unreachable from the UI, an OpenWrt release bumped in test.yml
+// but not weekly.yml quietly drops the tests back onto the feeds.
 //
 //   node scripts/check-consistency.mjs
 //
@@ -15,7 +16,9 @@
 //     method is both read and write;
 //   - the ACL grants UCI access to the treadle config only;
 //   - every 'require view.treadle.…' and the menu's view path name a file;
-//   - the menu's ACL dependency is the ACL file's group.
+//   - the menu's ACL dependency is the ACL file's group;
+//   - test.yml and weekly.yml name the same point release of each OpenWrt
+//     series they test.
 
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -109,8 +112,29 @@ for (const [ node, entry ] of Object.entries(JSON.parse(read(MENU)))) {
 			errors.push(`${MENU}: ${node} depends on ACL group "${g}", which ${ACL} does not define`);
 }
 
+// ── the OpenWrt test images ─────────────────────────────────────────────────
+// weekly.yml builds the treadle-test image for each tag test.yml pulls; a tag
+// it does not build makes test.yml fall back to the plain image and the feeds,
+// which passes, only slower and online.
+const IMAGE_FILES = [ '.github/workflows/test.yml', '.github/workflows/weekly.yml' ];
+const series = new Map();   // '25.12' → Map(tag → where it first appears)
+for (const f of IMAGE_FILES)
+	read(f).split('\n').forEach((line, i) => {
+		for (const [ , tag, s ] of line.matchAll(/openwrt\/rootfs:(x86_64-v?(\d+\.\d+)\.\d+)/g)) {
+			if (!series.has(s))
+				series.set(s, new Map());
+			if (!series.get(s).has(tag))
+				series.get(s).set(tag, `${f}:${i + 1}`);
+		}
+	});
+for (const [ s, tags ] of series)
+	if (tags.size > 1)
+		errors.push(`OpenWrt ${s} is pinned to more than one tag: ` +
+			[ ...tags ].map(([ tag, where ]) => `${tag} (${where})`).join(', '));
+
 for (const e of errors)
 	console.log(e);
 console.log(errors.length ? `${errors.length} problem(s)`
-	: `views, ACL and handler in step: ${declared} declared calls, ${aclAll.size} ACL methods, ${handler.size} handler methods`);
+	: `views, ACL and handler in step: ${declared} declared calls, ${aclAll.size} ACL methods, ${handler.size} handler methods; ` +
+		`test images: ${[ ...series.values() ].map(t => [ ...t.keys() ][0]).join(', ')}`);
 process.exit(errors.length ? 1 : 0);

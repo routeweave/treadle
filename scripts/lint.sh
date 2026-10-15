@@ -57,7 +57,7 @@ run "shellcheck (scripts)" shellcheck -S warning scripts/*.sh tests/*.sh tests/i
 # shellcheck disable=SC2086
 run "luacheck (Lua 5.1)" luacheck -q $ROUTER_LUA
 run "node field parity (editor vs link import)" sh scripts/check-node-fields.sh
-run "views, ACL, handler and menu in step" node scripts/check-consistency.mjs
+run "views, ACL, handler, menu and test images in step" node scripts/check-consistency.mjs
 run "translation template in step with the views" sh scripts/update-pot.sh --check
 run "nothing personal in the tree" node scripts/privacy-check.mjs tree
 

@@ -14,6 +14,7 @@
 //   SINGBOX_UPSTREAM_VERSION (+ its SHA-256), PLAYWRIGHT_VERSION,
 //   SHELLCHECK_VERSION (+ its SHA-256)      .github/workflows/test.yml
 //   ESLINT_VERSION                           scripts/lint.sh
+//   the apk-tools commit (input ref)         .github/actions/install-apk-tools
 //   the OpenWrt point releases tested        test.yml, weekly.yml
 
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -24,6 +25,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = f => readFileSync(join(root, f), 'utf8');
 const TEST = '.github/workflows/test.yml';
 const LINT = 'scripts/lint.sh';
+const APK_TOOLS = '.github/actions/install-apk-tools/action.yml';
 
 const pin = (file, name) => {
 	const m = read(file).match(new RegExp(`^\\s*${name}[:=]\\s*['"]?([^'"\\s#]+)`, 'm'));
@@ -80,6 +82,21 @@ try {
 		const latest = (await getJSON(`https://registry.npmjs.org/${pkg}/latest`)).version;
 		compare(pkg, pin(file, name), latest, `\`${file}\``);
 	}
+
+	// apk-tools: pinned by commit as an input default, which Dependabot does
+	// not track. Name it by its release tag to compare.
+	const apkRef = read(APK_TOOLS).match(/^ {2}ref:[\s\S]*?^ {4}default:\s*([0-9a-f]{40})/m)?.[1];
+	if (!apkRef)
+		throw new Error(`${APK_TOOLS}: no ref default`);
+	const apkTags = (await getJSON('https://api.github.com/repos/alpinelinux/apk-tools/tags?per_page=100'))
+		.filter(t => /^v\d+\.\d+\.\d+$/.test(t.name));
+	const apkLatest = apkTags.reduce((a, b) => (newer(a.name, b.name) ? b : a));
+	const apkPinned = apkTags.find(t => t.commit.sha === apkRef)?.name;
+	const apkWhere = `\`${APK_TOOLS}\``, apkExtra = `with \`default: ${apkLatest.commit.sha}\``;
+	if (apkPinned)
+		compare('apk-tools', apkPinned, apkLatest.name, apkWhere, apkExtra);
+	else
+		behind.push(`| apk-tools | ${apkRef.slice(0, 12)} (no release tag) | **${apkLatest.name}** | ${apkWhere}<br>${apkExtra} |`);
 
 	// OpenWrt: each tested release series against its newest point release,
 	// in the tag spelling the matrix already uses.
