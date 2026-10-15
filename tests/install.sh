@@ -28,7 +28,6 @@
 # always come from one server. Two backups from openwrt.org/mirrors, both
 # checked to carry both tested releases; the first has delivered every time
 # the origin failed on a runner. More only lengthens a run that fails anyway.
-# SMOKE_PKG_CACHE, when set, keeps downloaded packages between runs (CI).
 
 MIRRORS="https://downloads.openwrt.org
 https://openwrt.pixeldeck.net
@@ -36,12 +35,10 @@ https://ftp.halifax.rwth-aachen.de/openwrt"
 IMAGE_MARK=/etc/treadle-test-image
 
 pm_setup() {
-	CACHE=${SMOKE_PKG_CACHE:-}
 	if command -v apk >/dev/null 2>&1; then
 		PKG=$(ls "${WORK:-/work}"/dist/*.apk 2>/dev/null | head -n1)
 		FEEDS=/etc/apk/repositories.d/distfeeds.list
 		PM="apk"
-		[ -n "$CACHE" ] && PM="apk --cache-dir $CACHE/apk --cache-packages" && mkdir -p "$CACHE/apk"
 		pm_install() { $PM add "$@"; }
 		pm_install_pkg() { $PM add --allow-untrusted "$PKG"; }
 		pm_install_pkg_offline() { apk add --no-network --allow-untrusted "$PKG"; }
@@ -50,7 +47,6 @@ pm_setup() {
 		PKG=$(ls "${WORK:-/work}"/dist/*.ipk 2>/dev/null | head -n1)
 		FEEDS=/etc/opkg/distfeeds.conf
 		PM="opkg"
-		[ -n "$CACHE" ] && PM="opkg --cache $CACHE/opkg" && mkdir -p "$CACHE/opkg"
 		pm_install() { $PM install "$@"; }
 		pm_install_pkg() { $PM install "$PKG"; }
 		pm_install_pkg_offline() { opkg install "$PKG"; }
@@ -79,8 +75,6 @@ feed_step() { pm_install "$@" >/dev/null 2>&1; }
 install_feed_packages() {
 	pm_setup
 	mirror_loop feed_step "$@" || die "no OpenWrt mirror delivered: $*"
-	[ -n "$CACHE" ] && command -v apk >/dev/null 2>&1 && $PM cache clean >/dev/null 2>&1
-	return 0
 }
 
 treadle_step() {
@@ -116,6 +110,4 @@ install_treadle() {
 
 	mirror_loop treadle_step "$@" \
 		|| die "no OpenWrt mirror delivered the packages (not a Treadle failure)"
-	[ -n "$CACHE" ] && command -v apk >/dev/null 2>&1 && $PM cache clean >/dev/null 2>&1
-	return 0
 }

@@ -164,8 +164,7 @@ the Makefile's version, and keeps the packages as an artifact.
 |---|---|---|
 | **Test (shared)** | Called by CI and Weekly; never runs on its own | Lint, package build and staged-tree check, smoke, system and browser tests on OpenWrt 25.12 (apk) and 24.10 (opkg), plus the smoke test against an upstream sing-box. |
 | **CI**      | Pull request, push to `main` | Runs Test on 25.12. On a release commit it also tests 24.10, signs the `.apk` it tested, creates the tag and an immutable GitHub release on that commit, and publishes that release as the feed on GitHub Pages; a failing check publishes nothing. Runs on `main` queue rather than cancel each other. Run by hand with `release_dry_run`, it does all of that except publishing, and keeps the signed packages and the feed as artifacts. |
-| **Test images** | Weekly, a `main` push that changes them, or by hand | Builds the test images (`tests/image/`): each tested OpenWrt release with Treadle's dependencies preinstalled, pushed to GHCR. Test runs on them and so downloads nothing from the OpenWrt mirrors; without an image it falls back to a full install. A pull request that changes them builds without pushing. A version bump alone does not rebuild them. |
-| **Weekly**  | Mondays, or by hand          | Runs Test fresh from the OpenWrt feeds instead of the test images, on 25.12, 24.10 and OpenWrt's snapshot (allowed to fail, as early warning). Checks the versions pinned by hand that Dependabot cannot see (`scripts/check-pins.mjs`) and keeps one issue open while any is behind. |
+| **Weekly**  | Mondays, or by hand          | Rebuilds the test images (`tests/image/`): each tested OpenWrt release with Treadle's dependencies preinstalled, pushed to GHCR, so Test downloads nothing from the OpenWrt mirrors; without an image, or when one lacks a package, Test installs from the feeds instead. Run it by hand on `main` after a dependency change to rebuild at once; on another branch it builds without pushing. Runs Test fresh from the OpenWrt feeds, on 25.12, 24.10 and OpenWrt's snapshot (allowed to fail, as early warning). Checks the versions pinned by hand that Dependabot cannot see (`scripts/check-pins.mjs`) and keeps one issue open while any is behind. |
 
 Every action is pinned to a commit SHA, with the tag in a trailing comment;
 Dependabot proposes updates monthly.
@@ -189,9 +188,8 @@ serves releases only, the newest one.
 └── workflows/
     ├── test.yml                 # The checks, called by ci.yml and weekly.yml
     ├── ci.yml                   # Every PR and main push; releases and the feed
-    ├── test-images.yml          # Builds the test images for GHCR
     ├── privacy.yml              # The privacy check over every pull request
-    └── weekly.yml               # Fresh-from-the-feeds run, snapshot, pinned versions
+    └── weekly.yml               # Test images, a fresh-from-the-feeds run, pinned versions
 scripts/
 ├── package.sh                   # Standalone APK + IPK builder
 ├── check-stage.sh               # Syntax-check the tree package.sh stages

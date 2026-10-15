@@ -14,7 +14,7 @@
 //   SINGBOX_UPSTREAM_VERSION (+ its SHA-256), PLAYWRIGHT_VERSION,
 //   SHELLCHECK_VERSION (+ its SHA-256)      .github/workflows/test.yml
 //   ESLINT_VERSION                           scripts/lint.sh
-//   the OpenWrt point releases tested        test.yml, test-images.yml
+//   the OpenWrt point releases tested        test.yml, weekly.yml
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -92,7 +92,7 @@ try {
 			.filter(Boolean).map(m => `${series}.${m[1]}`);
 		const latest = points.reduce((a, b) => (newer(a, b) ? b : a), pinned);
 		compare('OpenWrt', pinned, latest,
-			'`test.yml` and `test-images.yml` (`openwrt/rootfs:' + prefix + series + '.N`)');
+			'`test.yml` and `weekly.yml` (`openwrt/rootfs:' + prefix + series + '.N`)');
 	}
 } catch (e) {
 	console.error(`check-pins: ${e.message}`);

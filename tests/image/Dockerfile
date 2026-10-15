@@ -4,7 +4,7 @@
 # Test image: an OpenWrt rootfs with every package Treadle depends on, and
 # what the tests themselves use, already installed, so a CI run installs
 # only Treadle's own package and downloads nothing. Built and pushed to GHCR
-# by .github/workflows/test-images.yml; see tests/install.sh for how a test
+# by .github/workflows/weekly.yml; see tests/install.sh for how a test
 # run uses it, and falls back when it is stale.
 #
 #   docker build -f tests/image/Dockerfile \

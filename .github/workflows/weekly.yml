@@ -1,7 +1,17 @@
 name: Weekly
 
-# What a change on main does not show:
+# What a change on main does not show, and the upkeep it needs:
 #
+#   images — builds the test images (tests/image/): each tested OpenWrt
+#           release with Treadle's dependencies and the tests' own packages
+#           preinstalled, pushed to ghcr.io/<owner>/treadle-test:<release>.
+#           test.yml runs on them, so a CI run downloads nothing from the
+#           OpenWrt mirrors; without one, or when an image lacks a package,
+#           it installs from the feeds instead (tests/install.sh). Rebuilt
+#           here only: after a change to the dependencies or to tests/image/,
+#           run this workflow by hand on main to rebuild at once. A run on
+#           another branch builds without pushing, which is how to try an
+#           image change.
 #   fresh — the whole test suite installing from the OpenWrt feeds, not from
 #           the test images, so dependency resolution and the mirrors are
 #           exercised against what the feeds carry today; plus OpenWrt's
@@ -12,8 +22,7 @@ name: Weekly
 #           Dependabot cannot see. One issue stays open, kept up to date,
 #           while any of them is behind, and is closed when none is.
 #
-# Mondays after test-images.yml (03:17 UTC) has rebuilt the images, or by
-# hand.
+# Mondays, or by hand.
 
 on:
   schedule:
@@ -24,6 +33,38 @@ permissions:
   contents: read
 
 jobs:
+  images:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        # The same strings as test.yml's matrix; the tag is the part after
+        # the colon.
+        image:
+          - openwrt/rootfs:x86_64-25.12.5
+          - openwrt/rootfs:x86_64-v24.10.8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build
+        env:
+          BASE: ${{ matrix.image }}
+        run: |
+          tag="ghcr.io/${GITHUB_REPOSITORY_OWNER}/treadle-test:${BASE#openwrt/rootfs:}"
+          docker build -f tests/image/Dockerfile --build-arg BASE="$BASE" -t "$tag" .
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+
+      - name: Push
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker push "$TAG"
+
   fresh:
     uses: ./.github/workflows/test.yml
     with:
