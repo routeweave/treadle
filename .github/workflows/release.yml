@@ -22,7 +22,7 @@ on:
   workflow_call:
     inputs:
       tag:
-        description: The release's tag, v<X.Y.Z> or v<X.Y.Z>-r<N>
+        description: The release's tag, v<PKG_VERSION>
         type: string
         required: true
       version:

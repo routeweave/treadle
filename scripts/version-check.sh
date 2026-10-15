@@ -4,14 +4,9 @@
 #
 # Checks Treadle's version scheme against apk's own parser, so a change to the
 # version-building code in package.sh cannot quietly start emitting strings
-# apk rejects or orders the wrong way.
-#
-# The mistake it guards against is easy to make: carrying a packaging
-# re-release tag (v1.1.3-r2) into the version BODY produces
-# "1.1.3-r2_git2-r1". apk's grammar treats -r<N> as a terminal revision
-# token, so nothing may follow it — `apk mkpkg` rejects such a package and
-# the whole snapshot channel stops building. Only reading the parser would
-# otherwise catch it, and that is not a control.
+# apk rejects or orders the wrong way. The scheme has two shapes, a release
+# (1.2.0-r1) and a snapshot past it (1.2.0_git<TS>-r1); see
+# docs/versioning.md.
 #
 # Usage:
 #   version-check.sh              — run the built-in matrix
@@ -34,23 +29,18 @@ fail=0
 note() { printf '  %-34s %s\n' "$1" "$2"; }
 
 # --- versions the scheme is allowed to produce --------------------------------
-# Release, packaging re-release, snapshot (commit timestamp in the body), and
-# the pre-first-release bootstrap shape.
+# A release and a snapshot (commit timestamp in the body).
 VALID="
 1.2.0-r1
-1.2.0-r2
 1.2.0_git20260105083000-r1
-1.2.0_git20260105083000-r2
-1.2.0_pre20260105083000-r1
 1.10.0-r1
 "
 
 # --- versions that must NOT parse ---------------------------------------------
-# The first is the mistake described above. The second is the Debian
-# release separator, which OpenWrt does not use and apk does not accept
-# (see openwrt/openwrt#15656, "1.2-1" rejected).
+# The first is the Debian release separator, which OpenWrt does not use and
+# apk does not accept (see openwrt/openwrt#15656, "1.2-1" rejected).
 #
-# The third is why a release candidate is not simply a matter of picking
+# The second is why a release candidate is not simply a matter of picking
 # Debian's spelling: "~rc1" reads to opkg as a pre-release sorting below
 # 1.2.0, which is exactly what an RC needs — but apk spans HEX DIGITS after
 # "~" and requires at least one, and "r" is not hex, so the version does not
@@ -58,20 +48,16 @@ VALID="
 # failing assertion rather than from a rejected package. See
 # docs/versioning.md § "Release candidates are unsolved, not forbidden".
 INVALID="
-1.1.3-r2_git2-r1
 1.2.0-1
 1.2.0~rc1
 "
 
 # --- orderings the documented guarantee depends on ----------------------------
 # Each line is "A|B" and must compare strictly A < B. Together these assert:
-# a bootstrap build sorts below its release; a snapshot sorts above the
-# release it follows; snapshots advance with the commit timestamp alone, with
-# no help from the release component; the next release outranks every
-# snapshot of the previous one.
+# a snapshot sorts above the release it follows; snapshots advance with the
+# commit timestamp alone; the next release outranks every snapshot of the
+# previous one.
 ORDER="
-1.2.0_pre20260105083000-r1|1.2.0-r1
-1.2.0-r1|1.2.0-r2
 1.2.0-r1|1.2.0_git20260105083000-r1
 1.2.0_git20260105083000-r1|1.2.0_git20260105090000-r1
 1.2.0_git20260105083000-r1|1.2.0_git20260106010000-r1
@@ -133,18 +119,10 @@ done
 
 OPKG_ORDER="
 1.1.3-1|1.1.3-r1
-1.2.0-r1|1.2.0-r2
 1.2.0-r1|1.2.0_git20260105083000-r1
 1.2.0_git20260105083000-r1|1.2.0_git20260105090000-r1
 1.2.0_git20260105083000-r1|1.10.0-r1
 "
-
-# A KNOWN divergence from apk, asserted so it stays known: opkg has no suffix
-# table, so `_pre` sorts ABOVE the bare version where apk sorts it below. If
-# this ever starts failing, opkg gained suffix handling and docs/versioning.md
-# § "Where opkg differs" needs revisiting.
-OPKG_DIVERGE_LO="1.2.0-r1"
-OPKG_DIVERGE_HI="1.2.0_pre20260105083000-r1"
 
 printf '\nOrdering under opkg (via dpkg)\n'
 if ! command -v dpkg >/dev/null 2>&1; then
@@ -165,12 +143,6 @@ else
 			fail=1
 		fi
 	done
-	if dpkg --compare-versions "$OPKG_DIVERGE_LO" lt "$OPKG_DIVERGE_HI" >/dev/null 2>&1; then
-		note "$OPKG_DIVERGE_LO < $OPKG_DIVERGE_HI" "ok (known apk divergence)"
-	else
-		note "$OPKG_DIVERGE_LO ? $OPKG_DIVERGE_HI" "expected '<' — opkg's _pre handling changed"
-		fail=1
-	fi
 fi
 
 printf '\n'

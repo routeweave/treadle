@@ -12,8 +12,8 @@
 #
 # Requirements:
 #   bash, apk-tools 3.x (`apk mkpkg`), fakeroot, tar, gzip,
-#   find (GNU), wc, du, awk, sha256sum. git is optional — used only to derive
-#   the snapshot version suffix when TREADLE_VERSION is unset.
+#   find (GNU), wc, du, awk, sha256sum, and git for a snapshot's version
+#   suffix (a release build, TREADLE_RELEASE_BUILD=1, does not need it).
 set -euo pipefail
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -139,91 +139,29 @@ for c in $DEP_MIN; do
 done
 
 # ---------------------------------------------------------------------------
-# Version detection
+# Version
 #
 # THE RULES LIVE IN docs/versioning.md. Read it before changing anything
 # here; the comments below cover only what is specific to these lines.
 # scripts/version-check.sh asserts the result against apk's parser
-# and runs in both workflows — add a case there for any change.
+# and runs on every build — add a case there for any change.
 #
-# Priority:
-#   1. TREADLE_VERSION — set by ci.yml on a release commit, from the
-#      Makefile's own PKG_VERSION.
-#   2. A v* tag reachable from HEAD — <last-tag>_git<TS>, the commit's own
-#      UTC timestamp. HEAD on the tag drops the suffix.
-#   3. No v* tag — <PKG_VERSION>_pre<TS>, the bootstrap before a first release.
-#
-# TREADLE_RELEASE overrides PKG_RELEASE on all three paths and exists for
-# a release's v<X.Y.Z>-r<N> tag ONLY. -r<N> is the packaging revision;
-# never route a build counter through it.
+# PKG_VERSION names the version most recently released, so a build is either
+# that release (TREADLE_RELEASE_BUILD=1, which ci.yml sets on a release
+# commit) or a snapshot past it, <PKG_VERSION>_git<TS>. No tag is read: the
+# Makefile alone decides.
 
-PKG_RELEASE="${TREADLE_RELEASE:-$PKG_RELEASE}"
-
-if [ -n "${TREADLE_VERSION:-}" ]; then
-	PKG_VERSION="$TREADLE_VERSION"
-elif command -v git >/dev/null 2>&1 && git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1; then
-	# Highest-versioned v* tag reachable from HEAD. Not `describe
-	# --abbrev=0`: that orders candidates by distance along the commit
-	# graph and has no tie-break when several tags share one commit (as
-	# they do after a history squash), so it can return an arbitrary one —
-	# picking v0.11.0 where v1.1.3 exists builds a snapshot that sorts BELOW
-	# the release it actually follows, and the feed then pulls the user
-	# back to an older release on the next upgrade.
-	#
-	# `--sort=-v:refname` orders by version rather than graph distance (so
-	# v1.10.0 > v1.2.0, which a lexical sort gets wrong), and `--merged
-	# HEAD` keeps describe's guarantee that the base tag is an ancestor —
-	# without it a tag on an unrelated branch could win and the on-the-tag
-	# check below would be measured against a tag HEAD never descended from.
-	LAST_TAG=$(git -C "$REPO_DIR" tag --list 'v[0-9]*' --merged HEAD --sort=-v:refname 2>/dev/null | head -1 || true)
-
+if [ "${TREADLE_RELEASE_BUILD:-}" != 1 ]; then
 	# HEAD's committer date as UTC YYYYMMDDHHMMSS. `format-local` honours TZ,
 	# so TZ=UTC0 pins it regardless of the build host's zone — two builders
 	# in different zones must not label the same commit differently.
 	# `|| die` hangs off the substitution itself, not off a test of its
 	# result: under `set -e` a failing substitution aborts the script before
-	# any following test could run, so a `[ -n "$SNAP_TS" ]` guard would
-	# never fire and its diagnostic would never reach the log.
+	# any following test could run.
 	SNAP_TS=$(TZ=UTC0 git -C "$REPO_DIR" log -1 --format=%cd \
 		--date=format-local:%Y%m%d%H%M%S 2>/dev/null) \
-		|| die "could not read HEAD commit date (shallow clone? need fetch-depth: 0)"
-
-	if [ -n "$LAST_TAG" ]; then
-		POST_N=$(git -C "$REPO_DIR" rev-list --count "${LAST_TAG}..HEAD" 2>/dev/null) \
-			|| die "could not count commits since ${LAST_TAG} (shallow clone? need fetch-depth: 0)"
-
-		# Split the tag into version and packaging-revision parts the same
-		# way ci.yml names a release. A packaging re-release is tagged v1.1.3-r2,
-		# and `${LAST_TAG#v}` alone would carry that "-r2" into the version
-		# BODY, yielding 1.1.3-r2_git2-r1. apk's grammar treats -r<N> as a
-		# terminal revision token, so anything after it fails to parse and
-		# `apk mkpkg` rejects the package outright — one such tag would
-		# break every snapshot build until the next plain v* tag landed.
-		STRIPPED="${LAST_TAG#v}"
-		case "$STRIPPED" in
-			*-r*)
-				BASE_VER="${STRIPPED%-r*}"
-				# The tag's own revision wins over the Makefile's: it is
-				# what that release was actually published as, and the
-				# snapshots that follow it belong to the same lineage.
-				# An explicit TREADLE_RELEASE still overrides both.
-				PKG_RELEASE="${TREADLE_RELEASE:-${STRIPPED##*-r}}"
-				;;
-			*)
-				BASE_VER="$STRIPPED"
-				;;
-		esac
-
-		# POST_N is consulted only as a boolean: is HEAD the tagged commit?
-		# The suffix itself carries no count.
-		if [ "$POST_N" -eq 0 ]; then
-			PKG_VERSION="$BASE_VER"
-		else
-			PKG_VERSION="${BASE_VER}_git${SNAP_TS}"
-		fi
-	else
-		PKG_VERSION="${PKG_VERSION}_pre${SNAP_TS}"
-	fi
+		|| die "could not read HEAD's commit date (a snapshot build needs a git checkout)"
+	PKG_VERSION="${PKG_VERSION}_git${SNAP_TS}"
 fi
 
 # Both formats use OpenWrt's <version>-r<release> spelling. This is not the

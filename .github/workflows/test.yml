@@ -6,9 +6,8 @@ name: Test (shared)
 # smoke test, the system test under procd and the browser test.
 #
 # Reusable only. ci.yml calls it for pull requests and pushes to main, and
-# with the release version on a release commit, so a release is built and
-# tested by exactly these jobs and publishes the packages they tested. The
-# version inputs are empty on every other call.
+# with release: true on a release commit, so a release is built and tested
+# by exactly these jobs and publishes the packages they tested.
 #
 # Actions are pinned by commit SHA; the tag each SHA was taken from is in
 # the trailing comment. Dependabot keeps both in step.
@@ -16,14 +15,10 @@ name: Test (shared)
 on:
   workflow_call:
     inputs:
-      version:
-        description: TREADLE_VERSION for package.sh (a release's x.y.z)
-        type: string
-        default: ''
       release:
-        description: TREADLE_RELEASE for package.sh (a release's -r<N>)
-        type: string
-        default: ''
+        description: Build the Makefile's version as a release, not a snapshot
+        type: boolean
+        default: false
       images:
         description: JSON list of openwrt/rootfs images for the smoke job
         type: string
@@ -83,16 +78,13 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0   # package.sh reads tags and HEAD's commit date
 
       - name: Install apk-tools
         uses: ./.github/actions/install-apk-tools
 
       - name: Build packages
         env:
-          TREADLE_VERSION: ${{ inputs.version }}
-          TREADLE_RELEASE: ${{ inputs.release }}
+          TREADLE_RELEASE_BUILD: ${{ inputs.release && '1' || '' }}
         run: scripts/package.sh
 
       - name: Check version against apk's parser

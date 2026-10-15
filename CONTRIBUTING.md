@@ -96,27 +96,25 @@ Full rules, including the apk and opkg format constraints, live in
 [`docs/versioning.md`](docs/versioning.md). Read that before changing
 anything in the packaging pipeline. The shapes:
 
-| Situation                                       | Example version              |
+| Build                                           | Example version              |
 |---|---|
-| Release (tag `v0.1.0`)                          | `0.1.0-r1`                   |
-| Packaging re-release (tag `v0.1.0-r2`)          | `0.1.0-r2`                   |
-| Snapshot past `v0.1.0`                          | `0.1.0_git20260105083000-r1` |
-| Snapshot, no `v*` tag yet (bootstrap)           | `0.1.0_pre20260105083000-r1` |
+| The release (tag `v0.1.0`)                      | `0.1.0-r1`                   |
+| Anything else after it                          | `0.1.0_git20260105083000-r1` |
 
 Three rules carry most of it:
 
-- `PKG_VERSION` / `PKG_RELEASE` in the `Makefile` are authoritative and
-  **trail** the timeline — they name the version most recently released.
-  Merging a commit that bumps them is the release decision: CI creates
-  the `v*` tag from them, so the two can never disagree.
+- `PKG_VERSION` in the `Makefile` is the only input and **trails** the
+  timeline — it names the version most recently released. Merging a
+  commit that bumps it is the release decision: CI creates the `v*` tag
+  from it, so the two can never disagree. No build reads a tag.
 - The snapshot suffix is HEAD's **commit timestamp**, never a commit
   count. A count collides across branches and moves backwards when a
   branch is rebased.
-- `-r<N>` is the **packaging revision** and nothing else, for both
-  package formats. It is never a build counter.
+- `PKG_RELEASE` stays `1`: a packaging fix is a patch release. The
+  `-r<N>` is never a build counter.
 
-`version-check.sh` asserts these against apk's own parser and runs in
-both workflows. With an `apk` on PATH it also runs locally:
+`version-check.sh` asserts these against apk's own parser and runs on
+every build. With an `apk` on PATH it also runs locally:
 
 ```sh
 scripts/version-check.sh
@@ -137,10 +135,10 @@ git push -u origin release-0.11.0
 # Open a pull request; merging it to main is the release.
 ```
 
-`PKG_RELEASE` resets to `1` whenever `PKG_VERSION` changes; bump only
-`PKG_RELEASE` for a packaging-only re-release of the same source, which
-is tagged `v0.11.0-r2`. Never push a `v*` tag by hand: CI creates it,
-and a version that already has one is not released again.
+A packaging-only fix is a patch release too; `PKG_RELEASE` stays `1`,
+and CI fails a pull request that changes it. Never push a `v*` tag by
+hand: CI creates it, and a version that already has one is not released
+again.
 
 Snapshots from the next commit on are `0.11.0_git<timestamp>-r1`
 automatically.

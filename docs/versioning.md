@@ -12,32 +12,48 @@ checked against apk's own parser on every build.
 
 ## The model
 
-**`PKG_VERSION` and `PKG_RELEASE` in the `Makefile` are authoritative on
-every build path, and they trail the timeline** — they name the version most
-recently *released*, never a guess at the next one. A forward-looking version
-has to be predicted correctly and is wrong the moment a hotfix pre-empts a
-planned release; a trailing one only records what already happened.
+**`PKG_VERSION` in the `Makefile` is the only input, and it trails the
+timeline** — it names the version most recently *released*, never a guess at
+the next one. A forward-looking version has to be predicted correctly and is
+wrong the moment a hotfix pre-empts a planned release; a trailing one only
+records what already happened.
+
+A build is one of two things:
+
+| Build | Version | Example |
+|---|---|---|
+| The release itself | `<PKG_VERSION>-r1` | `0.1.0-r1` |
+| Anything else: a pull request, `main`, a local build | `<PKG_VERSION>_git<TS>-r1` | `0.1.0_git20260105083000-r1` |
+
+`package.sh` builds the release shape only when `TREADLE_RELEASE_BUILD=1`,
+which `ci.yml` sets on a release commit, and the snapshot shape otherwise. It
+reads no tags. Because `PKG_VERSION` names the last release, a snapshot is
+always `<last release>_git<TS>`: it sorts above the release it follows and
+below the next one.
 
 **The Makefile edit is the release decision, and the `v*` tag is its
-record.** A push to `main` whose `PKG_VERSION` / `PKG_RELEASE` name a version
-with no `v*` tag yet is a release commit: `ci.yml` builds and tests that
-version, and creates the tag and the release on that commit. Nothing pushes a
-tag by hand, so there is no second place to declare a version and nothing to
-disagree with the Makefile. That is what keeps the OpenWrt SDK build path —
-which reads `PKG_VERSION` / `PKG_RELEASE` verbatim and never sees the CI
-environment — labelled identically to what is published.
+record.** A push to `main` whose `PKG_VERSION` has no `v<PKG_VERSION>` tag yet
+is a release commit: `ci.yml` builds and tests that version, and creates the
+tag and the release on that commit. Nothing pushes a tag by hand, so there is
+no second place to declare a version. That is what keeps the OpenWrt SDK
+build path — which reads `PKG_VERSION` / `PKG_RELEASE` verbatim and never sees
+the CI environment — labelled identically to what is published.
+
+**`PKG_RELEASE` stays `1`.** A packaging fix is a patch release
+(`0.1.0` → `0.1.1`), not a `-r2`. CI fails any run whose `PKG_RELEASE` is
+not `1`. The field remains because OpenWrt's version spelling needs it (next
+section).
+
+**One quirk to know.** The release pull request already carries the new
+`PKG_VERSION`, so its own builds are `0.2.0_git<TS>-r1`, which sorts *above*
+the `0.2.0-r1` it is about to release. Install the release, not the release
+PR's build; a router that installed the PR build moves on with the next
+snapshot or release.
 
 Releasing therefore means merging a commit that bumps the Makefile. See
 [Releasing](#releasing).
 
-## Version shapes
-
-| Situation | Example |
-|---|---|
-| Release, from tag `v0.1.0` | `0.1.0-r1` |
-| Packaging re-release, from tag `v0.1.0-r2` | `0.1.0-r2` |
-| Snapshot past `v0.1.0` | `0.1.0_git20260105083000-r1` |
-| Snapshot, no `v*` tag yet (bootstrap) | `0.1.0_pre20260105083000-r1` |
+## OpenWrt's `<version>-r<release>` spelling
 
 Both package formats use OpenWrt's `<version>-r<release>` spelling — the
 single `VERSION` that `include/package-defaults.mk` derives for apk and ipk
@@ -52,31 +68,9 @@ revisions Debian-style, where the empty run before `1` sorts below the letter
 `r`, so a bare `1.1.3-1` ranks *below* an SDK- or feed-built `1.1.3-r1` of the
 identical source.
 
-## How the version is chosen
-
-In priority order:
-
-1. **`TREADLE_VERSION` is set** — `ci.yml` sets it on a release commit, from
-   the Makefile's own `PKG_VERSION`.
-2. **A `v*` tag is reachable from HEAD** — `<highest-tag>_git<TS>`, where
-   `<TS>` is HEAD's own committer date. HEAD sitting exactly on the tag drops
-   the suffix, so a local build at the tag matches the tagged release. A
-   `v<X.Y.Z>-r<N>` tag is split first, and the tag's own revision becomes
-   `PKG_RELEASE`: snapshots following `v1.1.3-r2` are `1.1.3_git<TS>-r2`,
-   because they belong to that release's lineage.
-3. **No `v*` tag yet** — `<PKG_VERSION>_pre<TS>`, the bootstrap before a first
-   release.
-
-The base tag is selected by version, not by graph distance:
-
-```sh
-git tag --list 'v[0-9]*' --merged HEAD --sort=-v:refname | head -1
-```
-
-`git describe --abbrev=0` is wrong here. It orders candidates by distance
-along the commit graph and has no tie-break when several tags share one
-commit (as they do after a history squash), so it can return `v0.11.0` where
-`v1.1.3` exists and send the version backwards.
+**Never route a build counter through `-r<N>`.** It is the packaging
+revision. Snapshot ordering belongs in the version body, which is what the
+timestamp is for.
 
 ## The snapshot suffix is a timestamp, never a commit count
 
@@ -109,25 +103,6 @@ It is also the convention elsewhere: Alpine spells the suffix `_git<date>`
 named `$_date` / `$_pkgdate`), `openwrt/packages` uses `PKG_SOURCE_DATE` plus
 `PKG_SOURCE_VERSION`, and `luci.mk` builds `YY.DDD.SSSSS~HASH`.
 
-## `-r<N>` is the packaging revision and nothing else
-
-It is the Makefile's `PKG_RELEASE`, meaning *the source is unchanged, the
-packaging was fixed*. From `openwrt/packages` CONTRIBUTING:
-
-> `PKG_RELEASE` should be initially set to `1` or reset to `1` if the software
-> version is changed. You should increment it if the package itself has
-> changed.
-
-**Do not route a build counter through it.** Besides asserting something
-false, it makes a genuine `PKG_RELEASE` bump unrepresentable: `package.sh`
-resolves `PKG_RELEASE="${TREADLE_RELEASE:-$PKG_RELEASE}"`, so anything CI sets
-wins over the Makefile. Snapshot ordering belongs in the version body, which
-is what the timestamp is for.
-
-`TREADLE_RELEASE` exists solely for releases, `v<X.Y.Z>-r<N>` included.
-`ci.yml` sets it only on a release commit; for a snapshot it deliberately sets
-nothing.
-
 ## apk format constraints
 
 The version must be `<major>.<minor>.<patch>` with optional suffixes.
@@ -137,9 +112,8 @@ The version must be `<major>.<minor>.<patch>` with optional suffixes.
   `_hg` < `_p`. Each takes digits only. This is what guarantees
   `<tag>` < `<tag>_git<TS>` < `<next-tag>`.
 - **`-r<N>` is a terminal token** (`TOKEN_REVISION_NO`). Nothing may follow
-  it, so `1.1.3-r2_git2-r1` does not parse and `apk mkpkg` rejects the
-  package outright. Never build a version body out of a `v<X.Y.Z>-r<N>` tag
-  without splitting the `-r<N>` off first.
+  it: `1.1.3-r2_git2-r1` does not parse, and `apk mkpkg` rejects the package
+  outright.
 - **`-` is not otherwise legal.** Debian's `1.2.0-1` is rejected.
 - **`~<hex>` *is* legal** — apk parses it as `TOKEN_COMMIT_HASH`, and
   OpenWrt's own apk feed ships `luci-app-acl-26.255.21994~842f055.apk`. It
@@ -174,13 +148,10 @@ so `_` scores 351 against end-of-string's 0 and **every** `_suffix` sorts
 | Comparison | apk | opkg |
 |---|---|---|
 | `1.2.0_git<TS>` vs `1.2.0` | `>` | `>` — agree |
-| `1.2.0-r1` vs `1.2.0-r2` | `<` | `<` — agree |
 | `1.2.0_pre<TS>` vs `1.2.0` | `<` | **`>`** — disagree |
 | `1.2.0_alpha1` / `_beta` / `_rc` vs `1.2.0` | `<` | **`>`** — disagree |
 
-Only `_git<TS>` and `-r<N>` ship, and both agree, so this is latent. The
-`_pre<TS>` bootstrap path is unreachable here — it needs zero `v*` tags — but
-is wrong for opkg if a fork starts fresh.
+Only `_git<TS>` and `-r1` ship, and both agree, so this is latent.
 
 ### Release candidates are unsolved, not forbidden
 
@@ -235,9 +206,8 @@ installed snapshot must outrank the release it follows, or the next
 # After merging the changes that constitute the release to main:
 git switch -c release-0.11.0 origin/main
 
-# Record the version being released. PKG_RELEASE resets to 1 whenever
-# PKG_VERSION changes; bump PKG_RELEASE alone for a packaging-only
-# re-release of the same source, which is tagged v0.11.0-r2.
+# Record the version being released. A packaging-only fix is a patch
+# release too; PKG_RELEASE stays 1.
 $EDITOR Makefile          # PKG_VERSION:=0.11.0
 git commit -am "Release 0.11.0"
 git push -u origin release-0.11.0
@@ -262,8 +232,8 @@ the packages as an artifact.
 
 `scripts/version-check.sh` asserts the rules above against apk's
 real parser — which versions must parse, which must not, and the orderings the
-upgrade guarantee depends on — and both workflows run it against the version
-they just built. Add a case there when you change the scheme; a rule that
+upgrade guarantee depends on — and every build runs it against the version it
+just built. Add a case there when you change the scheme; a rule that
 exists only in this file is a rule that can drift.
 
 With an `apk` on `PATH` it also runs locally:

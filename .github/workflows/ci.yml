@@ -5,10 +5,10 @@ name: CI
 # rolling snapshot (pages.yml), from the packages this same run tested, so
 # the snapshot is always the latest tested main.
 #
-# A push to main is also how a release happens. The Makefile's PKG_VERSION /
-# PKG_RELEASE name the version most recently released, so when they name a
-# version that has no v* tag yet, this commit is a release commit: the run
-# builds and tests that version (test.yml with version / release), then
+# A push to main is also how a release happens. The Makefile's PKG_VERSION
+# names the version most recently released, so when it names a version that
+# has no v* tag yet, this commit is a release commit: the run builds and
+# tests that version (test.yml with release: true), then
 # release.yml signs the packages it tested and creates the tag and the
 # release on this commit, and pages.yml rebuilds the feed with it. The
 # snapshot stays as it is on that run; the next push to main moves it on.
@@ -62,10 +62,6 @@ jobs:
           EVENT: ${{ github.event_name }}
           DRY_RUN: ${{ inputs.release_dry_run }}
         run: |
-          case "$EVENT:$GITHUB_REF:$DRY_RUN" in
-            push:refs/heads/main:*|workflow_dispatch:*:true) ;;
-            *) echo "not a release: $EVENT on $GITHUB_REF"; exit 0 ;;
-          esac
           mk_var() {
             awk -F':=' -v key="$1" \
               '$1 == key { sub(/^[ \t]+/, "", $2); sub(/[ \t]+$/, "", $2); print $2; exit }' \
@@ -73,10 +69,17 @@ jobs:
           }
           VERSION=$(mk_var PKG_VERSION)
           RELEASE=$(mk_var PKG_RELEASE)
-          [ -n "$VERSION" ] && [ -n "$RELEASE" ] || { echo "::error::no PKG_VERSION / PKG_RELEASE in the Makefile"; exit 1; }
-          # docs/versioning.md: v0.1.0 for release 1, v0.1.0-r2 for a
-          # packaging-only re-release of the same source.
-          if [ "$RELEASE" = 1 ]; then TAG="v$VERSION"; else TAG="v$VERSION-r$RELEASE"; fi
+          [ -n "$VERSION" ] || { echo "::error::no PKG_VERSION in the Makefile"; exit 1; }
+          # A packaging fix is a patch release (docs/versioning.md), so
+          # PKG_RELEASE stays 1 and the tag is always v<PKG_VERSION>. Checked
+          # on every run, so a bump of it fails its own pull request.
+          [ "$RELEASE" = 1 ] || { echo "::error::PKG_RELEASE is '$RELEASE'; it stays 1, and a packaging fix bumps PKG_VERSION"; exit 1; }
+          TAG="v$VERSION"
+
+          case "$EVENT:$GITHUB_REF:$DRY_RUN" in
+            push:refs/heads/main:*|workflow_dispatch:*:true) ;;
+            *) echo "not a release: $EVENT on $GITHUB_REF"; exit 0 ;;
+          esac
 
           if [ "$EVENT" = push ]; then
             # ls-remote exits non-zero when it cannot ask, so an unreachable
@@ -89,6 +92,7 @@ jobs:
             fi
             # A new version that sorts below the newest release is a typo in
             # the Makefile, not a release: routers would never upgrade to it.
+            # Older tags may carry -r<N>; sort -V still orders them.
             newest=$(printf '%s\n%s\n' "$tags" "$TAG" | sed '/^$/d' | sort -V | tail -n 1)
             if [ "$newest" != "$TAG" ]; then
               echo "::error::the Makefile names $TAG, which sorts below the newest release $newest"
@@ -109,8 +113,7 @@ jobs:
       contents: read
       packages: read   # the test images
     with:
-      version: ${{ needs.version.outputs.version }}
-      release: ${{ needs.version.outputs.release }}
+      release: ${{ needs.version.outputs.tag != '' }}
 
   release:
     needs: [version, test]
