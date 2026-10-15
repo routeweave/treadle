@@ -104,14 +104,15 @@ with the feed's key. Install it in one line:
 **OpenWrt 25.12+** (APK):
 
 ```sh
-wget -O /tmp/treadle.apk https://routeweave.github.io/treadle/snapshot/luci-app-treadle-snapshot.apk && apk add /tmp/treadle.apk luci-app-treadle && service rpcd reload
+wget -O /tmp/treadle.apk https://routeweave.github.io/treadle/snapshot/luci-app-treadle-snapshot.apk && apk add /tmp/treadle.apk && apk add luci-app-treadle && service rpcd reload
 ```
 
-Naming `luci-app-treadle` next to the file makes apk keep the package by
-name rather than pinned to that file, so release upgrades still apply
-later. A router without the feed's key (see
+Both `apk add` steps are needed. The first installs the file, replacing
+whatever Treadle is installed, but pins the package to that file. The
+second records it by name again, so the next release still upgrades it.
+A router without the feed's key (see
 [From the Treadle feed](#from-the-treadle-feed-recommended)) needs
-`--allow-untrusted`.
+`--allow-untrusted` on the first.
 
 **OpenWrt 24.10** (opkg):
 

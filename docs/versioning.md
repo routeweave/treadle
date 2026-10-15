@@ -212,10 +212,13 @@ snapshot-ordering bug actually costs:
   `apk_dep_from_pkg()`, which pins the world constraint to the package's
   **content hash** (`APK_DEPMASK_CHECKSUM`), never its version — so the file
   always installs. That pin (`luci-app-treadle><Q1…` in `/etc/apk/world`)
-  also stops a later release from replacing the file, unless the package
-  name is given in the same command: `apk add /tmp/treadle.apk
-  luci-app-treadle` records the name, and the file satisfies it. The
-  README's snapshot line does exactly that.
+  also stops a later release from replacing the file. A second command,
+  `apk add luci-app-treadle`, records the name again and keeps the installed
+  file, which satisfies it. Both steps are needed: given in one command,
+  `apk add /tmp/treadle.apk luci-app-treadle` records the name but does not
+  upgrade a Treadle already installed, because that package satisfies the
+  name too, and `apk add -u` with the file fails. The README's snapshot line
+  runs the two in turn.
 
 Do not weaken the version scheme on the strength of apk's leniency; 24.10 is
 supported.
