@@ -62,7 +62,8 @@ apk update && apk add -u luci-app-treadle    # 25.12+
 opkg update && opkg upgrade luci-app-treadle # 24.10
 ```
 
-The feed indexes every tagged release; see
+The feed serves the newest release; older ones stay on their
+[release pages](../../releases). See
 <https://routeweave.github.io/treadle/> for the live instructions.
 
 ### Tagged release
@@ -98,21 +99,28 @@ Advanced mode).
 > when someone asks you to verify one. For anything you depend on, use a
 > tagged release.
 
-The snapshot URL is stable — the same one-liner installs and upgrades.
-It is served from the feed's site; `…/snapshot/VERSION` names the build
-and commit.
-
-**OpenWrt 25.12+** (APK):
-
-```sh
-wget -O /tmp/treadle.apk https://routeweave.github.io/treadle/snapshot/luci-app-treadle-snapshot.apk && apk add --allow-untrusted /tmp/treadle.apk && service rpcd reload
-```
-
-**OpenWrt 24.10** (opkg):
+Every CI run keeps the packages it built and tested for 30 days, as an
+artifact named `packages-<commit>`. Take the newest successful run on
+`main`: from the Actions tab (CI → the run → Artifacts, which needs a
+GitHub login), or with the [gh CLI](https://cli.github.com):
 
 ```sh
-wget -O /tmp/treadle.ipk https://routeweave.github.io/treadle/snapshot/luci-app-treadle-snapshot.ipk && opkg install /tmp/treadle.ipk && service rpcd reload
+gh run download --repo routeweave/treadle --pattern 'packages-*' \
+  "$(gh run list --repo routeweave/treadle --workflow ci.yml --branch main \
+     --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
 ```
+
+Copy the `.apk` (OpenWrt 25.12+) or the `.ipk` (OpenWrt 24.10) to the
+router's `/tmp`, then:
+
+```sh
+apk add --allow-untrusted /tmp/luci-app-treadle-*.apk && service rpcd reload   # 25.12+
+opkg install /tmp/luci-app-treadle_*.ipk && service rpcd reload               # 24.10
+```
+
+A snapshot sorts above the releases of its own version, so once one is
+installed the feed moves the router on only at the next higher release.
+Going back to an older release is not supported.
 
 ### On iStoreOS and other OpenWrt forks
 

@@ -162,27 +162,21 @@ the Makefile's version, and keeps the packages as an artifact.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| **Test (shared)** | Called by CI and Weekly; never runs on its own | Lint, package build and staged-tree check, smoke, system and browser tests on OpenWrt 25.12 (apk) and 24.10 (opkg). |
-| **CI**      | Pull request, push to `main` | Runs Test. On a `main` push that passes, publishes the feed with that build as the snapshot. On a release commit, Test builds the release version, then Release publishes it and the feed is republished with it. Runs on `main` queue rather than cancel each other. Run by hand with `release_dry_run`, it does a release's build, test and signing without publishing. |
-| **Release** | Called by CI on a release commit | Signs the `.apk` that Test just tested with the feed key and creates the tag and an immutable GitHub release on that commit. A failing check publishes nothing. |
+| **Test (shared)** | Called by CI and Weekly; never runs on its own | Lint, package build and staged-tree check, smoke, system and browser tests on OpenWrt 25.12 (apk) and 24.10 (opkg), plus the smoke test against an upstream sing-box. |
+| **CI**      | Pull request, push to `main` | Runs Test on 25.12. On a release commit it also tests 24.10, signs the `.apk` it tested, creates the tag and an immutable GitHub release on that commit, and publishes that release as the feed on GitHub Pages; a failing check publishes nothing. Runs on `main` queue rather than cancel each other. Run by hand with `release_dry_run`, it does all of that except publishing, and keeps the signed packages and the feed as artifacts. |
 | **Test images** | Weekly, a `main` push that changes them, or by hand | Builds the test images (`tests/image/`): each tested OpenWrt release with Treadle's dependencies preinstalled, pushed to GHCR. Test runs on them and so downloads nothing from the OpenWrt mirrors; without an image it falls back to a full install. A pull request that changes them builds without pushing. A version bump alone does not rebuild them. |
 | **Weekly**  | Mondays, or by hand          | Runs Test fresh from the OpenWrt feeds instead of the test images, on 25.12, 24.10 and OpenWrt's snapshot (allowed to fail, as early warning). Checks the versions pinned by hand that Dependabot cannot see (`scripts/check-pins.mjs`) and keeps one issue open while any is behind. |
-| **Feed**    | Called by CI, or by hand | Rebuilds the GitHub Pages site: the signed feed from every `v*` release, and the rolling snapshot. Run by hand with `dry_run`, it builds the site as an artifact without deploying. |
 
 Every action is pinned to a commit SHA, with the tag in a trailing comment;
 Dependabot proposes updates monthly.
 
 ### What a snapshot is
 
-The latest `main` that passed CI, published under a stable URL on the
-feed's GitHub Pages site (`snapshot/`). Every merge that passes replaces
-it. It is not a GitHub release: releases in this repository are
-immutable, so a published release's files can never be replaced.
-
-To try a branch before it merges, use that branch's own CI build: each
-run uploads its packages as a workflow artifact (kept 30 days), and
+A CI build that is not a release: every run uploads its packages as a
+workflow artifact, `packages-<commit>`, kept 30 days.
 `scripts/push-to-router.sh` installs the newest successful build of the
-branch you have checked out.
+branch you have checked out (`TREADLE_BRANCH=main` for `main`). The feed
+serves releases only, the newest one.
 
 ## Repository layout
 
@@ -194,12 +188,10 @@ branch you have checked out.
 ├── dependabot.yml               # Keeps the pinned actions current
 └── workflows/
     ├── test.yml                 # The checks, called by ci.yml and weekly.yml
-    ├── ci.yml                   # Every PR and main push; snapshot, and releases
-    ├── release.yml              # Sign and publish a release, called by ci.yml
+    ├── ci.yml                   # Every PR and main push; releases and the feed
     ├── test-images.yml          # Builds the test images for GHCR
     ├── privacy.yml              # The privacy check over every pull request
-    ├── weekly.yml               # Fresh-from-the-feeds run, snapshot, pinned versions
-    └── pages.yml                # Publish the feed to GitHub Pages
+    └── weekly.yml               # Fresh-from-the-feeds run, snapshot, pinned versions
 scripts/
 ├── package.sh                   # Standalone APK + IPK builder
 ├── check-stage.sh               # Syntax-check the tree package.sh stages
@@ -209,8 +201,7 @@ scripts/
 ├── privacy-check.mjs            # Nothing personal in a push, a PR or the tree
 ├── check-pins.mjs               # Pinned versions against upstream releases
 ├── version-check.sh             # Version scheme asserted against apk's parser
-├── feed.sh  feed-keygen.sh      # Signed apk + opkg feed assembly, key setup
-├── pages-snapshot.sh            # Adds the rolling snapshot to the Pages site
+├── feed.sh  feed-keygen.sh      # Signed apk + opkg feed of the newest release, key setup
 ├── release-notes.sh             # Release notes body
 └── push-to-router.sh            # Install a branch's CI build on a router
 tests/

@@ -23,6 +23,10 @@ on:
         description: JSON list of openwrt/rootfs images for the smoke job
         type: string
         default: '["openwrt/rootfs:x86_64-25.12.5", "openwrt/rootfs:x86_64-v24.10.8"]'
+      primary_only:
+        description: Run the smoke job on OpenWrt 25.12 only, not on every image
+        type: boolean
+        default: false
       fresh:
         description: Install from the feeds instead of using the test images
         type: boolean
@@ -113,14 +117,15 @@ jobs:
     permissions:
       contents: read
       packages: read   # pull the test image
-    # The default list (25.12 for apk, 24.10 for opkg) is what the required
-    # checks are named after. weekly.yml adds OpenWrt's snapshot, whose
-    # breakage is an early warning rather than a failure.
+    # The default list is 25.12 for apk and 24.10 for opkg; ci.yml runs 25.12
+    # only (primary_only) except on a release. The 25.12 job is the required
+    # check. weekly.yml adds OpenWrt's snapshot, whose breakage is an early
+    # warning rather than a failure.
     continue-on-error: ${{ contains(matrix.image, 'SNAPSHOT') }}
     strategy:
       fail-fast: false
       matrix:
-        image: ${{ fromJSON(inputs.images) }}
+        image: ${{ fromJSON(inputs.primary_only && '["openwrt/rootfs:x86_64-25.12.5"]' || inputs.images) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

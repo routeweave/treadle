@@ -13,8 +13,8 @@
 # SSH options (port, key, etc.) can be set via TREADLE_SSH_OPTS env var.
 #
 # Takes the newest successful CI run of the current branch; set
-# TREADLE_BRANCH to pick another (TREADLE_BRANCH=main gives the build the
-# snapshot was published from).
+# TREADLE_BRANCH to pick another (TREADLE_BRANCH=main gives main's newest
+# build, the snapshot).
 #
 # Requires the gh CLI (https://cli.github.com) and gh auth login.
 #

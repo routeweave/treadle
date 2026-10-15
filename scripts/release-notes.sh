@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (C) 2026 RouteWeave
 #
-# Emit release.yml's release-notes body: header lines from stdin first,
+# Emit the release-notes body ci.yml publishes: header lines from stdin first,
 # then the APK / IPK install instructions for the two given asset URLs.
 #
 # Usage: release-notes.sh <apk-url> <ipk-url>  (header on stdin)

@@ -12,15 +12,17 @@
 #     apk/                      *.apk + signed Packages.adb (apk v3 / 25.12+)
 #     opkg/                     *.ipk + Packages(.gz) + Packages.sig (24.10)
 #
-# The feed serves EVERY v* release (not just the newest) so old versions
-# stay installable and apk/opkg can resolve upgrades. The package is
-# `noarch`/`all`, so one index per format covers every architecture — no
-# per-arch subdirectories.
+# The feed serves the newest release only, as OpenWrt's own feeds carry one
+# version per package: upgrades only ever need the newest, and rollback is
+# not supported (an older version is still on its GitHub release page). The
+# package is `noarch`/`all`, so one index per format covers every
+# architecture — no per-arch subdirectories.
 #
 # Inputs (env):
 #   FEED_OUT          output dir                       (default ./public)
 #   APK_SIGN_KEY_FILE  path to the apk signing key (EC prime256v1)   (required)
 #   OPKG_SIGN_KEY_FILE path to the opkg signing key (usign private)  (required)
+#   FEED_TAG          the release to serve           (default: the latest)
 #   FEED_SRC_DIR      pre-populated dir of *.apk/*.ipk; skips the gh
 #                     download (for local testing)              (optional)
 #   PAGES_URL         absolute feed URL baked into index.html
@@ -51,12 +53,8 @@ rm -rf "$FEED_OUT"
 mkdir -p "$APK_DIR" "$OPKG_DIR" "$FEED_OUT/keys"
 
 # ---------------------------------------------------------------------------
-# Gather every v* release's packages.
-#
-# The feed is rebuilt from scratch on every run, so a release whose assets
-# fail to download would silently vanish from the index — possibly the
-# newest one. Any download failure aborts the build instead; the previous
-# deployment stays live until a clean run replaces it.
+# Gather the release's packages. A failed download aborts the build; the
+# previous deployment stays live until a clean run replaces it.
 
 DL_DIR="$(mktemp -d)"
 trap 'rm -rf "$DL_DIR"' EXIT
@@ -66,19 +64,12 @@ if [ -n "${FEED_SRC_DIR:-}" ]; then
 	cp "$FEED_SRC_DIR"/*.ipk "$DL_DIR"/ 2>/dev/null || true
 else
 	require_cmd gh
-	# All v* release tags. (The rolling snapshot is not a release; it is
-	# added to the site by pages-snapshot.sh.)
-	gh release list --limit 200 --json tagName \
-		--jq '.[].tagName | select(startswith("v"))' \
-		> "$DL_DIR/tags.txt" || die "gh release list failed"
-	[ -s "$DL_DIR/tags.txt" ] || die "no v* releases found — nothing to publish"
-	while IFS= read -r tag; do
-		[ -n "$tag" ] || continue
-		printf 'Fetching assets for %s\n' "$tag"
-		gh release download "$tag" --dir "$DL_DIR" \
-			--pattern '*.apk' --pattern '*.ipk' --skip-existing \
-			|| die "could not download the assets of $tag"
-	done < "$DL_DIR/tags.txt"
+	# `gh release view` with no tag is the release marked latest.
+	tag="${FEED_TAG:-$(gh release view --json tagName --jq .tagName)}" \
+		|| die "could not find the latest release"
+	printf 'Fetching assets for %s\n' "$tag"
+	gh release download "$tag" --dir "$DL_DIR" --pattern '*.apk' --pattern '*.ipk' \
+		|| die "could not download the assets of $tag"
 fi
 
 shopt -s nullglob
@@ -89,8 +80,8 @@ shopt -u nullglob
 apk_count=$(find "$APK_DIR" -maxdepth 1 -name '*.apk' | wc -l)
 ipk_count=$(find "$OPKG_DIR" -maxdepth 1 -name '*.ipk' | wc -l)
 printf 'Collected %s apk and %s ipk package(s)\n' "$apk_count" "$ipk_count"
-[ "$apk_count" -gt 0 ] || die "no .apk packages collected"
-[ "$ipk_count" -gt 0 ] || die "no .ipk packages collected"
+[ "$apk_count" -eq 1 ] || die "expected one .apk, collected $apk_count"
+[ "$ipk_count" -eq 1 ] || die "expected one .ipk, collected $ipk_count"
 
 # ---------------------------------------------------------------------------
 # apk v3 — build the signed index. Routers add the feed by dropping the
@@ -99,7 +90,7 @@ printf 'Collected %s apk and %s ipk package(s)\n' "$apk_count" "$ipk_count"
 # (apk auto-detects the v3 ndx index from the .adb suffix — no prefix needed)
 # and trust keys/treadle-feed.pem in /etc/apk/keys/.
 #
-# The packages themselves were signed with the same key by release.yml, so
+# The packages themselves were signed with the same key by ci.yml, so
 # the feed serves the release assets byte for byte. --allow-untrusted only
 # relaxes verification on the build host, which does not carry the key in
 # /etc/apk/keys; routers verify both the packages and the index.

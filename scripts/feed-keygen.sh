@@ -13,8 +13,8 @@
 #
 # The private keys are written to ./.feed-keys/ (git-ignored) and echoed
 # below; they are never committed. Run this once, add the two repo
-# secrets, commit the public keys under feed/keys/, then push a v* tag —
-# pages.yml does the rest.
+# secrets, commit the public keys under feed/keys/; ci.yml signs and
+# publishes the feed on the next release.
 #
 # Requirements: usign, openssl, bash. On Debian/Ubuntu usign builds from
 # the OpenWrt source (see .github/actions/install-usign); openssl ships
