@@ -809,7 +809,7 @@ local function speed_test(node)
 		.. "n=0; while [ ! -f " .. d .. ".end ] && [ $n -lt " .. SPEED_MAX_S .. " ]; do sleep 1; n=$((n + 1)); done; "
 		.. "[ -f " .. d .. ".end ] || { kill $(cat " .. d .. ".pid) 2>/dev/null; sleep 1; }; "
 		.. "echo \"$t0 $(cat " .. d .. ".end 2>/dev/null || cut -d' ' -f1 /proc/uptime) "
-		.. "$(wc -c < " .. d .. ".dl 2>/dev/null || echo 0)\"; rm -f " .. d .. ".*")
+		.. "$({ wc -c < " .. d .. ".dl; } 2>/dev/null || echo 0)\"; rm -f " .. d .. ".*")
 	local out = f and f:read("*a") or ""
 	if f then f:close() end
 	local t0, t1, bytes = out:match("([%d.]+) ([%d.]+) (%d+)")
