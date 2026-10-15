@@ -325,10 +325,14 @@ jobs:
           name: pages-dry-run
           path: public
 
-  # The github-pages environment admits main, the ref this runs on.
+  # The github-pages environment admits main, the ref this runs on. The
+  # condition names feed's result itself: the implicit success() also counts
+  # the release job feed depends on, which a normal push skips.
   deploy:
     needs: feed
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      !cancelled() && needs.feed.result == 'success'
+      && github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     # One deploy at a time, and never cut off: a newer one waits its turn.
     concurrency:
