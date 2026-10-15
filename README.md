@@ -85,8 +85,7 @@ wget -O /tmp/treadle.ipk <release-asset-url> && opkg install /tmp/treadle.ipk &&
 ```
 
 Then open `http://<router>/cgi-bin/luci/admin/services/treadle` and add
-your first subscription from the **Basic** tab (or **Nodes** in
-Advanced mode).
+your first subscription from the **Nodes** tab (**Add subscription**).
 
 ### Snapshot (bleeding edge)
 
