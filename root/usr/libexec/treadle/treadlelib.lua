@@ -259,6 +259,25 @@ function M.url_encode(s)
 	end))
 end
 
+-- Seconds after the running config is replaced during which a failed test
+-- is not held against the node (see config_just_replaced).
+M.RESTART_GRACE_S = 5
+
+-- Was the sing-box config at `path` replaced in the last RESTART_GRACE_S?
+-- When sing-box stops it closes its outbounds a moment before its API, and a
+-- test caught in that moment is answered as a failure. The init script moves
+-- a changed config into place just before procd stops sing-box, so such a
+-- failure always follows a fresh mtime. One fork, so callers ask only after
+-- a failure.
+function M.config_just_replaced(path)
+	if not path or path == "" then return false end
+	local f = io.popen("date -r '" .. path:gsub("'", "'\\''") .. "' +%s 2>/dev/null")
+	if not f then return false end
+	local m = tonumber((f:read("*a") or ""):match("%d+"))
+	f:close()
+	return m ~= nil and os.time() - m < M.RESTART_GRACE_S
+end
+
 -- One GET /proxies/<tag>/delay through the clash API at `host`. Returns the
 -- latency in ms; nil when sing-box answered that the node failed; false when
 -- the API itself did not answer, which says nothing about the node. sing-box
@@ -266,8 +285,10 @@ end
 -- probe sent then would otherwise read as a dead node. uclient-fetch exits 8
 -- on an HTTP error status (sing-box's 503 or 504 for a failed test) and 4
 -- when it cannot reach the server or times out; the fetch timeout is longer
--- than the test's, so a timeout means the API, not the node, stalled.
-function M.clash_delay(host, tag, url, timeout_ms, fetch_s)
+-- than the test's, so a timeout means the API, not the node, stalled. With
+-- `config`, a failure just after that config was replaced is false too: it
+-- is sing-box stopping, not the node.
+function M.clash_delay(host, tag, url, timeout_ms, fetch_s, config)
 	-- Tag and URL are percent-encoded, so they cannot break out of the quotes.
 	local f = io.popen("uclient-fetch --timeout=" .. fetch_s
 		.. " -qO- 'http://" .. host .. "/proxies/" .. M.url_encode(tag)
@@ -277,10 +298,10 @@ function M.clash_delay(host, tag, url, timeout_ms, fetch_s)
 	local out = f:read("*a") or ""
 	f:close()
 	local body, code = out:match("^(.-)%s*(%d+)%s*$")
-	if code == "8" then return nil end
-	if code ~= "0" then return false end
-	local d = tonumber(body:match('"delay"%s*:%s*(%d+)'))
+	if code ~= "0" and code ~= "8" then return false end
+	local d = code == "0" and tonumber(body:match('"delay"%s*:%s*(%d+)'))
 	if d and d > 0 then return d end
+	if M.config_just_replaced(config) then return false end
 	return nil
 end
 

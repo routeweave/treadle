@@ -408,6 +408,9 @@ local PROBE_TIMEOUT_MS = 3000
 local PROBE_FETCH_S    = 6
 -- TREADLE_PROBE_URL lets the smoke test point the probe at a local server.
 local PROBE_URL        = os.getenv("TREADLE_PROBE_URL") or lib.TEST_URL
+-- The running config (global.config_path, read each tick). Its mtime marks a
+-- restart, during which a failed test says nothing about the node.
+local config_path      = "/var/etc/treadle/sing-box.json"
 local CONN_FAIL_AFTER  = 3
 local probe_last       = 0
 local conn_streak      = 0
@@ -432,11 +435,13 @@ local function in_use()
 end
 
 -- Test one node; its latency in ms, nil when it failed, or false when the
--- clash API did not answer (sing-box restarting), which callers must not
--- count against the node. `url` defaults to PROBE_URL. The clash API ignores
--- a plain http:// URL and tests against its own https default instead.
+-- clash API did not answer or sing-box was stopping (see lib.clash_delay),
+-- which callers must not count against the node. `url` defaults to
+-- PROBE_URL. The clash API ignores a plain http:// URL and tests against its
+-- own https default instead.
 local function test_node(tag, url)
-	return lib.clash_delay(CLASH_HOST, tag, url or PROBE_URL, PROBE_TIMEOUT_MS, PROBE_FETCH_S)
+	return lib.clash_delay(CLASH_HOST, tag, url or PROBE_URL, PROBE_TIMEOUT_MS,
+		PROBE_FETCH_S, config_path)
 end
 
 local function probe_pass(parsed, current)
@@ -529,6 +534,7 @@ local function settings()
 			-- `or ""`: for a missing option c:get returns nil and an error
 			-- string, which tonumber would take as its base and raise on.
 			speed_mb = tonumber(c:get("treadle", "global", "speed_test_mb") or ""),
+			config   = c:get("treadle", "global", "config_path"),
 			groups   = {}
 		}
 		if r.managed then
@@ -610,8 +616,9 @@ end
 
 -- One pass over every member of a group. Absent from the reply means the
 -- member failed. The whole pass shares the request's timeout, so it allows
--- one probe timeout per batch of 10. False when the API sent no usable reply
--- (sing-box restarting); nothing is recorded then.
+-- one probe timeout per batch of 10. False when the API sent no usable reply,
+-- or a member failed just as sing-box was stopping (lib.config_just_replaced);
+-- nothing is recorded then.
 local function group_test(tag, members, url, now)
 	local budget = PROBE_TIMEOUT_MS * math.ceil(#members / 10) + 2000
 	local f = io.popen("uclient-fetch --timeout=" .. math.ceil(budget / 1000 + 5)
@@ -623,10 +630,14 @@ local function group_test(tag, members, url, now)
 	f:close()
 	local ok, res = pcall(jsonc.parse, body)
 	if not ok or type(res) ~= "table" then return false end
+	local got, failed = {}, false
 	for _, m in ipairs(members) do
 		local d = tonumber(res[m])
-		gm.record(gm_state, m, now, (d and d > 0) and d or nil)
+		got[m] = (d and d > 0) and d or nil
+		failed = failed or not got[m]
 	end
+	if failed and lib.config_just_replaced(config_path) then return false end
+	for _, m in ipairs(members) do gm.record(gm_state, m, now, got[m]) end
 	return true
 end
 
@@ -1065,6 +1076,7 @@ end
 
 while true do
 	local cfg = settings()
+	if cfg.config and cfg.config ~= "" then config_path = cfg.config end
 	if not (cfg.clash or cfg.managed) then
 		-- Reset transient state so a re-enable doesn't surface a stale
 		-- 'reachable again' on the first successful fetch.
