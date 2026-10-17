@@ -259,6 +259,31 @@ function M.url_encode(s)
 	end))
 end
 
+-- One GET /proxies/<tag>/delay through the clash API at `host`. Returns the
+-- latency in ms; nil when sing-box answered that the node failed; false when
+-- the API itself did not answer, which says nothing about the node. sing-box
+-- refuses connections for about half a second while it restarts, and every
+-- probe sent then would otherwise read as a dead node. uclient-fetch exits 8
+-- on an HTTP error status (sing-box's 503 or 504 for a failed test) and 4
+-- when it cannot reach the server or times out; the fetch timeout is longer
+-- than the test's, so a timeout means the API, not the node, stalled.
+function M.clash_delay(host, tag, url, timeout_ms, fetch_s)
+	-- Tag and URL are percent-encoded, so they cannot break out of the quotes.
+	local f = io.popen("uclient-fetch --timeout=" .. fetch_s
+		.. " -qO- 'http://" .. host .. "/proxies/" .. M.url_encode(tag)
+		.. "/delay?timeout=" .. timeout_ms .. "&url=" .. M.url_encode(url)
+		.. "' 2>/dev/null; echo \" $?\"")
+	if not f then return false end
+	local out = f:read("*a") or ""
+	f:close()
+	local body, code = out:match("^(.-)%s*(%d+)%s*$")
+	if code == "8" then return nil end
+	if code ~= "0" then return false end
+	local d = tonumber(body:match('"delay"%s*:%s*(%d+)'))
+	if d and d > 0 then return d end
+	return nil
+end
+
 -- Split a "provider/name" rule-set token. Returns provider, name — or nil
 -- when the token carries no slash (a bare custom-rule-set label).
 function M.split_provider_token(token)

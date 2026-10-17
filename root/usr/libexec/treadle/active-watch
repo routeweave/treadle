@@ -431,22 +431,12 @@ local function in_use()
 	return ok and res or { final = "", rules = {} }
 end
 
--- Test one node; its latency in ms, or nil when it did not answer. `url`
--- defaults to PROBE_URL. The clash API ignores a plain http:// URL and tests
--- against its own https default instead.
+-- Test one node; its latency in ms, nil when it failed, or false when the
+-- clash API did not answer (sing-box restarting), which callers must not
+-- count against the node. `url` defaults to PROBE_URL. The clash API ignores
+-- a plain http:// URL and tests against its own https default instead.
 local function test_node(tag, url)
-	-- Tag and URL are percent-encoded, so they cannot break out of the quotes.
-	local f = io.popen("uclient-fetch --timeout=" .. PROBE_FETCH_S
-		.. " -qO- 'http://" .. CLASH_HOST .. "/proxies/" .. lib.url_encode(tag)
-		.. "/delay?timeout=" .. PROBE_TIMEOUT_MS .. "&url=" .. lib.url_encode(url or PROBE_URL)
-		.. "' 2>/dev/null")
-	if not f then return nil end
-	local body = f:read("*a") or ""
-	f:close()
-	local ok, parsed = pcall(jsonc.parse, body)
-	local d = ok and type(parsed) == "table" and tonumber(parsed.delay) or nil
-	if d and d > 0 then return d end
-	return nil
+	return lib.clash_delay(CLASH_HOST, tag, url or PROBE_URL, PROBE_TIMEOUT_MS, PROBE_FETCH_S)
 end
 
 local function probe_pass(parsed, current)
@@ -468,7 +458,10 @@ local function probe_pass(parsed, current)
 	for _, tag in ipairs(wanted) do
 		if known(tag) and not is_group(tag) and not nodes[tag] and count < PROBE_MAX then
 			count = count + 1
-			nodes[tag] = { delay_ms = test_node(tag), tested_at = now }
+			local d = test_node(tag)
+			-- sing-box went away mid-pass: keep the last pass's results.
+			if d == false then return end
+			nodes[tag] = { delay_ms = d, tested_at = now }
 		end
 	end
 	probe_nodes = nodes
@@ -490,6 +483,7 @@ local function probe_pass(parsed, current)
 		d = nodes[via].delay_ms
 	elseif via ~= "" then
 		d = test_node(via)
+		if d == false then return end
 	end
 	if d then
 		if conn_streak >= CONN_FAIL_AFTER then
@@ -616,22 +610,24 @@ end
 
 -- One pass over every member of a group. Absent from the reply means the
 -- member failed. The whole pass shares the request's timeout, so it allows
--- one probe timeout per batch of 10.
+-- one probe timeout per batch of 10. False when the API sent no usable reply
+-- (sing-box restarting); nothing is recorded then.
 local function group_test(tag, members, url, now)
 	local budget = PROBE_TIMEOUT_MS * math.ceil(#members / 10) + 2000
 	local f = io.popen("uclient-fetch --timeout=" .. math.ceil(budget / 1000 + 5)
 		.. " -qO- 'http://" .. CLASH_HOST .. "/group/" .. lib.url_encode(tag)
 		.. "/delay?timeout=" .. budget .. "&url=" .. lib.url_encode(url)
 		.. "' 2>/dev/null")
-	if not f then return end
+	if not f then return false end
 	local body = f:read("*a") or ""
 	f:close()
 	local ok, res = pcall(jsonc.parse, body)
-	if not ok or type(res) ~= "table" then return end
+	if not ok or type(res) ~= "table" then return false end
 	for _, m in ipairs(members) do
 		local d = tonumber(res[m])
 		gm.record(gm_state, m, now, (d and d > 0) and d or nil)
 	end
+	return true
 end
 
 -- Send raw HTTP/1.1 requests to the clash API through nc, killed after
@@ -918,6 +914,11 @@ local function manage_groups(current, cfg, publish)
 
 	local hit = take_errors(current, now)
 	local probes = MAX_PROBES
+	-- Set when the clash API stops answering partway (sing-box restarting).
+	-- The rest of the tick then tests and decides nothing: every probe in the
+	-- gap would fail, and a fail recorded then would bench a healthy member
+	-- and switch the group off it as soon as sing-box is back.
+	local lost = false
 	local speed_cands = {}
 	-- Re-check the group whose last pass is oldest, one per tick. A pass from
 	-- before sing-box last started is due at once: sing-box has no results
@@ -962,10 +963,12 @@ local function manage_groups(current, cfg, publish)
 			meta.url = url
 		end
 		local rechecked = false
-		if tag == due or fresh then
-			group_test(tag, members, url, now)
+		if not lost and (tag == due or fresh) then
+			-- Stamped either way, so a group whose pass keeps failing holds
+			-- up one tick per interval, not every tick.
 			meta.last_test = now
-			rechecked = true
+			rechecked = group_test(tag, members, url, now)
+			lost = not rechecked
 		end
 		local r = gm.member(gm_state, g.now)
 		-- A re-check that failed the member in use counts as its first failed
@@ -973,15 +976,24 @@ local function manage_groups(current, cfg, publish)
 		-- having just tested it, holds off its next probe for two ticks, and
 		-- the failover waits for that.
 		local failed = rechecked and r.tested_at == now and r.ring[#r.ring] == false
-		if probes > 0 and not failed and (hit[tag] or now - (r.tested_at or 0) >= ACTIVE_PROBE_S) then
+		if not lost and probes > 0 and not failed and (hit[tag] or now - (r.tested_at or 0) >= ACTIVE_PROBE_S) then
 			local d = test_node(g.now, url)
-			gm.record(gm_state, g.now, now, d)
 			probes = probes - 1
-			failed = not d
+			if d == false then
+				lost = true
+			else
+				gm.record(gm_state, g.now, now, d)
+				failed = not d
+			end
 		end
-		if failed and probes > 0 then
-			gm.record(gm_state, g.now, os.time(), test_node(g.now, url))
+		if not lost and failed and probes > 0 then
+			local d = test_node(g.now, url)
 			probes = probes - 1
+			if d == false then
+				lost = true
+			else
+				gm.record(gm_state, g.now, os.time(), d)
+			end
 		end
 
 		local view = { now = g.now, members = members, tolerance = gc.tolerance,
@@ -991,11 +1003,14 @@ local function manage_groups(current, cfg, publish)
 				tol = gc.tolerance, fresh_s = 2 * interval,
 				worse = gm.track_level(gm.member(gm_state, g.now), now) }
 		end
-		local dec = gm.decide(gm_state, view, os.time(), rnd)
+		local dec = lost and {} or gm.decide(gm_state, view, os.time(), rnd)
 		if dec.need_test and os.time() - (meta.last_test or 0) >= GROUP_RETEST_S then
-			group_test(tag, members, url, os.time())
 			meta.last_test = os.time()
-			dec = gm.decide(gm_state, view, os.time(), rnd)
+			if group_test(tag, members, url, os.time()) then
+				dec = gm.decide(gm_state, view, os.time(), rnd)
+			else
+				lost, dec = true, {}
+			end
 		end
 		if dec.to then
 			if select_member(tag, dec.to) then
@@ -1023,7 +1038,7 @@ local function manage_groups(current, cfg, publish)
 			meta.stuck = true
 			logmsg("warning", string.format(
 				"group '%s': %s, and no other member is known to work", tag, dec.reason))
-		elseif not dec.need_test then
+		elseif not dec.need_test and not lost then
 			meta.stuck = nil
 		end
 
@@ -1044,7 +1059,7 @@ local function manage_groups(current, cfg, publish)
 			end
 		end
 	end
-	if cfg.speed then speed_round(cfg, speed_cands) end
+	if cfg.speed and not lost then speed_round(cfg, speed_cands) end
 	save_json(GROUP_STATE, { members = gm_state.members, groups = gm_groups, speed = gm_speed })
 end
 

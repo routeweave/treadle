@@ -1772,6 +1772,24 @@ done
 [ -n "$first" ] && [ "$i" -lt 10 ] \
 	&& ok "the failed member is benched" \
 	|| bad "no bench on '$first': $(head -c 400 "$GS" 2>/dev/null) $(tail -n 5 "$TM/aw.log")"
+# A probe tells a node that failed from a clash API that did not answer:
+# sing-box refuses connections for a moment while it restarts, and a probe
+# sent then must not count against the node. 9099 has no listener.
+tm_kinds=$(lua - "$other" "$first" <<'EOF' 2>&1
+local lib = dofile("/usr/libexec/treadle/treadlelib.lua")
+local function kind(v)
+	if v == false then return "unreached" end
+	if v == nil then return "failed" end
+	return type(v) == "number" and "ok" or tostring(v)
+end
+local function probe(host, tag) return kind(lib.clash_delay(host, tag, lib.TEST_URL, 3000, 6)) end
+print(probe("127.0.0.1:9090", arg[1]) .. " " .. probe("127.0.0.1:9090", arg[2])
+	.. " " .. probe("127.0.0.1:9099", arg[1]))
+EOF
+)
+[ "$tm_kinds" = "ok failed unreached" ] \
+	&& ok "a probe reads a dead node as failed and a silent API as unreached" \
+	|| bad "probe kinds (live, dead, no API): $tm_kinds"
 kill "$TM_T" 2>/dev/null; wait "$TM_T" 2>/dev/null
 sing-box run -c "$TM/t.json" >>"$TM/t.log" 2>&1 &
 TM_T=$!
