@@ -656,7 +656,9 @@ local function sync_one(id)
 	-- also names the URL ("Downloading '<url>'"), so only the error line is
 	-- kept, by fetch_error below, and nothing else from it is stored.
 	local tmp_err = tmp_body .. ".err"
-	local fetch_cmd = "uclient-fetch --timeout=15" .. ua_flag .. " -O '" .. tmp_body .. "' '" .. safe_url .. "' 2>'" .. tmp_err .. "'"
+	-- uclient-fetch sends no Accept header of its own, and some providers'
+	-- CDN fronts answer a request without one with a 403 whatever the UA.
+	local fetch_cmd = "uclient-fetch --timeout=15" .. ua_flag .. " --header='Accept: */*' -O '" .. tmp_body .. "' '" .. safe_url .. "' 2>'" .. tmp_err .. "'"
 	local fetch_ok = (os.execute(fetch_cmd) == 0)
 	local sync_error = (not fetch_ok) and fetch_error(read_file(tmp_err)) or nil
 	os.remove(tmp_err)
