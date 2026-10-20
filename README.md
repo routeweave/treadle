@@ -156,7 +156,18 @@ with `nft list table inet treadle`.
 
 Everything else (`luci-base`, `luci-lib-jsonc`, `rpcd`,
 `uclient-fetch`, `ca-bundle`, `lua`, `libuci-lua`, `nftables-json`) is
-pulled in automatically.
+pulled in automatically, along with two kernel modules, one for each
+capture mode:
+
+- `kmod-nft-tproxy`, for the `tproxy` rules Treadle loads in TProxy mode.
+- `kmod-nft-queue`, for TUN mode. Treadle turns on sing-box's
+  `auto_redirect` there, and sing-box then adds nftables `queue` rules
+  for its pre-match. OpenWrt's own sing-box package does not pull this
+  module in. Without it, sing-box still runs in TUN mode, but with the
+  pre-match off.
+
+Both are installed whichever mode you use, because a package cannot
+depend on a setting.
 
 ## Upgrade and uninstall
 

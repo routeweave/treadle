@@ -4,7 +4,14 @@
 include $(TOPDIR)/rules.mk
 
 LUCI_TITLE:=LuCI interface for sing-box
-LUCI_DEPENDS:=+luci-base +luci-lib-jsonc +sing-box +rpcd +uclient-fetch +ca-bundle +lua +libuci-lua +nftables-json +kmod-nft-tproxy
+# The two kmods each serve one capture mode, but a package cannot depend on a
+# mode, so both are unconditional. kmod-nft-tproxy is for the `tproxy`
+# expression firewall.sh loads in TProxy mode. kmod-nft-queue is for TUN mode
+# only: build-config turns on auto_redirect there, and sing-box then installs
+# nftables `queue` rules for its pre-match. OpenWrt's own sing-box package does
+# not pull the module in, and without it sing-box still starts, with the
+# pre-match off.
+LUCI_DEPENDS:=+luci-base +luci-lib-jsonc +sing-box +rpcd +uclient-fetch +ca-bundle +lua +libuci-lua +nftables-json +kmod-nft-tproxy +kmod-nft-queue
 # Minimum versions, one `name>=version` per package named in LUCI_DEPENDS. They
 # cannot sit in LUCI_DEPENDS itself: the OpenWrt SDK reads "(>=1.12)" there as the
 # name of a package, and the Kconfig it generates no longer parses. luci.mk ignores

@@ -89,7 +89,9 @@ QUIC-carried protocols, where sing-box cannot use it.
 
 - **`tun`** (default) — sing-box routes through a TUN device itself, with
   `auto_redirect` so it installs its own nftables rules; no `inet treadle`
-  table is installed.
+  table is installed. Those rules include `queue` rules for sing-box's
+  pre-match, which need `kmod-nft-queue`. OpenWrt's own sing-box package
+  does not depend on that module, so Treadle does.
 - **`tproxy`** — the alternative, kept selectable:
   `firewall.sh` installs `inet treadle`: a prerouting chain that TPROXYs
   LAN TCP and UDP to sing-box, skipping reserved ranges and per-device
