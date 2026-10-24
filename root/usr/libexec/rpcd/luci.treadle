@@ -1315,7 +1315,11 @@ local methods = {
 						-- Set when Treadle picks the node: why it last moved, and when.
 						managed     = entry.managed and true or nil,
 						reason      = entry.reason,
-						switched_at = entry.switched_at
+						switched_at = entry.switched_at,
+						-- Every member down: on its fallback (direct or block)
+						-- since down_since.
+						fallback    = entry.on_fallback and entry.fallback or nil,
+						down_since  = entry.on_fallback and entry.down_since or nil
 					}
 				end
 			end

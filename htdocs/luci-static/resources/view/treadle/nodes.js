@@ -1125,6 +1125,21 @@ return baseclass.extend({
 			o.placeholder = _('all');
 		}
 
+		// Only a selector can be switched to direct or block, and only
+		// Treadle switches one.
+		if (managed) {
+			o = s.option(form.ListValue, 'group_fallback', _('When every member is down'),
+				_('What the group does once the member in use has failed and a test of every ' +
+				  'member passes none. Going direct sends the group\'s traffic out without a ' +
+				  'proxy; rejecting refuses it at once instead of letting it time out. The ' +
+				  'members are tested every 30 s meanwhile, and the group returns to the fastest ' +
+				  'that passes.'));
+			o.modalonly = true;
+			o.value('',       _('Keep trying the members'));
+			o.value('direct', _('Go direct'));
+			o.value('block',  _('Reject'));
+		}
+
 		o = s.option(form.Flag, 'group_interrupt',
 			_('Interrupt existing connections'),
 			managed

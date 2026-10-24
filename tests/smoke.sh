@@ -728,7 +728,40 @@ MS="$OUT/managed_groups_with_speed_tests.json"
 	&& [ "$(jsonfilter -i "$MS" -e '@.route.rules[1].outbound')" = _speedtest ] \
 	&& ok "speed tests get a hidden selector over every member, on a loopback port" \
 	|| bad "speed-test plumbing: $(jsonfilter -i "$MS" -e '@.outbounds[@.tag="_speedtest"]' | head -c 200) rule $(jsonfilter -i "$MS" -e '@.route.rules[1]')"
+# A fallback for when every member is down is one more selector member, after
+# the default is picked, and never a node to speed-test. `block` brings the
+# one block outbound with it; with sing-box managing the groups it is ignored.
+uci set treadle.0123456789abcd10.group_fallback=block
+uci commit treadle
+build "managed group falling back to block"
+MF="$OUT/managed_group_falling_back_to_block.json"
+mf_members=$(jsonfilter -i "$MF" -e '@.outbounds[@.tag="ALL"].outbounds[*]' | tr '\n' ' ')
+[ "$(jsonfilter -i "$MF" -e '@.outbounds[@.tag="ALL"].outbounds[*]' | tail -n1)" = block ] \
+	&& [ "$(echo "$mf_members" | wc -w)" -eq $((NODES + 1)) ] \
+	&& [ "$(jsonfilter -i "$MF" -e '@.outbounds[@.tag="ALL"].default')" = "$mg_default" ] \
+	&& [ "$(jsonfilter -i "$MF" -e '@.outbounds[@.tag="block"].type')" = block ] \
+	&& [ "$(jsonfilter -i "$MF" -e '@.outbounds[@.tag="_speedtest"].outbounds[*]' | wc -l)" -eq "$NODES" ] \
+	&& ok "a fallback is the group's last member, never its default, with a block outbound, not speed-tested" \
+	|| bad "fallback block: members '$mf_members', default $(jsonfilter -i "$MF" -e '@.outbounds[@.tag="ALL"].default'), block $(jsonfilter -i "$MF" -e '@.outbounds[@.tag="block"]')"
+uci set treadle.0123456789abcd10.group_fallback=direct
+uci commit treadle
+build "managed group falling back to direct"
+MF="$OUT/managed_group_falling_back_to_direct.json"
+[ "$(jsonfilter -i "$MF" -e '@.outbounds[@.tag="ALL"].outbounds[*]' | tail -n1)" = direct ] \
+	&& [ -z "$(jsonfilter -i "$MF" -e '@.outbounds[@.tag="block"].type')" ] \
+	&& ok "a direct fallback needs no block outbound" \
+	|| bad "fallback direct: $(jsonfilter -i "$MF" -e '@.outbounds[@.tag="ALL"].outbounds[*]' | tr '\n' ' ')"
 uci set treadle.global.group_manager=singbox
+uci set treadle.0123456789abcd10.group_fallback=block
+uci commit treadle
+build "fallback with groups by sing-box"
+MF="$OUT/fallback_with_groups_by_sing-box.json"
+[ "$(jsonfilter -i "$MF" -e '@.outbounds[@.tag="ALL"].type')" = urltest ] \
+	&& [ "$(jsonfilter -i "$MF" -e '@.outbounds[@.tag="ALL"].outbounds[*]' | grep -c '^block$')" -eq 0 ] \
+	&& [ -z "$(jsonfilter -i "$MF" -e '@.outbounds[@.tag="block"].type')" ] \
+	&& ok "with sing-box managing the groups a fallback is ignored" \
+	|| bad "urltest with a fallback: $(jsonfilter -i "$MF" -e '@.outbounds[@.tag="ALL"]' | head -c 300)"
+uci delete treadle.0123456789abcd10.group_fallback
 uci commit treadle
 build "speed tests without managed groups"
 [ -z "$(jsonfilter -i "$OUT/speed_tests_without_managed_groups.json" -e '@.outbounds[@.tag="_speedtest"].type')" ] \
@@ -1670,9 +1703,10 @@ cat > "$TM/t.json" <<EOF
   "inbounds": [ { "type": "mixed", "tag": "in", "listen": "127.0.0.1", "listen_port": 18120 },
     { "type": "mixed", "tag": "_speedtest-in", "listen": "127.0.0.1", "listen_port": 9093 } ],
   "outbounds": [
+    { "type": "direct", "tag": "direct" },
     { "type": "socks", "tag": "m1", "server": "127.0.0.1", "server_port": 18121, "version": "5" },
     { "type": "socks", "tag": "m2", "server": "127.0.0.1", "server_port": 18122, "version": "5" },
-    { "type": "selector", "tag": "g", "outbounds": [ "m1", "m2" ], "default": "m1" },
+    { "type": "selector", "tag": "g", "outbounds": [ "m1", "m2", "direct" ], "default": "m1" },
     { "type": "selector", "tag": "_speedtest", "outbounds": [ "m1", "m2" ] } ],
   "route": { "rules": [ { "inbound": [ "_speedtest-in" ], "outbound": "_speedtest" } ], "final": "g" },
   "experimental": {
@@ -1695,6 +1729,11 @@ TM_PIDS="$TM_S1 $TM_S2 $TM_T $TM_UH"
 tm_api
 uci set treadle.global.group_manager=treadle
 uci set treadle.global.speed_test=1
+# g goes direct once every member is down; until then `direct` is no member.
+uci set treadle.0123456789abcd7f=node
+uci set treadle.0123456789abcd7f.type=group
+uci set treadle.0123456789abcd7f.tag=g
+uci set treadle.0123456789abcd7f.group_fallback=direct
 uci commit treadle
 GS=/var/etc/treadle/.group-state.json
 # A latency level of 1 ms for both nodes, so the first tick finds the node in
@@ -1804,9 +1843,57 @@ tm_api
 [ -n "$other" ] && [ "$(tm_now)" = "$other" ] \
 	&& ok "the choice survives a sing-box restart (cache file)" \
 	|| bad "after restart the group is on '$(tm_now)', want $other"
+# Every member down: the other server dies too. With a 30 s re-check the
+# latest one has passed no member by the time the member in use fails twice,
+# so the group goes to its fallback, direct, and traffic flows again. Once
+# the first member's server is back, a re-check (every 30 s on the fallback)
+# passes it and the group returns to it, benched as it was.
+uci set treadle.0123456789abcd7f.group_interval=30s
+uci commit treadle
+case "$other" in
+	m1) kill "$TM_S1" 2>/dev/null; wait "$TM_S1" 2>/dev/null ;;
+	m2) kill "$TM_S2" 2>/dev/null; wait "$TM_S2" 2>/dev/null ;;
+esac
+i=0
+while [ "$i" -lt 90 ] && [ "$(tm_now)" != direct ]; do
+	sleep 1; i=$((i + 1))
+done
+[ "$i" -lt 90 ] && ok "with every member down the group went direct, ${i}s after the last one died" \
+	|| bad "group on '$(tm_now)' 90s after every member died: $(head -c 400 "$GS" 2>/dev/null) $(tail -n 5 "$TM/aw.log")"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -m 15 -x http://127.0.0.1:18120 https://www.gstatic.com/generate_204)" = 204 ] \
+	&& ok "and its traffic goes out direct" \
+	|| bad "no 204 through the group on its fallback"
+i=0
+while [ "$i" -lt 15 ] && [ "$(jsonfilter -i /var/etc/treadle/.active-nodes.json -e '@.groups.g.on_fallback' 2>/dev/null)" != true ]; do
+	sleep 1; i=$((i + 1))
+done
+[ "$(jsonfilter -i /var/etc/treadle/.active-nodes.json -e '@.groups.g.fallback' 2>/dev/null)" = direct ] \
+	&& [ -n "$(jsonfilter -i /var/etc/treadle/.active-nodes.json -e '@.groups.g.down_since' 2>/dev/null)" ] \
+	&& jsonfilter -i /var/etc/treadle/.active-nodes.json -e '@.groups.g.reason' 2>/dev/null | grep -q 'no member passed a test' \
+	&& [ -z "$(jsonfilter -i /var/etc/treadle/.active-nodes.json -e '@.groups.g.members[@.tag="direct"].tag' 2>/dev/null)" ] \
+	&& ok "the snapshot says the group is on its fallback, which is not listed as a member" \
+	|| bad "fallback snapshot: $(jsonfilter -i /var/etc/treadle/.active-nodes.json -e '@.groups.g' 2>&1 | head -c 400)"
+case "$first" in m1) n=1 ;; *) n=2 ;; esac
+sing-box run -c "$TM/s$n.json" >>"$TM/s$n.log" 2>&1 &
+TM_PIDS="$TM_PIDS $!"
+i=0
+while [ "$i" -lt 60 ] && [ "$(tm_now)" != "$first" ]; do
+	sleep 1; i=$((i + 1))
+done
+[ "$i" -lt 60 ] && ok "the group left its fallback for $first within ${i}s of its server returning" \
+	|| bad "group on '$(tm_now)' 60s after $first returned: $(head -c 400 "$GS" 2>/dev/null) $(tail -n 5 "$TM/aw.log")"
+i=0
+while [ "$i" -lt 15 ] && [ "$(jsonfilter -i /var/etc/treadle/.active-nodes.json -e '@.groups.g.on_fallback' 2>/dev/null)" = true ]; do
+	sleep 1; i=$((i + 1))
+done
+jsonfilter -i /var/etc/treadle/.active-nodes.json -e '@.groups.g.reason' 2>/dev/null | grep -q "^$first passed a test after every member had failed" \
+	&& [ -z "$(jsonfilter -i /var/etc/treadle/.active-nodes.json -e '@.groups.g.down_since' 2>/dev/null)" ] \
+	&& ok "the snapshot gives the way back as the last move" \
+	|| bad "recovered snapshot: $(jsonfilter -i /var/etc/treadle/.active-nodes.json -e '@.groups.g' 2>&1 | head -c 400)"
 for p in $TM_PIDS; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done
 uci set treadle.global.group_manager=singbox
 uci -q delete treadle.global.speed_test
+uci delete treadle.0123456789abcd7f
 uci commit treadle
 rm -f "$GS"
 if [ -n "$TM_STARTED" ]; then echo "$TM_STARTED" > /var/run/treadle.started; else rm -f /var/run/treadle.started; fi

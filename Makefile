@@ -29,8 +29,8 @@ PKG_NAME:=luci-app-treadle
 # published package can never disagree about what version this tree is.
 # A change to the app bumps PKG_VERSION and resets PKG_RELEASE to 1; a
 # packaging-only change bumps PKG_RELEASE alone.
-PKG_VERSION:=0.19.3
-PKG_RELEASE:=2
+PKG_VERSION:=0.20.0
+PKG_RELEASE:=1
 PKG_MAINTAINER:=RouteWeave
 PKG_LICENSE:=GPL-3.0-only
 PKG_LICENSE_FILES:=LICENSE

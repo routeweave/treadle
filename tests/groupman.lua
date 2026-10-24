@@ -267,5 +267,33 @@ do
 	check(gm.pick(st, { "A", "B" }, 1000, 50, 360, first, "B") == nil, "a forgotten member cannot be picked")
 end
 
+-- Leaving the fallback after a whole-group outage: only members that passed
+-- the re-check made at that moment count, benched or not, the fastest bucket
+-- wins, and their outage failures are cleared so the comeback is not voted
+-- out at once.
+do
+	local st = gm.new()
+	for _ = 1, 9 do
+		for _, tag in ipairs(MEMBERS) do gm.record(st, tag, 900, nil) end
+	end
+	gm.bench(st.members.A, 900)
+	gm.add_errors(st, "A", 900, { 899, 899 })
+	check(gm.recover(st, MEMBERS, 900, 50, first) == nil, "no member passed: stay on the fallback")
+	gm.record(st, "A", 1000, 300)
+	gm.record(st, "B", 1000, 120)
+	gm.record(st, "C", 1000, nil)
+	gm.record(st, "D", 990, 100)   -- passed, but in an earlier test
+	local to = gm.recover(st, MEMBERS, 1000, 50, first)
+	check(to == "B", "the fastest member that passed the re-check is the way back")
+	local a, c = st.members.A, st.members.C
+	check(#a.ring == 1 and a.fails == 0 and #a.errors == 0 and not gm.benched(a, 1000),
+		"a benched member that passed starts afresh, unbenched")
+	check(c.fails == 10 and #c.ring == gm.RING, "a member that failed keeps its record")
+	local d = gm.decide(st, group("B", { last_switch = 1000 }), 1010, first)
+	check(d.to == nil and not d.need_test, "the member come back to is not voted out")
+	a.bench_until = 2000
+	check(gm.recover(st, { "A", "C" }, 1000, 50, first) == "A", "a benched member is taken when it alone passed")
+end
+
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)

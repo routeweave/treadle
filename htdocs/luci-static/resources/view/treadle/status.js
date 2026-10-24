@@ -614,6 +614,25 @@ return baseclass.extend({
 		return badges.formatLatency(null);
 	},
 
+	// In place of the latency of a group whose members are all down and which
+	// went to its fallback: amber when its traffic goes direct, red when it is
+	// refused.
+	_fallbackBadge: function(x, skew) {
+		var title = x.down_since
+			? _('Every member failed %s. Members are tested every 30 s.').format(badges.relTime(x.down_since + skew))
+			: _('Every member failed. Members are tested every 30 s.');
+		if (x.fallback === 'direct')
+			return E('span', { 'class': 'label warning', 'style': 'text-transform:none;', 'title': title }, [
+				_('All down · direct')
+			]);
+		return E('span', {
+			'class': 'label',
+			'title': title,
+			'style': 'text-transform:none; background-color: var(--danger-color, var(--error-color, var(--error-color-high, #d9534f)));' +
+			         ' color: var(--on-danger-color, var(--on-error-color, #fff));'
+		}, [ _('All down · rejecting') ]);
+	},
+
 	_toggleOpen: function(tag) {
 		this._open[tag] = !this._open[tag];
 		session.setLocalData('treadle.statusOpen', this._open);
@@ -678,6 +697,7 @@ return baseclass.extend({
 				E('span', { 'class': 'treadle-muted treadle-show-narrow' }, [ kind ])
 			];
 			var latency = r.direct ? E('span', { 'class': 'treadle-muted' }, [ '—' ])
+				: (x && x.fallback) ? self._fallbackBadge(x, skew)
 				: x ? self._latency(x.delay_ms, !!x.tested)
 				: self._latency(r.node && r.node.delay_ms, !!(r.node && r.node.tested_at));
 			// Node and latency side by side: "is the node I go through

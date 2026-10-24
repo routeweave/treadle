@@ -38,7 +38,7 @@ msgid "Tested %s"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/lib/badges.js:67
-#: htdocs/luci-static/resources/view/treadle/status.js:805
+#: htdocs/luci-static/resources/view/treadle/status.js:834
 msgid "error"
 msgstr ""
 
@@ -72,24 +72,24 @@ msgstr ""
 #: htdocs/luci-static/resources/view/treadle/main.js:22
 #: htdocs/luci-static/resources/view/treadle/nodes.js:245
 #: htdocs/luci-static/resources/view/treadle/settings.js:353
-#: htdocs/luci-static/resources/view/treadle/status.js:885
+#: htdocs/luci-static/resources/view/treadle/status.js:914
 msgid "Nodes"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/main.js:23
-#: htdocs/luci-static/resources/view/treadle/status.js:890
+#: htdocs/luci-static/resources/view/treadle/status.js:919
 msgid "Routing"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/main.js:24
-#: htdocs/luci-static/resources/view/treadle/status.js:508
+#: htdocs/luci-static/resources/view/treadle/status.js:517
 msgid "Settings"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/main.js:63
 #: htdocs/luci-static/resources/view/treadle/nodes.js:964
 #: htdocs/luci-static/resources/view/treadle/settings.js:376
-#: htdocs/luci-static/resources/view/treadle/status.js:481
+#: htdocs/luci-static/resources/view/treadle/status.js:490
 msgid "Treadle"
 msgstr ""
 
@@ -115,9 +115,9 @@ msgid "Reset"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/main.js:227
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1147
-#: htdocs/luci-static/resources/view/treadle/status.js:1202
-#: htdocs/luci-static/resources/view/treadle/status.js:1237
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1162
+#: htdocs/luci-static/resources/view/treadle/status.js:1231
+#: htdocs/luci-static/resources/view/treadle/status.js:1266
 msgid "Loading…"
 msgstr ""
 
@@ -131,7 +131,7 @@ msgid "%d s"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:101
-#: htdocs/luci-static/resources/view/treadle/status.js:289
+#: htdocs/luci-static/resources/view/treadle/status.js:298
 #, javascript-format
 msgid "%d min"
 msgstr ""
@@ -172,7 +172,7 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:239
 #: htdocs/luci-static/resources/view/treadle/nodes.js:900
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1168
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1183
 #: htdocs/luci-static/resources/view/treadle/routing.js:722
 #: htdocs/luci-static/resources/view/treadle/routing.js:810
 msgid "Name"
@@ -244,7 +244,7 @@ msgid "Paste one share link: vless, vmess, trojan, ss, hysteria2, tuic, anytls o
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:326
-#: htdocs/luci-static/resources/view/treadle/status.js:975
+#: htdocs/luci-static/resources/view/treadle/status.js:1004
 msgid "Cancel"
 msgstr ""
 
@@ -276,8 +276,8 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:385
 #: htdocs/luci-static/resources/view/treadle/routing.js:740
-#: htdocs/luci-static/resources/view/treadle/status.js:595
-#: htdocs/luci-static/resources/view/treadle/status.js:735
+#: htdocs/luci-static/resources/view/treadle/status.js:604
+#: htdocs/luci-static/resources/view/treadle/status.js:764
 msgid "Node"
 msgstr ""
 
@@ -296,7 +296,7 @@ msgid "TLS"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:409
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1169
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1184
 msgid "Type"
 msgstr ""
 
@@ -307,19 +307,19 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:431
 #: htdocs/luci-static/resources/view/treadle/nodes.js:476
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1170
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1185
 msgid "Server"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:449
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1173
-#: htdocs/luci-static/resources/view/treadle/status.js:736
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1188
+#: htdocs/luci-static/resources/view/treadle/status.js:765
 msgid "Latency"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:464
 #: htdocs/luci-static/resources/view/treadle/nodes.js:467
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1201
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1216
 msgid "Test"
 msgstr ""
 
@@ -383,7 +383,7 @@ msgstr ""
 #: htdocs/luci-static/resources/view/treadle/nodes.js:722
 #: htdocs/luci-static/resources/view/treadle/nodes.js:731
 #: htdocs/luci-static/resources/view/treadle/nodes.js:737
-#: htdocs/luci-static/resources/view/treadle/status.js:577
+#: htdocs/luci-static/resources/view/treadle/status.js:586
 msgid "Default"
 msgstr ""
 
@@ -653,7 +653,7 @@ msgid "Add group"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:936
-#: htdocs/luci-static/resources/view/treadle/status.js:661
+#: htdocs/luci-static/resources/view/treadle/status.js:689
 msgid "Group"
 msgstr ""
 
@@ -710,7 +710,7 @@ msgid "Shown while the group runs and live stats are on"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/nodes.js:1004
-#: htdocs/luci-static/resources/view/treadle/status.js:604
+#: htdocs/luci-static/resources/view/treadle/status.js:613
 msgid "timeout"
 msgstr ""
 
@@ -826,99 +826,119 @@ msgstr ""
 msgid "all"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1129
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1131
+msgid "When every member is down"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1132
+msgid "What the group does once the member in use has failed and a test of every member passes none. Going direct sends the group's traffic out without a proxy; rejecting refuses it at once instead of letting it time out. The members are tested every 30 s meanwhile, and the group returns to the fastest that passes."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1138
+msgid "Keep trying the members"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1139
+msgid "Go direct"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1140
+msgid "Reject"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1144
 msgid "Interrupt existing connections"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1131
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1146
 msgid "Also drop the group's connections when it moves to a faster member, so apps reconnect through the new node. Useful for HTTP/web; noisy for SSH and other long-lived sessions. When the member in use fails, its connections are always dropped; when it is only slow, never."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1135
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1150
 msgid "Drop connections routed through this group when its active member changes, so apps reconnect through the new node. Useful for HTTP/web; noisy for SSH and other long-lived sessions."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1146
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1283
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1161
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1298
 #, javascript-format
 msgid "Nodes — %s"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1152
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1249
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1289
-#: htdocs/luci-static/resources/view/treadle/status.js:1204
-#: htdocs/luci-static/resources/view/treadle/status.js:1219
-#: htdocs/luci-static/resources/view/treadle/status.js:1229
-#: htdocs/luci-static/resources/view/treadle/status.js:1239
-#: htdocs/luci-static/resources/view/treadle/status.js:1273
-#: htdocs/luci-static/resources/view/treadle/status.js:1280
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1167
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1264
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1304
+#: htdocs/luci-static/resources/view/treadle/status.js:1233
+#: htdocs/luci-static/resources/view/treadle/status.js:1248
+#: htdocs/luci-static/resources/view/treadle/status.js:1258
+#: htdocs/luci-static/resources/view/treadle/status.js:1268
+#: htdocs/luci-static/resources/view/treadle/status.js:1302
+#: htdocs/luci-static/resources/view/treadle/status.js:1309
 msgid "Close"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1164
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1179
 msgid "No nodes. Sync this subscription to populate the list."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1226
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1241
 msgid "Type to filter by name, type or server…"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1267
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1282
 msgid "Test all in this subscription"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1269
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1284
 #, javascript-format
 msgid "Nodes — %s (%d)"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1284
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1299
 msgid "Failed to load nodes."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1357
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1432
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1372
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1447
 msgid "A latency test run is already in progress."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1374
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1448
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1389
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1463
 msgid "unknown error"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1375
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1390
 msgid "Test failed: "
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1414
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1429
 msgid "No nodes to test."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1449
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1464
 msgid "Test all failed: "
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1495
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1510
 msgid "runner timed out (status file never cleared)"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1522
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1537
 #, javascript-format
 msgid "Test all failed: %s"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1528
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1543
 #, javascript-format
 msgid "Tested %d nodes — %d timed out."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1529
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1544
 #, javascript-format
 msgid "Tested %d nodes."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/nodes.js:1589
+#: htdocs/luci-static/resources/view/treadle/nodes.js:1604
 #, javascript-format
 msgid "Renamed \"%s\" to \"%s\" — %d routing reference(s) updated to follow."
 msgstr ""
@@ -1042,13 +1062,13 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/routing.js:667
 #: htdocs/luci-static/resources/view/treadle/routing.js:679
-#: htdocs/luci-static/resources/view/treadle/status.js:926
+#: htdocs/luci-static/resources/view/treadle/status.js:955
 msgid "direct (no proxy)"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/routing.js:668
 #: htdocs/luci-static/resources/view/treadle/routing.js:679
-#: htdocs/luci-static/resources/view/treadle/status.js:927
+#: htdocs/luci-static/resources/view/treadle/status.js:956
 msgid "block (drop)"
 msgstr ""
 
@@ -1070,7 +1090,7 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/routing.js:717
 #: htdocs/luci-static/resources/view/treadle/routing.js:805
-#: htdocs/luci-static/resources/view/treadle/status.js:487
+#: htdocs/luci-static/resources/view/treadle/status.js:496
 msgid "On"
 msgstr ""
 
@@ -1213,7 +1233,7 @@ msgid "— not set —"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/treadle/routing.js:1041
-#: htdocs/luci-static/resources/view/treadle/status.js:938
+#: htdocs/luci-static/resources/view/treadle/status.js:967
 msgid "(missing)"
 msgstr ""
 
@@ -1718,445 +1738,462 @@ msgstr ""
 msgid "The sing-box package's own service is enabled (/etc/config/sing-box). Treadle runs its own sing-box and does not use it; a second instance can conflict with Treadle, and SagerNet's package enables it with a demo Shadowsocks server. Unless you set it up yourself, disable it: uci set sing-box.main.enabled=0; uci commit sing-box; /etc/init.d/sing-box stop"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:287
+#: htdocs/luci-static/resources/view/treadle/status.js:296
 #, javascript-format
 msgid "%d d %d h"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:288
+#: htdocs/luci-static/resources/view/treadle/status.js:297
 #, javascript-format
 msgid "%d h %d min"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:393
+#: htdocs/luci-static/resources/view/treadle/status.js:402
 msgid "Paused for testing — will resume on next reboot."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:402
+#: htdocs/luci-static/resources/view/treadle/status.js:411
 msgid "Default node"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:459
+#: htdocs/luci-static/resources/view/treadle/status.js:468
 msgid "Treadle off"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:461
+#: htdocs/luci-static/resources/view/treadle/status.js:470
 msgid "Running"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:463
+#: htdocs/luci-static/resources/view/treadle/status.js:472
 msgid "Paused"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:464
+#: htdocs/luci-static/resources/view/treadle/status.js:473
 msgid "Stopped"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:475
+#: htdocs/luci-static/resources/view/treadle/status.js:484
 msgid "Treadle is on: sing-box runs and starts at boot. Applies immediately."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:476
+#: htdocs/luci-static/resources/view/treadle/status.js:485
 msgid "Treadle is off: sing-box does not run or start at boot. Applies immediately."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:487
+#: htdocs/luci-static/resources/view/treadle/status.js:496
 msgid "Off"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:507
+#: htdocs/luci-static/resources/view/treadle/status.js:516
 msgid "Live stats are off. Turn on \"Live stats and latency testing\" on the "
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:509
+#: htdocs/luci-static/resources/view/treadle/status.js:518
 msgid " tab to see traffic and the nodes in use."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:513
-#: htdocs/luci-static/resources/view/treadle/status.js:518
+#: htdocs/luci-static/resources/view/treadle/status.js:522
+#: htdocs/luci-static/resources/view/treadle/status.js:527
 msgid "Connections"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:513
-#: htdocs/luci-static/resources/view/treadle/status.js:516
+#: htdocs/luci-static/resources/view/treadle/status.js:522
+#: htdocs/luci-static/resources/view/treadle/status.js:525
 msgid "Download"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:513
-#: htdocs/luci-static/resources/view/treadle/status.js:519
+#: htdocs/luci-static/resources/view/treadle/status.js:522
+#: htdocs/luci-static/resources/view/treadle/status.js:528
 msgid "This session"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:513
-#: htdocs/luci-static/resources/view/treadle/status.js:517
+#: htdocs/luci-static/resources/view/treadle/status.js:522
+#: htdocs/luci-static/resources/view/treadle/status.js:526
 msgid "Upload"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:513
-#: htdocs/luci-static/resources/view/treadle/status.js:521
+#: htdocs/luci-static/resources/view/treadle/status.js:522
+#: htdocs/luci-static/resources/view/treadle/status.js:530
 msgid "sing-box memory"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:556
+#: htdocs/luci-static/resources/view/treadle/status.js:565
 msgid "unnamed rule"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:578
+#: htdocs/luci-static/resources/view/treadle/status.js:587
 #, javascript-format
 msgid "Rule: %s"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:579
+#: htdocs/luci-static/resources/view/treadle/status.js:588
 #, javascript-format
 msgid "Rules: %s"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:590
+#: htdocs/luci-static/resources/view/treadle/status.js:599
 msgid "Node · manual"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:594
+#: htdocs/luci-static/resources/view/treadle/status.js:603
 #, javascript-format
 msgid "Node · %s"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:634
+#: htdocs/luci-static/resources/view/treadle/status.js:622
+#, javascript-format
+msgid "Every member failed %s. Members are tested every 30 s."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/status.js:623
+msgid "Every member failed. Members are tested every 30 s."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/status.js:626
+msgid "All down · direct"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/status.js:633
+msgid "All down · rejecting"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/treadle/status.js:662
 msgid "Treadle is off."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:634
+#: htdocs/luci-static/resources/view/treadle/status.js:662
 msgid "sing-box is not running."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:656
+#: htdocs/luci-static/resources/view/treadle/status.js:684
 #, javascript-format
 msgid "Hide members of %s"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:656
+#: htdocs/luci-static/resources/view/treadle/status.js:684
 #, javascript-format
 msgid "Show members of %s"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:659
+#: htdocs/luci-static/resources/view/treadle/status.js:687
 msgid "No proxy"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:660
+#: htdocs/luci-static/resources/view/treadle/status.js:688
 #, javascript-format
 msgid "Group · %d nodes"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:666
+#: htdocs/luci-static/resources/view/treadle/status.js:694
 msgid "Direct"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:682
+#: htdocs/luci-static/resources/view/treadle/status.js:711
 msgid "built-in rules only (local networks)"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:682
+#: htdocs/luci-static/resources/view/treadle/status.js:711
 msgid "inside another group"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:696
+#: htdocs/luci-static/resources/view/treadle/status.js:725
 #, javascript-format
 msgid "%s: in use"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:698
+#: htdocs/luci-static/resources/view/treadle/status.js:727
 #, javascript-format
 msgid "passed %d of its last %d tests"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:700
+#: htdocs/luci-static/resources/view/treadle/status.js:729
 #, javascript-format
 msgid "%d connection errors in 5 min"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:702
+#: htdocs/luci-static/resources/view/treadle/status.js:731
 #, javascript-format
 msgid "speed %.1f Mbit/s, %s"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:710
+#: htdocs/luci-static/resources/view/treadle/status.js:739
 #, javascript-format
 msgid "benched %d min"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:716
+#: htdocs/luci-static/resources/view/treadle/status.js:745
 #, javascript-format
 msgid "Treadle picks the member: it tests the one in use every 20 s and every member every %s, moves within seconds when the one in use fails, and benches members whose traffic keeps failing."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:718
+#: htdocs/luci-static/resources/view/treadle/status.js:747
 #, javascript-format
 msgid "Uses the fastest member, and switches only when another is more than %s ms faster. Tested every %s."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:723
+#: htdocs/luci-static/resources/view/treadle/status.js:752
 #, javascript-format
 msgid "Last move %s: %s"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:730
+#: htdocs/luci-static/resources/view/treadle/status.js:759
 msgid "Nodes in use"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:731
+#: htdocs/luci-static/resources/view/treadle/status.js:760
 msgid "Everything your traffic can go through right now, and why."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:737
+#: htdocs/luci-static/resources/view/treadle/status.js:766
 msgid "Bandwidth"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:738
+#: htdocs/luci-static/resources/view/treadle/status.js:767
 msgid "Used by"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:739
+#: htdocs/luci-static/resources/view/treadle/status.js:768
 msgid "Kind"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:776
+#: htdocs/luci-static/resources/view/treadle/status.js:805
 msgid "Activity"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:777
+#: htdocs/luci-static/resources/view/treadle/status.js:806
 msgid "Log source"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:778
+#: htdocs/luci-static/resources/view/treadle/status.js:807
 msgid "Treadle events"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:779
+#: htdocs/luci-static/resources/view/treadle/status.js:808
 msgid "sing-box"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:782
+#: htdocs/luci-static/resources/view/treadle/status.js:811
 msgid "Warnings and errors only"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:787
+#: htdocs/luci-static/resources/view/treadle/status.js:816
 msgid "Full log"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:799
+#: htdocs/luci-static/resources/view/treadle/status.js:828
 msgid "No warnings or errors in the recent log."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:799
+#: htdocs/luci-static/resources/view/treadle/status.js:828
 msgid "Nothing logged yet."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:807
+#: htdocs/luci-static/resources/view/treadle/status.js:836
 msgid "warning"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:808
+#: htdocs/luci-static/resources/view/treadle/status.js:837
 msgid "info"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:822
+#: htdocs/luci-static/resources/view/treadle/status.js:851
 msgid "TProxy"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:822
+#: htdocs/luci-static/resources/view/treadle/status.js:851
 msgid "TUN"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:823
+#: htdocs/luci-static/resources/view/treadle/status.js:852
 #, javascript-format
 msgid "%d active rules"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:824
+#: htdocs/luci-static/resources/view/treadle/status.js:853
 #, javascript-format
 msgid "%d subscriptions"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:830
+#: htdocs/luci-static/resources/view/treadle/status.js:859
 msgid "View generated config"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:845
+#: htdocs/luci-static/resources/view/treadle/status.js:874
 msgid "Stop"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:849
-#: htdocs/luci-static/resources/view/treadle/status.js:860
+#: htdocs/luci-static/resources/view/treadle/status.js:878
+#: htdocs/luci-static/resources/view/treadle/status.js:889
 msgid "Restart"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:856
+#: htdocs/luci-static/resources/view/treadle/status.js:885
 msgid "Start"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:884
+#: htdocs/luci-static/resources/view/treadle/status.js:913
 msgid "Add a subscription on the "
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:886
+#: htdocs/luci-static/resources/view/treadle/status.js:915
 msgid " tab and press Sync — or configure a node manually there."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:889
+#: htdocs/luci-static/resources/view/treadle/status.js:918
 msgid "Pick the default node on the "
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:891
+#: htdocs/luci-static/resources/view/treadle/status.js:920
 msgid " tab — or right here on the runtime row, once nodes exist."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:893
+#: htdocs/luci-static/resources/view/treadle/status.js:922
 msgid "Turn Treadle on with the switch below."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:896
+#: htdocs/luci-static/resources/view/treadle/status.js:925
 msgid "Get started"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:898
+#: htdocs/luci-static/resources/view/treadle/status.js:927
 msgid "Nothing is configured yet — three steps to get traffic flowing:"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:921
+#: htdocs/luci-static/resources/view/treadle/status.js:950
 msgid "Default node — traffic not matched by any routing rule goes here. Changing it applies immediately."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:925
+#: htdocs/luci-static/resources/view/treadle/status.js:954
 msgid "— no default —"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:963
+#: htdocs/luci-static/resources/view/treadle/status.js:992
 msgid "Set default node?"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:965
+#: htdocs/luci-static/resources/view/treadle/status.js:994
 #, javascript-format
 msgid "Setting the default node to \"%s\" applies immediately — and will also commit %d change(s) staged by earlier edits."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:983
+#: htdocs/luci-static/resources/view/treadle/status.js:1012
 msgid "Apply"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1009
+#: htdocs/luci-static/resources/view/treadle/status.js:1038
 msgid "Failed to set the default node: "
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1031
+#: htdocs/luci-static/resources/view/treadle/status.js:1060
 msgid "Enable failed — check the log below."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1032
+#: htdocs/luci-static/resources/view/treadle/status.js:1061
 msgid "Disable failed — check the log below."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1034
+#: htdocs/luci-static/resources/view/treadle/status.js:1063
 msgid "Treadle disabled."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1034
+#: htdocs/luci-static/resources/view/treadle/status.js:1063
 msgid "Treadle enabled."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1038
+#: htdocs/luci-static/resources/view/treadle/status.js:1067
 msgid "Disable failed"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1038
+#: htdocs/luci-static/resources/view/treadle/status.js:1067
 msgid "Enable failed"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1047
+#: htdocs/luci-static/resources/view/treadle/status.js:1076
 msgid "Start failed: "
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1048
+#: htdocs/luci-static/resources/view/treadle/status.js:1077
 msgid "Start failed — check the log below."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1050
+#: htdocs/luci-static/resources/view/treadle/status.js:1079
 msgid "Service started."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1054
+#: htdocs/luci-static/resources/view/treadle/status.js:1083
 msgid "Start failed"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1062
+#: htdocs/luci-static/resources/view/treadle/status.js:1091
 msgid "Service stopped — will resume on next reboot."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1065
+#: htdocs/luci-static/resources/view/treadle/status.js:1094
 msgid "Stop failed"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1074
+#: htdocs/luci-static/resources/view/treadle/status.js:1103
 msgid "Restart failed — check the log below."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1076
+#: htdocs/luci-static/resources/view/treadle/status.js:1105
 msgid "Service restarted."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1080
+#: htdocs/luci-static/resources/view/treadle/status.js:1109
 msgid "Restart failed"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1113
+#: htdocs/luci-static/resources/view/treadle/status.js:1142
 #, javascript-format
 msgid "for %s"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1121
+#: htdocs/luci-static/resources/view/treadle/status.js:1150
 #, javascript-format
 msgid "now using %s"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1201
-#: htdocs/luci-static/resources/view/treadle/status.js:1226
+#: htdocs/luci-static/resources/view/treadle/status.js:1230
+#: htdocs/luci-static/resources/view/treadle/status.js:1255
 msgid "Service log"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1216
+#: htdocs/luci-static/resources/view/treadle/status.js:1245
 #, javascript-format
 msgid "Service log (last %d lines)"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1227
+#: htdocs/luci-static/resources/view/treadle/status.js:1256
 msgid "Failed to load the log."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1236
-#: htdocs/luci-static/resources/view/treadle/status.js:1275
-#: htdocs/luci-static/resources/view/treadle/status.js:1277
+#: htdocs/luci-static/resources/view/treadle/status.js:1265
+#: htdocs/luci-static/resources/view/treadle/status.js:1304
+#: htdocs/luci-static/resources/view/treadle/status.js:1306
 msgid "Generated configuration"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1248
+#: htdocs/luci-static/resources/view/treadle/status.js:1277
 msgid "Target file:"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1251
+#: htdocs/luci-static/resources/view/treadle/status.js:1280
 msgid "running file present"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1252
+#: htdocs/luci-static/resources/view/treadle/status.js:1281
 msgid "preview only — not yet applied"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1257
+#: htdocs/luci-static/resources/view/treadle/status.js:1286
 msgid "Generator error:"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1272
+#: htdocs/luci-static/resources/view/treadle/status.js:1301
 msgid "Download config"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/treadle/status.js:1278
+#: htdocs/luci-static/resources/view/treadle/status.js:1307
 msgid "Failed to load the generated config."
 msgstr ""

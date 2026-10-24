@@ -21,6 +21,7 @@
 --   3. Upgrade. Another member scores at least MIN_GAIN lower and more than
 --      one tolerance-wide bucket lower, and the current one has been in use
 --      for DWELL_S.
+-- A group with a fallback leaves it through recover(), not decide().
 -- "Best" is the lowest tolerance-wide bucket of score (see M.score) among
 -- eligible members, with a random pick inside it, so near-equal members share
 -- the load instead of the first one in a list taking it all.
@@ -238,6 +239,34 @@ function M.pick(st, members, now, tolerance, fresh_s, rnd, except)
 	end
 	if #ties == 0 then return nil end
 	return ties[rnd(#ties)], best
+end
+
+-- Leaving a group's fallback (direct or block, used while every member was
+-- down): the best member that passed the whole-group test made at `at`, by
+-- that result's latency, random inside the lowest tolerance-wide bucket.
+-- Benched or not, since the alternative is no proxy at all. Every member that
+-- passed starts its record afresh, as after a bench but without one: failing
+-- together with the rest of its group was not its fault, and the failures
+-- would otherwise vote it out the moment it is back in use. Nil when none
+-- passed.
+function M.recover(st, members, at, tolerance, rnd)
+	local tol = (tolerance and tolerance >= 1) and tolerance or 50
+	local best, ties = nil, {}
+	for _, tag in ipairs(members) do
+		local r = st.members[tag]
+		local d = r and r.tested_at == at and r.ring[#r.ring]
+		if type(d) == "number" then
+			r.ring, r.errors, r.fails, r.bench_until = { d }, {}, 0, nil
+			local b = math.floor(d / tol)
+			if best == nil or b < best then
+				best, ties = b, { tag }
+			elseif b == best then
+				ties[#ties + 1] = tag
+			end
+		end
+	end
+	if #ties == 0 then return nil end
+	return ties[rnd(#ties)]
 end
 
 -- What a group should do now. `g` = { now, members, tolerance, fresh_s,

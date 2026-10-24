@@ -832,6 +832,11 @@ local function build_node_from_uci(s)
 		if s.group_interrupt == "1" then
 			ob.interrupt_exist_connections = true
 		end
+		-- Where a Treadle-managed group sends its traffic while every member
+		-- is down. Internal marker, applied and stripped in build_outbounds.
+		if s.group_fallback == "direct" or s.group_fallback == "block" then
+			ob._fallback = s.group_fallback
+		end
 		-- Member order and cap. Internal markers, applied and
 		-- stripped in build_outbounds step 3 like _outbound_regex.
 		if s.group_member_order == "shuffle" or s.group_member_order == "latency" then
@@ -1307,17 +1312,20 @@ end
 -- interval and tolerance are Treadle's to apply, not sing-box's, and so is
 -- interrupting connections: sing-box would interrupt on every switch, while
 -- active-watch closes them only on a failover, or on an upgrade when the
--- group asks to.
-local function as_selector(ob)
+-- group asks to. A fallback (`direct` or `block`) goes last, after `default`
+-- is picked, so only active-watch ever selects it: when every member is down.
+local function as_selector(ob, fallback)
 	local members = {}
 	for k, t in ipairs(ob.outbounds) do members[k] = t end
 	table.sort(members)
-	return {
+	local sel = {
 		type      = "selector",
 		tag       = ob.tag,
 		outbounds = members,
 		default   = members[pm_hash(ob.tag) % #members + 1]
 	}
+	if fallback then members[#members + 1] = fallback end
+	return sel
 end
 
 local function build_outbounds(c)
@@ -1555,12 +1563,13 @@ local function build_outbounds(c)
 	-- ── Step 4: assemble final list — builtins first, then referenced nodes ──
 	-- Preserve original file order so urltest member ordering is predictable.
 	-- (See direct_outbound for why the seed carries domain_resolver:"local".)
-	-- There is no block outbound: a rule that drops traffic compiles to a
-	-- reject rule action (see build_route), since sing-box 1.13 has no
-	-- special `block` outbound.
+	-- A rule that drops traffic compiles to a reject rule action (see
+	-- build_route), not to an outbound. The one `block` outbound is a
+	-- group's fallback member: a selector can only switch to an outbound.
 	local timeout   = connect_timeout(c)
 	local outbounds = { direct_outbound() }
 	local endpoints = {}
+	local need_block = false
 	-- Only referenced nodes reach the running config — unreferenced
 	-- subscription nodes stay on disk. Latency testing does not need them
 	-- here: the test-all-runner probes every known node through a separate,
@@ -1579,10 +1588,18 @@ local function build_outbounds(c)
 				io.stderr:write("treadle build-config: group '" .. ob.tag ..
 					"' has no usable members; dropping it\n")
 			else
-				if managed and ob.type == "urltest" then ob = as_selector(ob) end
+				local fallback = ob._fallback
+				ob._fallback = nil
+				if managed and ob.type == "urltest" then
+					ob = as_selector(ob, fallback)
+					need_block = need_block or fallback == "block"
+				end
 				place_node(ob, outbounds, endpoints, timeout)
 			end
 		end
+	end
+	if need_block then
+		outbounds[#outbounds + 1] = { type = "block", tag = "block" }
 	end
 
 	return outbounds, endpoints
@@ -2323,7 +2340,10 @@ local function add_speed_test(c, config)
 	for _, ob in ipairs(config.outbounds) do
 		if ob.type == "selector" then
 			for _, m in ipairs(ob.outbounds) do
-				if not seen[m] then seen[m] = true; members[#members + 1] = m end
+				-- A group's fallback is not a node to measure.
+				if not seen[m] and m ~= "direct" and m ~= "block" then
+					seen[m] = true; members[#members + 1] = m
+				end
 			end
 		end
 	end

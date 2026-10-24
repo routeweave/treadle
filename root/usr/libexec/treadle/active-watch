@@ -544,7 +544,9 @@ local function settings()
 						url       = s.group_test_url,
 						interval  = s.group_interval,
 						tolerance = tonumber(s.group_tolerance),
-						interrupt = s.group_interrupt == "1"
+						interrupt = s.group_interrupt == "1",
+						fallback  = (s.group_fallback == "direct" or s.group_fallback == "block")
+							and s.group_fallback or nil
 					}
 				end
 			end)
@@ -577,8 +579,13 @@ end
 -- The connections still open through the old member are then closed after a
 -- failover, after an upgrade only when the group's Interrupt flag is set, and
 -- never after a speed verdict (see close_connections).
+-- A group with a fallback (group_fallback: direct or block) switches to it
+-- when the member in use must go and the latest re-check passed no member,
+-- re-checks every FALLBACK_RETEST_S while there, and comes back to the best
+-- member a re-check passes (groupman.recover).
 local ACTIVE_PROBE_S     = 20
 local GROUP_RETEST_S     = 60   -- at most this often when nothing is known to work
+local FALLBACK_RETEST_S  = 30   -- how often a group on its fallback re-tests its members
 local MAX_PROBES         = 8    -- single-node probes per tick, across groups
 local DEFAULT_INTERVAL_S = 180  -- sing-box urltest's own default
 local MIN_INTERVAL_S     = 30
@@ -618,7 +625,7 @@ end
 -- member failed. The whole pass shares the request's timeout, so it allows
 -- one probe timeout per batch of 10. False when the API sent no usable reply,
 -- or a member failed just as sing-box was stopping (lib.config_just_replaced);
--- nothing is recorded then.
+-- nothing is recorded then. Otherwise true and how many members passed.
 local function group_test(tag, members, url, now)
 	local budget = PROBE_TIMEOUT_MS * math.ceil(#members / 10) + 2000
 	local f = io.popen("uclient-fetch --timeout=" .. math.ceil(budget / 1000 + 5)
@@ -630,15 +637,15 @@ local function group_test(tag, members, url, now)
 	f:close()
 	local ok, res = pcall(jsonc.parse, body)
 	if not ok or type(res) ~= "table" then return false end
-	local got, failed = {}, false
+	local got, passed = {}, 0
 	for _, m in ipairs(members) do
 		local d = tonumber(res[m])
 		got[m] = (d and d > 0) and d or nil
-		failed = failed or not got[m]
+		if got[m] then passed = passed + 1 end
 	end
-	if failed and lib.config_just_replaced(config_path) then return false end
+	if passed < #members and lib.config_just_replaced(config_path) then return false end
 	for _, m in ipairs(members) do gm.record(gm_state, m, now, got[m]) end
-	return true
+	return true, passed
 end
 
 -- Send raw HTTP/1.1 requests to the clash API through nc, killed after
@@ -741,7 +748,7 @@ local function take_errors(current, now)
 	if not parsed or type(parsed.errors) ~= "table" then return hit end
 	local using = {}
 	for tag, g in pairs(current) do
-		if g.managed then using[g.now] = tag end
+		if g.managed and not g.on_fallback then using[g.now] = tag end
 	end
 	for tag, times in pairs(parsed.errors) do
 		if type(times) == "table" then
@@ -764,7 +771,8 @@ local function take_errors(current, now)
 				for _, t in ipairs(times) do if tonumber(t) == last then n = n + 1 end end
 				err_seen[tag] = { t = last, n = n }
 			end
-			if #fresh > 0 then
+			-- A group on its fallback has no member in use to charge.
+			if #fresh > 0 and not (current[tag] and current[tag].on_fallback) then
 				local member = tag
 				if current[tag] and current[tag].managed then member = current[tag].now end
 				gm.add_errors(gm_state, member, now, fresh)
@@ -894,6 +902,20 @@ local function manage_groups(current, cfg, publish)
 	for tag, g in pairs(current) do
 		if g.type == "Selector" then
 			g.managed = true
+			-- The group's fallback is not a member: never tested or picked,
+			-- only switched to when every member is down.
+			local fb = (cfg.groups[tag] or {}).fallback
+			for i, m in ipairs(fb and g.members or {}) do
+				if m.tag == fb then
+					table.remove(g.members, i)
+					g.fallback = fb
+					if g.now == fb then
+						g.on_fallback = true
+						g.delay_ms = nil
+					end
+					break
+				end
+			end
 			tags[#tags + 1] = tag
 			for _, m in ipairs(g.members) do wanted[m.tag] = true end
 		end
@@ -973,21 +995,26 @@ local function manage_groups(current, cfg, publish)
 			end
 			meta.url = url
 		end
-		local rechecked = false
-		if not lost and (tag == due or fresh) then
+		local rechecked, passed = false, nil
+		if not lost and (tag == due or fresh
+			or (g.on_fallback and now - (meta.last_test or 0) >= FALLBACK_RETEST_S))
+		then
 			-- Stamped either way, so a group whose pass keeps failing holds
 			-- up one tick per interval, not every tick.
 			meta.last_test = now
-			rechecked = group_test(tag, members, url, now)
+			rechecked, passed = group_test(tag, members, url, now)
 			lost = not rechecked
+			if rechecked then meta.passed = passed end
 		end
-		local r = gm.member(gm_state, g.now)
+		-- On its fallback the group has no member in use: nothing to probe or
+		-- decide, only a member to come back to once a re-check passes one.
+		local r = not g.on_fallback and gm.member(gm_state, g.now)
 		-- A re-check that failed the member in use counts as its first failed
 		-- probe, and gets the same retry at once. Otherwise the re-check,
 		-- having just tested it, holds off its next probe for two ticks, and
 		-- the failover waits for that.
-		local failed = rechecked and r.tested_at == now and r.ring[#r.ring] == false
-		if not lost and probes > 0 and not failed and (hit[tag] or now - (r.tested_at or 0) >= ACTIVE_PROBE_S) then
+		local failed = r and rechecked and r.tested_at == now and r.ring[#r.ring] == false
+		if r and not lost and probes > 0 and not failed and (hit[tag] or now - (r.tested_at or 0) >= ACTIVE_PROBE_S) then
 			local d = test_node(g.now, url)
 			probes = probes - 1
 			if d == false then
@@ -1009,33 +1036,57 @@ local function manage_groups(current, cfg, publish)
 
 		local view = { now = g.now, members = members, tolerance = gc.tolerance,
 			fresh_s = 2 * interval, last_switch = meta.last_switch }
-		if cfg.speed then
+		if cfg.speed and r then
 			speed_cands[#speed_cands + 1] = { node = g.now, members = members,
 				tol = gc.tolerance, fresh_s = 2 * interval,
-				worse = gm.track_level(gm.member(gm_state, g.now), now) }
+				worse = gm.track_level(r, now) }
 		end
-		local dec = lost and {} or gm.decide(gm_state, view, os.time(), rnd)
+		local dec = {}
+		if g.on_fallback then
+			local to = rechecked and passed > 0 and gm.recover(gm_state, members, now, gc.tolerance, rnd)
+			if to then
+				dec = { to = to, kind = "recover",
+					reason = string.format("%s passed a test after every member had failed", to) }
+			end
+		elseif not lost then
+			dec = gm.decide(gm_state, view, os.time(), rnd)
+		end
 		if dec.need_test and os.time() - (meta.last_test or 0) >= GROUP_RETEST_S then
 			meta.last_test = os.time()
-			if group_test(tag, members, url, os.time()) then
+			local ok, n = group_test(tag, members, url, os.time())
+			if ok then
+				meta.passed = n
 				dec = gm.decide(gm_state, view, os.time(), rnd)
 			else
 				lost, dec = true, {}
 			end
 		end
+		-- The member in use must go, nothing else qualifies, and the latest
+		-- re-check passed no member at all: every server is down. A group
+		-- with a fallback sends its traffic there until one passes again.
+		if dec.need_test and g.fallback and meta.passed == 0 then
+			dec = { to = g.fallback, kind = "fallback",
+				reason = dec.reason .. ", and no member passed a test" }
+		end
 		if dec.to then
 			if select_member(tag, dec.to) then
-				logmsg("info", string.format("group '%s': active node %s -> %s (%s)",
-					tag, g.now, dec.to, dec.reason))
+				logmsg(dec.kind == "fallback" and "warning" or "info", string.format(
+					"group '%s': active node %s -> %s (%s)", tag, g.now, dec.to, dec.reason))
 				meta.last_switch, meta.switched_at, meta.reason = os.time(), os.time(), dec.reason
 				meta.stuck = nil
+				meta.down_since = (dec.kind == "fallback") and os.time() or nil
 				local old = g.now
 				g.now = dec.to
+				g.on_fallback = (dec.kind == "fallback") or nil
 				local nr = gm_state.members[dec.to]
 				g.delay_ms = nr and nr.ewma and math.floor(nr.ewma) or nil
 				-- A failed member's connections are stalled, so apps are
-				-- made to reconnect; a slow one's still carry traffic.
-				if dec.kind == "failover" or (dec.kind == "upgrade" and gc.interrupt) then
+				-- made to reconnect; a slow one's still carry traffic. Leaving
+				-- the fallback closes what went out direct, so it reconnects
+				-- through the proxy.
+				if dec.kind == "failover" or dec.kind == "fallback" or dec.kind == "recover"
+					or (dec.kind == "upgrade" and gc.interrupt)
+				then
 					local n = close_connections(tag, old)
 					if n > 0 then
 						logmsg("info", string.format(
@@ -1055,6 +1106,7 @@ local function manage_groups(current, cfg, publish)
 
 		-- What the Status page shows about the choice.
 		g.reason, g.switched_at = meta.reason, meta.switched_at
+		g.down_since = g.on_fallback and meta.down_since or nil
 		for _, m in ipairs(g.members) do
 			if m.tag == g.now then g.tested = m.tested end
 			local mr = gm_state.members[m.tag]
