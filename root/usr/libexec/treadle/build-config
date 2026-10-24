@@ -1588,8 +1588,11 @@ local function build_outbounds(c)
 				io.stderr:write("treadle build-config: group '" .. ob.tag ..
 					"' has no usable members; dropping it\n")
 			else
+				-- Cleared only where it was set: in Lua 5.1 assigning nil to an
+				-- absent key can rehash the table, which reorders the JSON
+				-- output, and a reordered config restarts sing-box.
 				local fallback = ob._fallback
-				ob._fallback = nil
+				if fallback then ob._fallback = nil end
 				if managed and ob.type == "urltest" then
 					ob = as_selector(ob, fallback)
 					need_block = need_block or fallback == "block"
