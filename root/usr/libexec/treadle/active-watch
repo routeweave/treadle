@@ -399,13 +399,22 @@ end
 -- connectivity check is the same test through whatever the default
 -- resolves to (a group's current member, or the node itself): CONN_FAIL_AFTER
 -- failures in a row mark it failing, logged once, with the recovery logged
--- too. At most PROBE_MAX single nodes per pass, each bounded by
--- PROBE_FETCH_S, so a pass of dead nodes cannot stall the 10 s tick for
--- long.
+-- too.
+--
+-- A single node gets NODE_TIMEOUT_MS, the test runner's budget, not the 3 s
+-- that failover checks use: nothing switches on its result, so all it has to
+-- do is report the node honestly, and a node with a slow exit can need over
+-- 9 s for a request that the page then shows as a 4 s latency. The pass
+-- blocks the 10 s tick that also runs group failover, so it starts no new
+-- single-node test after PROBE_PASS_S; a node skipped that way keeps its last
+-- result. The default comes first in the list, so it is always tested.
 local PROBE_S          = 60
 local PROBE_MAX        = 6
+local PROBE_PASS_S     = 20
 local PROBE_TIMEOUT_MS = 3000
 local PROBE_FETCH_S    = 6
+local NODE_TIMEOUT_MS  = 12000
+local NODE_FETCH_S     = 16
 -- TREADLE_PROBE_URL lets the smoke test point the probe at a local server.
 local PROBE_URL        = os.getenv("TREADLE_PROBE_URL") or lib.TEST_URL
 -- The running config (global.config_path, read each tick). Its mtime marks a
@@ -444,6 +453,12 @@ local function test_node(tag, url)
 		PROBE_FETCH_S, config_path)
 end
 
+-- A node in use on its own, tested with the longer budget; same results.
+local function test_single(tag)
+	return lib.clash_delay(CLASH_HOST, tag, PROBE_URL, NODE_TIMEOUT_MS,
+		NODE_FETCH_S, config_path)
+end
+
 local function probe_pass(parsed, current)
 	local proxies = parsed.proxies
 	local function known(tag)
@@ -463,10 +478,14 @@ local function probe_pass(parsed, current)
 	for _, tag in ipairs(wanted) do
 		if known(tag) and not is_group(tag) and not nodes[tag] and count < PROBE_MAX then
 			count = count + 1
-			local d = test_node(tag)
-			-- sing-box went away mid-pass: keep the last pass's results.
-			if d == false then return end
-			nodes[tag] = { delay_ms = d, tested_at = now }
+			if os.time() - now >= PROBE_PASS_S then
+				nodes[tag] = probe_nodes[tag]
+			else
+				local d = test_single(tag)
+				-- sing-box went away mid-pass: keep the last pass's results.
+				if d == false then return end
+				nodes[tag] = { delay_ms = d, tested_at = now }
+			end
 		end
 	end
 	probe_nodes = nodes
@@ -484,7 +503,7 @@ local function probe_pass(parsed, current)
 		via = (current[fin] and current[fin].now) or proxies[fin].now or ""
 	end
 	local d
-	if nodes[via] then
+	if nodes[via] and nodes[via].tested_at == now then
 		d = nodes[via].delay_ms
 	elseif via ~= "" then
 		d = test_node(via)

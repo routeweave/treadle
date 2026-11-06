@@ -61,7 +61,9 @@ local CONCURRENCY      = 16            -- parallel uclient-fetch processes
 -- with no status to explain it. Nodes measuring ~1.7 s idle (distant
 -- anytls hops) need headroom: against the CONCURRENCY-way TLS handshake
 -- contention of a real batch, a ~3 s budget makes them flap between a
--- latency and "timeout" from run to run.
+-- latency and "timeout" from run to run. A node with a slow exit can need
+-- over 9 s of wall clock for a request reported as a 4 s latency, which an
+-- 8 s budget failed every time.
 --
 -- The budget must also clear sing-box's own TCP dial timeout (~5 s), or
 -- the two race and the *label* becomes nondeterministic: a blackholed
@@ -72,8 +74,8 @@ local CONCURRENCY      = 16            -- parallel uclient-fetch processes
 -- "connect failed", the actionable label: unreachable from here, not slow.
 -- Dead nodes cost no extra wall clock either way; they still fail at the
 -- 5 s dial.
-local PROBE_TIMEOUT_MS = 8000          -- per-probe (clash query param)
-local REQ_TIMEOUT_S    = 12            -- uclient-fetch wall clock per probe
+local PROBE_TIMEOUT_MS = 12000         -- per-probe (clash query param)
+local REQ_TIMEOUT_S    = 16            -- uclient-fetch wall clock per probe
 -- Must be https://. sing-box's clash API discards a plaintext test URL
 -- outright — `if strings.HasPrefix(url, "http://") { url = "" }` in
 -- getProxyDelay — and falls back to its own built-in default, so an
